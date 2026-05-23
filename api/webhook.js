@@ -8,8 +8,8 @@ const shortDictionary = {
   "네": "ครับ",
   "넵": "ครับ",
   "넹": "ครับ",
-  "ㅇㅋ": "โอเคครับ",
-  "오케이": "โอเคครับ",
+  "ㅇㅋ": "โอเค",
+  "오케이": "โอเค",
   "알겠습니다": "รับทราบครับ",
   "좋아요": "ได้ครับ",
   "괜찮아요": "ไม่เป็นไรครับ",
@@ -67,7 +67,7 @@ async function askOpenAI(systemPrompt, text) {
     },
     body: JSON.stringify({
       model: "gpt-4.1-mini",
-      temperature: 0,
+      temperature: 0.2,
       messages: [
         {
           role: "system",
@@ -99,16 +99,20 @@ async function translateWithOpenAI(text) {
 
   if (lang === "ko") {
     return await askOpenAI(`
-You are a Korean to Thai translator for LINE chat.
+You are a Korean to Thai translator for real LINE chat conversations.
 
 Rules:
-- Translate Korean into Thai only.
-- ALWAYS use Thai male speech style.
-- Use ครับ instead of ค่ะ.
-- NEVER use female particles.
-- Preserve English brand names and app names.
+- Translate Korean into natural Thai.
+- Use Thai MALE speaking style.
+- NEVER use female particles such as:
+ค่ะ, คะ, จ๊ะ, จ้า, ค่า, นะคะ, นะค่ะ.
+- Use ครับ ONLY when it sounds natural.
+- Do NOT force polite particles on every sentence.
+- Casual chat, laughter, reactions, short comments should often omit ครับ.
+- Preserve English brand/app names like LINE, Facebook, Instagram, Boss.
 - Convert Korean laughter like ㅋㅋ or ㅎㅎ into 555.
-- Keep casual chat natural and short.
+- Keep the tone short and natural like real Thai LINE chat.
+- Do not explain.
 - Output only translated Thai text.
 `, text);
   }
@@ -118,9 +122,9 @@ Rules:
 You are a Thai to Korean translator for LINE chat.
 
 Rules:
-- Translate Thai into Korean only.
-- Keep English brand names unchanged.
-- Keep the message concise and natural.
+- Translate Thai into natural Korean.
+- Preserve English app and brand names.
+- Keep the tone casual and concise.
 - Output only translated Korean text.
 `, text);
   }
@@ -133,7 +137,7 @@ Output only Korean translation.
 
     const thai = await askOpenAI(`
 Translate English into natural Thai male speech style.
-Use ครับ if appropriate.
+Do not overuse ครับ.
 Output only Thai translation.
 `, text);
 
