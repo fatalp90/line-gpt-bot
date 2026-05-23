@@ -1,7 +1,7 @@
 import axios from "axios";
 
 async function replyToLine(replyToken, text) {
-  await axios.post(
+  return axios.post(
     "https://api.line.me/v2/bot/message/reply",
     {
       replyToken,
@@ -11,7 +11,8 @@ async function replyToLine(replyToken, text) {
       headers: {
         Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
         "Content-Type": "application/json"
-      }
+      },
+      timeout: 10000
     }
   );
 }
@@ -43,7 +44,7 @@ async function translateWithOpenAI(text) {
   const data = await response.json();
 
   if (!response.ok) {
-    console.error("OpenAI API Error:", data);
+    console.error("OpenAI API Error:", JSON.stringify(data));
     throw new Error(data?.error?.message || "OpenAI API request failed");
   }
 
@@ -54,8 +55,6 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(200).send("OK");
   }
-
-  res.status(200).send("OK");
 
   const events = req.body.events || [];
 
@@ -72,14 +71,17 @@ export default async function handler(req, res) {
       const translated = await translateWithOpenAI(event.message.text);
       await replyToLine(event.replyToken, translated);
     } catch (error) {
-      console.error("Webhook Error:", error);
+      console.error("Webhook Error:", error?.message || error);
+
       if (event.replyToken) {
         try {
           await replyToLine(event.replyToken, "번역 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.");
         } catch (replyError) {
-          console.error("LINE Reply Error:", replyError);
+          console.error("LINE Reply Error:", replyError?.response?.data || replyError?.message || replyError);
         }
       }
     }
   }
+
+  return res.status(200).send("OK");
 }
