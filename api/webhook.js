@@ -23,16 +23,21 @@ function normalizeText(text) {
 
 function getDictionaryTranslation(text) {
   const clean = normalizeText(text);
+
   if (/^[ㅋㅎ]+$/.test(clean)) return "555";
+
   return shortDictionary[clean] || null;
 }
 
 function detectLanguage(text) {
   const hasThai = /[\u0E00-\u0E7F]/.test(text);
   const hasKorean = /[ㄱ-ㅎㅏ-ㅣ가-힣]/.test(text);
+  const hasEnglish = /[a-zA-Z]/.test(text);
 
   if (hasThai) return "th";
   if (hasKorean) return "ko";
+  if (hasEnglish) return "en";
+
   return "unknown";
 }
 
@@ -67,14 +72,13 @@ You are a Korean to Thai translator for LINE chat.
 
 Rules:
 - Translate Korean into Thai only.
-- Always use Thai male speech style.
-- Use ครับ when politeness is needed.
-- Never use ค่ะ, คะ, จ้า, จ๊ะ, ค่า, นะคะ, นะค่ะ, ค่ะๆ, ค่าา.
-- Do not use female particles under any circumstance.
+- ALWAYS use Thai male speech style.
+- Use ครับ instead of ค่ะ.
+- NEVER use female particles.
 - Keep casual chat natural and short.
-- Keep the meaning close to the original.
+- Preserve English brand names and app names like LINE, Facebook, Instagram, Boss, OK, Google, Shinhan Bank.
 - Convert Korean laughter like ㅋㅋ or ㅎㅎ into 555.
-- Do not explain.
+- Do not add explanations.
 - Output only the translated Thai text.
 `;
   } else if (lang === "th") {
@@ -83,11 +87,13 @@ You are a Thai to Korean translator for LINE chat.
 
 Rules:
 - Translate Thai into Korean only.
-- Keep the meaning close to the original.
+- Keep English brand names and app names unchanged.
 - Keep the message concise and natural.
 - Do not add explanations.
-- Output only the translated Korean text.
+- Output only translated Korean text.
 `;
+  } else if (lang === "en") {
+    return text;
   } else {
     return text;
   }
@@ -142,15 +148,20 @@ export default async function handler(req, res) {
       if (event.message.type !== "text") continue;
 
       const text = event.message.text;
+
       const translated = await translateWithOpenAI(text);
 
       await replyToLine(event.replyToken, translated);
+
     } catch (error) {
       console.error("Webhook Error:", error?.message || error);
 
       try {
         if (event.replyToken) {
-          await replyToLine(event.replyToken, "번역 중 오류가 발생했습니다.");
+          await replyToLine(
+            event.replyToken,
+            "번역 중 오류가 발생했습니다."
+          );
         }
       } catch (replyError) {
         console.error("LINE Reply Error:", replyError?.response?.data || replyError?.message || replyError);
