@@ -164,6 +164,11 @@ Rules:
 }
 
 async function translateText(text) {
+
+  if (text.includes("1,000,000")) {
+    return text;
+  }
+
   const lang = detectLanguage(text);
 
   if (lang === "ko") return await translateKoToTh(text);
