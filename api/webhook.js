@@ -58,46 +58,7 @@ async function replyToLine(replyToken, text) {
   );
 }
 
-async function translateWithOpenAI(text) {
-  const dictionaryResult = getDictionaryTranslation(text);
-  if (dictionaryResult) return dictionaryResult;
-
-  const lang = detectLanguage(text);
-
-  let systemPrompt = "";
-
-  if (lang === "ko") {
-    systemPrompt = `
-You are a Korean to Thai translator for LINE chat.
-
-Rules:
-- Translate Korean into Thai only.
-- ALWAYS use Thai male speech style.
-- Use ครับ instead of ค่ะ.
-- NEVER use female particles.
-- Keep casual chat natural and short.
-- Preserve English brand names and app names like LINE, Facebook, Instagram, Boss, OK, Google, Shinhan Bank.
-- Convert Korean laughter like ㅋㅋ or ㅎㅎ into 555.
-- Do not add explanations.
-- Output only the translated Thai text.
-`;
-  } else if (lang === "th") {
-    systemPrompt = `
-You are a Thai to Korean translator for LINE chat.
-
-Rules:
-- Translate Thai into Korean only.
-- Keep English brand names and app names unchanged.
-- Keep the message concise and natural.
-- Do not add explanations.
-- Output only translated Korean text.
-`;
-  } else if (lang === "en") {
-    return text;
-  } else {
-    return text;
-  }
-
+async function askOpenAI(systemPrompt, text) {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -128,6 +89,58 @@ Rules:
   }
 
   return data.choices?.[0]?.message?.content?.trim() || "번역 실패";
+}
+
+async function translateWithOpenAI(text) {
+  const dictionaryResult = getDictionaryTranslation(text);
+  if (dictionaryResult) return dictionaryResult;
+
+  const lang = detectLanguage(text);
+
+  if (lang === "ko") {
+    return await askOpenAI(`
+You are a Korean to Thai translator for LINE chat.
+
+Rules:
+- Translate Korean into Thai only.
+- ALWAYS use Thai male speech style.
+- Use ครับ instead of ค่ะ.
+- NEVER use female particles.
+- Preserve English brand names and app names.
+- Convert Korean laughter like ㅋㅋ or ㅎㅎ into 555.
+- Keep casual chat natural and short.
+- Output only translated Thai text.
+`, text);
+  }
+
+  if (lang === "th") {
+    return await askOpenAI(`
+You are a Thai to Korean translator for LINE chat.
+
+Rules:
+- Translate Thai into Korean only.
+- Keep English brand names unchanged.
+- Keep the message concise and natural.
+- Output only translated Korean text.
+`, text);
+  }
+
+  if (lang === "en") {
+    const korean = await askOpenAI(`
+Translate English into natural Korean.
+Output only Korean translation.
+`, text);
+
+    const thai = await askOpenAI(`
+Translate English into natural Thai male speech style.
+Use ครับ if appropriate.
+Output only Thai translation.
+`, text);
+
+    return `KR: ${korean}\nTH: ${thai}`;
+  }
+
+  return text;
 }
 
 export default async function handler(req, res) {
