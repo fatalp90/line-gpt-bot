@@ -1,51 +1,29 @@
 import axios from "axios";
-import OpenAI from "openai";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-export default async function handler(req, res) {
-
-  if (req.method !== "POST") {
-    return res.status(200).send("OK");
-  }
-
-  res.status(200).send("OK");
-
-  const events = req.body.events || [];
-
-  for (const event of events) {
-
-    if (event.type === "join") {
-      await axios.post(
-        "https://api.line.me/v2/bot/message/reply",
-        {
-          replyToken: event.replyToken,
-          messages: [
-            {
-              type: "text",
-              text: "안녕하세요 :)"
-            }
-          ]
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
-            "Content-Type": "application/json"
-          }
-        }
-      );
-
-      continue;
+async function replyToLine(replyToken, text) {
+  await axios.post(
+    "https://api.line.me/v2/bot/message/reply",
+    {
+      replyToken,
+      messages: [{ type: "text", text }]
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
+      }
     }
+  );
+}
 
-    if (event.type !== "message") continue;
-    if (event.message.type !== "text") continue;
-
-    const text = event.message.text;
-
-    const completion = await openai.chat.completions.create({
+async function translateWithOpenAI(text) {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
       model: "gpt-4.1-mini",
       messages: [
         {
@@ -57,28 +35,51 @@ export default async function handler(req, res) {
           role: "user",
           content: text
         }
-      ]
-    });
+      ],
+      temperature: 0.2
+    })
+  });
 
-    const translated = completion.choices[0].message.content;
+  const data = await response.json();
 
-    await axios.post(
-      "https://api.line.me/v2/bot/message/reply",
-      {
-        replyToken: event.replyToken,
-        messages: [
-          {
-            type: "text",
-            text: translated
-          }
-        ]
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
-          "Content-Type": "application/json"
+  if (!response.ok) {
+    console.error("OpenAI API Error:", data);
+    throw new Error(data?.error?.message || "OpenAI API request failed");
+  }
+
+  return data.choices?.[0]?.message?.content?.trim() || "번역 결과가 없습니다.";
+}
+
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(200).send("OK");
+  }
+
+  res.status(200).send("OK");
+
+  const events = req.body.events || [];
+
+  for (const event of events) {
+    try {
+      if (event.type === "join") {
+        await replyToLine(event.replyToken, "안녕하세요 :)");
+        continue;
+      }
+
+      if (event.type !== "message") continue;
+      if (event.message.type !== "text") continue;
+
+      const translated = await translateWithOpenAI(event.message.text);
+      await replyToLine(event.replyToken, translated);
+    } catch (error) {
+      console.error("Webhook Error:", error);
+      if (event.replyToken) {
+        try {
+          await replyToLine(event.replyToken, "번역 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.");
+        } catch (replyError) {
+          console.error("LINE Reply Error:", replyError);
         }
       }
-    );
+    }
   }
 }
