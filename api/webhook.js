@@ -163,44 +163,12 @@ Rules:
   ]);
 }
 
-async function translateEn(text) {
-  const kr = await askOpenAI([
-    {
-      role: "system",
-      content: `Translate English into Korean naturally. Output Korean only.`
-    },
-    {
-      role: "user",
-      content: text
-    }
-  ]);
-
-  const th = await askOpenAI([
-    {
-      role: "system",
-      content: `Translate English into Thai male LINE chat style.
-
-Rules:
-- Natural Thai chat wording.
-- No female particles.
-- Preserve original meaning.
-- Output Thai only.`
-    },
-    {
-      role: "user",
-      content: text
-    }
-  ]);
-
-  return `KR: ${kr}\nTH: ${th}`;
-}
-
 async function translateText(text) {
   const lang = detectLanguage(text);
 
   if (lang === "ko") return await translateKoToTh(text);
   if (lang === "th") return await translateThToKo(text);
-  if (lang === "en") return await translateEn(text);
+  if (lang === "en") return text;
 
   return text;
 }
