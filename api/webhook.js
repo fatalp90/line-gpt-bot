@@ -21,6 +21,10 @@ function normalizeText(text) {
   return String(text || "").trim();
 }
 
+function shouldIgnoreMessage(text) {
+  return String(text || "").includes("1,000,000");
+}
+
 function getDictionaryTranslation(text) {
   const clean = normalizeText(text);
 
@@ -164,11 +168,6 @@ Rules:
 }
 
 async function translateText(text) {
-
-  if (text.includes("1,000,000")) {
-    return text;
-  }
-
   const lang = detectLanguage(text);
 
   if (lang === "ko") return await translateKoToTh(text);
@@ -197,6 +196,11 @@ export default async function handler(req, res) {
 
       const text = normalizeText(event.message.text);
       if (!text) continue;
+
+      // 1,000,000이 포함된 메시지는 번역도 답장도 하지 않음
+      if (shouldIgnoreMessage(text)) {
+        continue;
+      }
 
       const translated = await translateText(text);
 
