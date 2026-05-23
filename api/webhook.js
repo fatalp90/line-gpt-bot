@@ -14,9 +14,7 @@ const shortDictionary = {
   "좋아요": "ได้ครับ",
   "괜찮아요": "ไม่เป็นไรครับ",
   "ㅋㅋ": "555",
-  "ㅎㅎ": "555",
-  "ㅠㅠ": "ㅠㅠ",
-  "ㅜㅜ": "ㅜㅜ"
+  "ㅎㅎ": "555"
 };
 
 function normalizeText(text) {
@@ -25,7 +23,20 @@ function normalizeText(text) {
 
 function getDictionaryTranslation(text) {
   const clean = normalizeText(text);
+
+  if (/^[ㅋㅎ]+$/.test(clean)) return "555";
+
   return shortDictionary[clean] || null;
+}
+
+function detectLanguage(text) {
+  const hasThai = /[\u0E00-\u0E7F]/.test(text);
+  const hasKorean = /[ㄱ-ㅎㅏ-ㅣ가-힣]/.test(text);
+
+  if (hasThai) return "th";
+  if (hasKorean) return "ko";
+
+  return "unknown";
 }
 
 async function replyToLine(replyToken, text) {
@@ -49,6 +60,39 @@ async function translateWithOpenAI(text) {
   const dictionaryResult = getDictionaryTranslation(text);
   if (dictionaryResult) return dictionaryResult;
 
+  const lang = detectLanguage(text);
+
+  let systemPrompt = "";
+
+  if (lang === "ko") {
+    systemPrompt = `
+You are a Korean to Thai translator for LINE chat.
+
+Rules:
+- Translate Korean into Thai only.
+- Use natural Thai.
+- Keep the message concise.
+- Do not add explanations.
+- Do not add extra context.
+- For casual chat, sound natural.
+- Use polite male Thai tone only when it fits naturally.
+- Output only the translated result.
+`;
+  } else if (lang === "th") {
+    systemPrompt = `
+You are a Thai to Korean translator for LINE chat.
+
+Rules:
+- Translate Thai into Korean only.
+- Keep the message concise.
+- Do not add explanations.
+- Do not add extra context.
+- Output only the translated Korean text.
+`;
+  } else {
+    return text;
+  }
+
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -57,29 +101,28 @@ async function translateWithOpenAI(text) {
     },
     body: JSON.stringify({
       model: "gpt-4.1-mini",
+      temperature: 0,
       messages: [
         {
           role: "system",
-          content:
-            "You are a Korean-Thai translator for LINE chat. If input is Korean, translate into Thai. If input is Thai, translate into Korean. Keep the translation close to the original meaning. Do not add extra words, greetings, explanations, or interpretations. Keep short messages short. For Thai output, use polite male tone only when it naturally fits, but do not force ครับ onto single interjections like โอ, อา, อืม, 555. Output only the translated text."
+          content: systemPrompt
         },
         {
           role: "user",
           content: text
         }
-      ],
-      temperature: 0
+      ]
     })
   });
 
   const data = await response.json();
 
   if (!response.ok) {
-    console.error("OpenAI API Error:", JSON.stringify(data));
-    throw new Error(data?.error?.message || "OpenAI API request failed");
+    console.error("OpenAI Error:", JSON.stringify(data));
+    throw new Error(data?.error?.message || "OpenAI request failed");
   }
 
-  return data.choices?.[0]?.message?.content?.trim() || "번역 결과가 없습니다.";
+  return data.choices?.[0]?.message?.content?.trim() || "번역 실패";
 }
 
 export default async function handler(req, res) {
@@ -92,7 +135,7 @@ export default async function handler(req, res) {
   for (const event of events) {
     try {
       if (event.type === "join") {
-        await replyToLine(event.replyToken, "안녕하세요 :)");
+        await replyToLine(event.replyToken, "번역 봇이 연결되었습니다 :)");
         continue;
       }
 
@@ -100,18 +143,21 @@ export default async function handler(req, res) {
       if (event.message.type !== "text") continue;
 
       const text = event.message.text;
+
       const translated = await translateWithOpenAI(text);
 
       await replyToLine(event.replyToken, translated);
-    } catch (error) {
-      console.error("Webhook Error:", error?.message || error);
 
-      if (event.replyToken) {
-        try {
-          await replyToLine(event.replyToken, "번역 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.");
-        } catch (replyError) {
-          console.error("LINE Reply Error:", replyError?.response?.data || replyError?.message || replyError);
-        }
+    } catch (error) {
+      console.error("Webhook Error:", error);
+
+      try {
+        await replyToLine(
+          event.replyToken,
+          "번역 중 오류가 발생했습니다."
+        );
+      } catch (replyError) {
+        console.error("LINE Reply Error:", replyError?.response?.data || replyError);
       }
     }
   }
