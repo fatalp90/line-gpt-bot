@@ -10,11 +10,21 @@ const shortDictionary = {
   "넹": "ครับ",
   "ㅇㅋ": "โอเค",
   "오케이": "โอเค",
-  "알겠습니다": "รับทราบครับ",
-  "좋아요": "ได้ครับ",
-  "괜찮아요": "ไม่เป็นไรครับ",
   "ㅋㅋ": "555",
   "ㅎㅎ": "555"
+};
+
+const femaleReplaceMap = {
+  "ค่ะ": "ครับ",
+  "คะ": "ครับ",
+  "นะคะ": "",
+  "นะค่ะ": "",
+  "จ้า": "",
+  "จ๊ะ": "",
+  "ล่ะ": "",
+  "อ่ะ": "",
+  "อะ": "",
+  "ค่า": ""
 };
 
 function normalizeText(text) {
@@ -39,6 +49,18 @@ function detectLanguage(text) {
   if (hasEnglish) return "en";
 
   return "unknown";
+}
+
+function forceMaleThai(text) {
+  let result = text;
+
+  for (const [female, male] of Object.entries(femaleReplaceMap)) {
+    result = result.split(female).join(male);
+  }
+
+  result = result.replace(/\s+/g, " ").trim();
+
+  return result;
 }
 
 async function replyToLine(replyToken, text) {
@@ -67,7 +89,7 @@ async function askOpenAI(systemPrompt, text) {
     },
     body: JSON.stringify({
       model: "gpt-4.1-mini",
-      temperature: 0.2,
+      temperature: 0.1,
       messages: [
         {
           role: "system",
@@ -98,48 +120,42 @@ async function translateWithOpenAI(text) {
   const lang = detectLanguage(text);
 
   if (lang === "ko") {
-    return await askOpenAI(`
-You are a Korean to Thai translator for real LINE chat conversations.
+    let thai = await askOpenAI(`
+태국 남자 LINE 채팅 말투로 자연스럽게 번역해줘.
 
-Rules:
-- Translate Korean into natural Thai.
-- Use Thai MALE speaking style.
-- NEVER use female particles such as:
-ค่ะ, คะ, จ๊ะ, จ้า, ค่า, นะคะ, นะค่ะ.
-- Use ครับ ONLY when it sounds natural.
-- Do NOT force polite particles on every sentence.
-- Casual chat, laughter, reactions, short comments should often omit ครับ.
-- Preserve English brand/app names like LINE, Facebook, Instagram, Boss.
-- Convert Korean laughter like ㅋㅋ or ㅎㅎ into 555.
-- Keep the tone short and natural like real Thai LINE chat.
-- Do not explain.
-- Output only translated Thai text.
+규칙:
+- 여성 말투 사용 금지
+- 짧고 자연스럽게
+- 실제 태국 LINE 느낌으로
+- ㅋㅋ,ㅎㅎ → 555
+- 영어 브랜드명 유지
+- 결과만 출력
 `, text);
+
+    return forceMaleThai(thai);
   }
 
   if (lang === "th") {
     return await askOpenAI(`
-You are a Thai to Korean translator for LINE chat.
-
-Rules:
-- Translate Thai into natural Korean.
-- Preserve English app and brand names.
-- Keep the tone casual and concise.
-- Output only translated Korean text.
+태국어를 자연스러운 한국어 채팅 말투로 번역해줘.
+짧고 자연스럽게 번역해줘.
+결과만 출력해줘.
 `, text);
   }
 
   if (lang === "en") {
     const korean = await askOpenAI(`
-Translate English into natural Korean.
-Output only Korean translation.
+영어를 자연스러운 한국어 채팅 말투로 번역해줘.
+결과만 출력해줘.
 `, text);
 
-    const thai = await askOpenAI(`
-Translate English into natural Thai male speech style.
-Do not overuse ครับ.
-Output only Thai translation.
+    let thai = await askOpenAI(`
+영어를 자연스러운 태국 남자 LINE 채팅 말투로 번역해줘.
+여성 말투는 사용하지마.
+결과만 출력해줘.
 `, text);
+
+    thai = forceMaleThai(thai);
 
     return `KR: ${korean}\nTH: ${thai}`;
   }
