@@ -4,7 +4,7 @@ const shortDictionary = {
   "오": "โอ",
   "아": "อา",
   "어": "อืม",
-  "응": "อืม",
+  "응": "อืมครับ",
   "네": "ครับ",
   "넵": "ครับ",
   "넹": "ครับ",
@@ -41,7 +41,7 @@ function detectLanguage(text) {
   return "unknown";
 }
 
-function cleanupTranslationOutput(text) {
+function cleanup(text) {
   return String(text || "")
     .replace(/^(\s*\.\.\.\s*)+/g, "")
     .replace(/^(\s*…\s*)+/g, "")
@@ -74,8 +74,8 @@ async function askOpenAI(messages) {
     },
     body: JSON.stringify({
       model: "gpt-4.1-mini",
-      messages,
-      temperature: 0
+      temperature: 0,
+      messages
     })
   });
 
@@ -86,140 +86,51 @@ async function askOpenAI(messages) {
     throw new Error(data?.error?.message || "OpenAI request failed");
   }
 
-  return data?.choices?.[0]?.message?.content?.trim() || "";
+  return cleanup(data?.choices?.[0]?.message?.content || "");
 }
 
-async function translateKoreanToThai(text) {
-  const dictionaryResult = getDictionaryTranslation(text);
-  if (dictionaryResult) return dictionaryResult;
+async function translateKoToTh(text) {
+  const direct = getDictionaryTranslation(text);
+  if (direct) return direct;
 
   const result = await askOpenAI([
     {
       role: "system",
       content: `You are a Korean to Thai translator for LINE chat.
 
-Output:
-- Return ONLY valid JSON.
-- Use Thai male speech style.
-- Use ครับ when needed.
-- NEVER use female Thai particles such as ค่ะ, คะ, จ๊ะ, จ้า, ค่า, นะคะ, นะค่ะ.
-- Preserve the speaker's original Korean tone and sentence style as closely as possible.
-
-Important translation rules:
-- Preserve questioning tone naturally.
-- Preserve conversational pressure and nuance.
-- Preserve rhetorical expressions.
-- Preserve sentence rhythm and emotional flow.
-- Keep wording as close as possible to the original Korean meaning.
-- Write like a real Korean speaker talking in Thai.
-- Very short Korean replies should stay short and natural in Thai.
-- Do NOT overly summarize.
+Rules:
+- Translate Korean into Thai.
+- Preserve the original meaning exactly.
+- Do NOT change the intent.
+- Do NOT add emotions, reactions, greetings, or context that do not exist.
 - Do NOT overly localize.
-- Do NOT flatten questions into neutral statements.
-- Do NOT change emotional intent.
-- Do NOT add new information.
-- Do NOT add laughter such as 555 unless the Korean source actually contains ㅋㅋ or ㅎㅎ.
-- Keep punctuation and sentence endings as close as possible to the Korean source.
-- Preserve English brand/app names such as LINE, Facebook, Instagram, Google, Boss.
+- Use natural Thai LINE chat wording.
+- Avoid textbook/formal Thai expressions.
+- Avoid literary expressions like ราตรีสวัสดิ์ครับ.
+- Use Thai male speech style.
+- NEVER use female particles such as ค่ะ, คะ, จ้า, จ๊ะ, นะคะ.
+- Use ครับ only when natural.
+- Keep short Korean sentences short.
+- Preserve questioning nuance.
+- Preserve pressure / serious tone if present.
+- Preserve casual tone if present.
+- ㅋㅋ or ㅎㅎ should become 555 ONLY if actually present.
+- Preserve English app/brand names.
 
-Examples:
+Good examples:
+잘자요 -> นอนหลับฝันดีครับ
+입금하세요 -> โอนเงินมาครับ
+상환하세요 -> ชำระคืนครับ
+왜 안하세요? -> ทำไมไม่ทำครับ?
+할말있나요? -> มีอะไรจะพูดไหมครับ?
 네 -> ครับ
 응 -> อืมครับ
-아니요 -> ไม่ครับ
-맞아요 -> ใช่ครับ
-네 맞습니다 -> ใช่ครับ
-급여일 15일 아니었어요? -> วันเงินเดือนวันที่ 15 ไม่ใช่เหรอครับ?
-그냥 정상적으로 좀 갚으면 안될까요? -> ชำระคืนตามปกติหน่อยไม่ได้เหรอครับ?
-지금 뭐하시는거죠? -> ตอนนี้กำลังทำอะไรอยู่ครับ?
-고객이 진행안한다고 하던가요? -> ลูกค้าบอกว่าไม่ดำเนินการใช่ไหมครับ?
-할말있나요? -> มีอะไรจะพูดไหมครับ?
-이정도면 됐다ㅎㅎ -> แค่นี้ก็พอแล้ว 555`
-    },
-    {
-      role: "user",
-      content: `Translate this Korean source text into Thai while preserving the original Korean tone, sentence structure, questioning nuance, and conversational feeling as closely as possible.
 
-Return ONLY JSON:
-{"normal":"..."}
+Bad examples:
+잘자요 -> สวัสดีครับ
+잘자요 -> ราตรีสวัสดิ์ครับ
 
-SOURCE:
-${text}`
-    }
-  ]);
-
-  try {
-    const parsed = JSON.parse(result);
-    return cleanupTranslationOutput(parsed.normal || "");
-  } catch {
-    return cleanupTranslationOutput(result);
-  }
-}
-
-async function translateThaiOrEnglishToKorean(text) {
-  const result = await askOpenAI([
-    {
-      role: "system",
-      content: `You are a professional Thai/English to Korean translator.
-
-Output language:
-- Korean only.
-
-Tasks:
-- Thai to Korean.
-- English to Korean.
-- Mixed Thai + English to Korean.
-
-Keep unchanged:
-- @mentions / tags / IDs.
-- Numbers, money amounts, formulas, dates, and times.
-- English brand/app names if translating them would be awkward.
-
-Rules:
-- Do not answer the message.
-- Do not react to the message.
-- Do not explain the message.
-- Do not say sorry.
-- Do not say you cannot do it.
-- Only translate the source text into Korean.
-- Translate every Thai word, even when attached to numbers or formulas.
-- Preserve line order for multiple lines.
-- If grammar is messy or chat-style, translate the closest natural Korean meaning.
-- Preserve awkward or casual chat tone if present.
-
-Examples:
-วันนี้มีส่งยอดนะคะ -> 오늘 입금 있습니다.
-กรุณารักษาเวลา และชำระเงินก่อนเวลา 20.00 น -> 시간을 지켜주시고 20:00 이전에 입금해주세요.
-ลงข้างบน60000*15 -> 위에 60,000 x 15로 올려요.
-@Dex Loan 500,000=60,000x15day ka (No cut ka) -> @Dex 대출 500,000 = 60,000 x 15일입니다 (수수료 없음).`
-    },
-    {
-      role: "user",
-      content: `Translate the following source text into Korean only. Do not respond to it.
-
-${text}`
-    }
-  ]);
-
-  return cleanupTranslationOutput(result);
-}
-
-async function translateEnglishToBoth(text) {
-  const korean = await translateThaiOrEnglishToKorean(text);
-
-  const thaiResult = await askOpenAI([
-    {
-      role: "system",
-      content: `You are an English to Thai translator for LINE chat.
-
-Rules:
-- Translate English into Thai.
-- Use Thai male speech style.
-- Use ครับ when needed.
-- NEVER use female Thai particles such as ค่ะ, คะ, จ๊ะ, จ้า, ค่า, นะคะ, นะค่ะ.
-- Keep the original meaning and tone.
-- Do not add laughter or extra emotion.
-- Preserve brand/app names.
-- Output only Thai translation.`
+Output only Thai translation.`
     },
     {
       role: "user",
@@ -227,15 +138,69 @@ Rules:
     }
   ]);
 
-  return `KR: ${cleanupTranslationOutput(korean)}\nTH: ${cleanupTranslationOutput(thaiResult)}`;
+  return result;
+}
+
+async function translateThToKo(text) {
+  return await askOpenAI([
+    {
+      role: "system",
+      content: `You are a Thai to Korean translator.
+
+Rules:
+- Translate Thai into Korean.
+- Preserve original meaning and tone.
+- Do NOT summarize.
+- Do NOT answer the message.
+- Preserve awkward or casual chat style if present.
+- Keep numbers, IDs, money amounts, and names unchanged.
+- Output Korean only.`
+    },
+    {
+      role: "user",
+      content: text
+    }
+  ]);
+}
+
+async function translateEn(text) {
+  const kr = await askOpenAI([
+    {
+      role: "system",
+      content: `Translate English into Korean naturally. Output Korean only.`
+    },
+    {
+      role: "user",
+      content: text
+    }
+  ]);
+
+  const th = await askOpenAI([
+    {
+      role: "system",
+      content: `Translate English into Thai male LINE chat style.
+
+Rules:
+- Natural Thai chat wording.
+- No female particles.
+- Preserve original meaning.
+- Output Thai only.`
+    },
+    {
+      role: "user",
+      content: text
+    }
+  ]);
+
+  return `KR: ${kr}\nTH: ${th}`;
 }
 
 async function translateText(text) {
   const lang = detectLanguage(text);
 
-  if (lang === "ko") return await translateKoreanToThai(text);
-  if (lang === "th") return await translateThaiOrEnglishToKorean(text);
-  if (lang === "en") return await translateEnglishToBoth(text);
+  if (lang === "ko") return await translateKoToTh(text);
+  if (lang === "th") return await translateThToKo(text);
+  if (lang === "en") return await translateEn(text);
 
   return text;
 }
@@ -261,7 +226,9 @@ export default async function handler(req, res) {
       if (!text) continue;
 
       const translated = await translateText(text);
+
       await replyToLine(event.replyToken, translated);
+
     } catch (error) {
       console.error("Webhook Error:", error?.message || error);
 
