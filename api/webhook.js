@@ -1,5 +1,33 @@
 import axios from "axios";
 
+const shortDictionary = {
+  "오": "โอ",
+  "아": "อา",
+  "어": "อืม",
+  "응": "อืม",
+  "네": "ครับ",
+  "넵": "ครับ",
+  "넹": "ครับ",
+  "ㅇㅋ": "โอเคครับ",
+  "오케이": "โอเคครับ",
+  "알겠습니다": "รับทราบครับ",
+  "좋아요": "ได้ครับ",
+  "괜찮아요": "ไม่เป็นไรครับ",
+  "ㅋㅋ": "555",
+  "ㅎㅎ": "555",
+  "ㅠㅠ": "ㅠㅠ",
+  "ㅜㅜ": "ㅜㅜ"
+};
+
+function normalizeText(text) {
+  return text.trim();
+}
+
+function getDictionaryTranslation(text) {
+  const clean = normalizeText(text);
+  return shortDictionary[clean] || null;
+}
+
 async function replyToLine(replyToken, text) {
   return axios.post(
     "https://api.line.me/v2/bot/message/reply",
@@ -18,6 +46,9 @@ async function replyToLine(replyToken, text) {
 }
 
 async function translateWithOpenAI(text) {
+  const dictionaryResult = getDictionaryTranslation(text);
+  if (dictionaryResult) return dictionaryResult;
+
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -30,14 +61,14 @@ async function translateWithOpenAI(text) {
         {
           role: "system",
           content:
-            "If input is Korean, translate naturally into Thai male polite tone with ครับ. If input is Thai, translate naturally into Korean. Output only translated text."
+            "You are a Korean-Thai translator for LINE chat. If input is Korean, translate into Thai. If input is Thai, translate into Korean. Keep the translation close to the original meaning. Do not add extra words, greetings, explanations, or interpretations. Keep short messages short. For Thai output, use polite male tone only when it naturally fits, but do not force ครับ onto single interjections like โอ, อา, อืม, 555. Output only the translated text."
         },
         {
           role: "user",
           content: text
         }
       ],
-      temperature: 0.2
+      temperature: 0
     })
   });
 
@@ -68,7 +99,9 @@ export default async function handler(req, res) {
       if (event.type !== "message") continue;
       if (event.message.type !== "text") continue;
 
-      const translated = await translateWithOpenAI(event.message.text);
+      const text = event.message.text;
+      const translated = await translateWithOpenAI(text);
+
       await replyToLine(event.replyToken, translated);
     } catch (error) {
       console.error("Webhook Error:", error?.message || error);
