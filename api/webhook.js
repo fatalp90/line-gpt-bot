@@ -14,19 +14,6 @@ const shortDictionary = {
   "ㅎㅎ": "555"
 };
 
-const femaleReplaceMap = {
-  "ค่ะ": "ครับ",
-  "คะ": "ครับ",
-  "นะคะ": "",
-  "นะค่ะ": "",
-  "จ้า": "",
-  "จ๊ะ": "",
-  "ล่ะ": "",
-  "อ่ะ": "",
-  "อะ": "",
-  "ค่า": ""
-};
-
 function normalizeText(text) {
   return text.trim();
 }
@@ -49,18 +36,6 @@ function detectLanguage(text) {
   if (hasEnglish) return "en";
 
   return "unknown";
-}
-
-function forceMaleThai(text) {
-  let result = text;
-
-  for (const [female, male] of Object.entries(femaleReplaceMap)) {
-    result = result.split(female).join(male);
-  }
-
-  result = result.replace(/\s+/g, " ").trim();
-
-  return result;
 }
 
 async function replyToLine(replyToken, text) {
@@ -89,7 +64,6 @@ async function askOpenAI(systemPrompt, text) {
     },
     body: JSON.stringify({
       model: "gpt-4.1-mini",
-      temperature: 0.1,
       messages: [
         {
           role: "system",
@@ -120,42 +94,44 @@ async function translateWithOpenAI(text) {
   const lang = detectLanguage(text);
 
   if (lang === "ko") {
-    let thai = await askOpenAI(`
-태국 남자 LINE 채팅 말투로 자연스럽게 번역해줘.
+    return await askOpenAI(`
+한국어를 태국어로 직역해줘.
 
 규칙:
+- 원문 느낌 유지
+- 의역 최소화
+- 짧게 번역
+- 태국 남자 LINE 채팅 말투 사용
 - 여성 말투 사용 금지
-- 짧고 자연스럽게
-- 실제 태국 LINE 느낌으로
 - ㅋㅋ,ㅎㅎ → 555
-- 영어 브랜드명 유지
+- 브랜드명/영어 유지
 - 결과만 출력
 `, text);
-
-    return forceMaleThai(thai);
   }
 
   if (lang === "th") {
     return await askOpenAI(`
-태국어를 자연스러운 한국어 채팅 말투로 번역해줘.
-짧고 자연스럽게 번역해줘.
-결과만 출력해줘.
+태국어를 한국어로 직역해줘.
+
+규칙:
+- 원문 느낌 유지
+- 의역 최소화
+- 짧게 번역
+- 결과만 출력
 `, text);
   }
 
   if (lang === "en") {
     const korean = await askOpenAI(`
-영어를 자연스러운 한국어 채팅 말투로 번역해줘.
+영어를 한국어로 직역해줘.
 결과만 출력해줘.
 `, text);
 
-    let thai = await askOpenAI(`
-영어를 자연스러운 태국 남자 LINE 채팅 말투로 번역해줘.
-여성 말투는 사용하지마.
+    const thai = await askOpenAI(`
+영어를 태국 남자 LINE 채팅 말투로 직역해줘.
+여성 말투 사용 금지.
 결과만 출력해줘.
 `, text);
-
-    thai = forceMaleThai(thai);
 
     return `KR: ${korean}\nTH: ${thai}`;
   }
@@ -173,7 +149,7 @@ export default async function handler(req, res) {
   for (const event of events) {
     try {
       if (event.type === "join") {
-        await replyToLine(event.replyToken, "번역 봇이 연결되었습니다 :)");
+        await replyToLine(event.replyToken, "번역 봇 연결 완료");
         continue;
       }
 
@@ -193,7 +169,7 @@ export default async function handler(req, res) {
         if (event.replyToken) {
           await replyToLine(
             event.replyToken,
-            "번역 중 오류가 발생했습니다."
+            "번역 오류"
           );
         }
       } catch (replyError) {
