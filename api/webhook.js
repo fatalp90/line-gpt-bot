@@ -65,6 +65,13 @@ function shouldIgnoreMessage(text) {
   return false;
 }
 
+function cleanup(text) {
+  return String(text || "")
+    .replace(/^(\s*\.\.\.\s*)+/g, "")
+    .replace(/^(\s*…\s*)+/g, "")
+    .trim();
+}
+
 async function replyToLine(replyToken, text) {
   return axios.post(
     "https://api.line.me/v2/bot/message/reply",
@@ -82,6 +89,7 @@ async function replyToLine(replyToken, text) {
 }
 
 async function askOpenAI(messages) {
+
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -90,14 +98,19 @@ async function askOpenAI(messages) {
     },
     body: JSON.stringify({
       model: "gpt-4o-mini",
-      temperature: 0.2,
+      temperature: 0.15,
       messages
     })
   });
 
   const data = await response.json();
 
-  return data?.choices?.[0]?.message?.content?.trim() || "";
+  if (!response.ok) {
+    console.error(data);
+    throw new Error("OpenAI Error");
+  }
+
+  return cleanup(data?.choices?.[0]?.message?.content || "");
 }
 
 async function translateKoToTh(text) {
@@ -108,33 +121,70 @@ async function translateKoToTh(text) {
   return await askOpenAI([
     {
       role: "system",
-      content: `Translate Korean into natural Thai LINE chat.
+      content: `You are a Korean to Thai LINE chat translator.
 
-Rules:
+Goal:
+Translate Korean into NATURAL Thai LINE conversation while preserving the original meaning accurately.
+
+IMPORTANT:
+- Preserve the original meaning exactly.
+- DO NOT add information that does not exist in Korean.
+- DO NOT add implied time words such as:
+วันนี้
+เมื่อคืน
+ตอนนี้
+พรุ่งนี้
+unless explicitly written in Korean source text.
+
+Naturalness:
 - Sound like a real Thai person chatting naturally.
-- Do NOT translate too literally.
-- Preserve meaning and emotional nuance.
-- Slightly naturalize sentence structure into Thai conversational flow.
-- Use male polite tone with ครับ naturally.
+- Do NOT sound robotic or overly literal.
+- Slightly naturalize sentence flow into Thai conversation style.
+- But NEVER change the original meaning.
+
+Male speech rules:
+- Use male polite tone.
+- Use ครับ naturally.
 - NEVER use female particles:
 ค่ะ คะ จ้า จ๊ะ ค่า นะคะ นะค่ะ
 
 Additional rules:
 - Preserve emotional nuance naturally.
+- Preserve soft tone / pressure / awkwardness / humor.
 - Keep short Korean messages short.
-- Avoid robotic wording.
-- ㅋㅋ or ㅎㅎ may become 555 when natural.
-- Do not force 555.
+- Do not overexplain.
+- Do not over-localize.
+- Do not invent new context.
 
-Examples:
+Laughter:
+- ㅋㅋ or ㅎㅎ may become 555 ONLY when natural.
+- Do NOT force 555 into every sentence.
+
+Good examples:
+
 오늘도 여전히 바쁜 하루네요 ㅋㅋ
--> วันนี้ก็ยังยุ่งเหมือนเดิมเลย 555
+-> วันวุ่นๆอีกวันเลยครับ 555
 
 우리 일때문에 안좋았던건가요? ㅠㅠ
 -> หรือว่าเป็นเพราะเรื่องงานของพวกเราครับ TT
 
+정신 없는 하루를 보내고 긴장이 풀려서 그랬던거 같아요 ㅋㅋ
+-> คงเพราะผ่านวันวุ่นๆมาแล้วเลยเริ่มผ่อนคลายครับ 555
+
 잘자요
 -> นอนหลับฝันดีครับ
+
+입금하세요
+-> โอนเงินมาครับ
+
+상환하세요
+-> ชำระคืนครับ
+
+왜 안하세요?
+-> ทำไมไม่ทำครับ?
+
+할말있나요?
+-> มีอะไรจะพูดไหมครับ?
 
 미안해요 ㅋㅋ
 -> ขอโทษครับ 555
@@ -149,6 +199,7 @@ Output Thai only.`
 }
 
 async function translateThToKo(text) {
+
   return await askOpenAI([
     {
       role: "system",
@@ -160,7 +211,8 @@ Rules:
 - Preserve emotional nuance.
 - Keep names, IDs, money, and numbers unchanged.
 - Do not summarize.
-- Do not answer the message.`
+- Do not answer the message.
+- Do not add new meaning.`
     },
     {
       role: "user",
@@ -197,13 +249,19 @@ export default async function handler(req, res) {
       if (event.type !== "message") continue;
       if (event.message.type !== "text") continue;
 
-      if (event.message.emojis?.length > 0) continue;
+      // LINE emoji ignore
+      if (event.message.emojis?.length > 0) {
+        continue;
+      }
 
       const text = normalizeText(event.message.text);
 
       if (!text) continue;
 
-      if (shouldIgnoreMessage(text)) continue;
+      // ignore repetitive/system/decorative messages
+      if (shouldIgnoreMessage(text)) {
+        continue;
+      }
 
       const translated = await translateText(text);
 
