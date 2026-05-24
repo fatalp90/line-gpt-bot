@@ -36,6 +36,22 @@ function isEnglishOnly(text) {
   return true;
 }
 
+function isDecorationOnly(text) {
+  const clean = normalizeText(text);
+
+  if (!clean) return true;
+
+  // 태국어/한국어/숫자가 하나라도 있으면 정상 처리
+  if (/[ㄱ-ㅎㅏ-ㅣ가-힣\u0E00-\u0E7F0-9]/.test(clean)) {
+    return false;
+  }
+
+  // 알파벳 제거 후 특수문자/이모지만 남으면 decoration 판정
+  const removedEnglish = clean.replace(/[a-zA-Z]/g, "");
+
+  return !/[ㄱ-ㅎㅏ-ㅣ가-힣\u0E00-\u0E7F0-9]/.test(removedEnglish);
+}
+
 function shouldIgnoreMessage(text) {
   const clean = normalizeText(text);
 
@@ -49,6 +65,9 @@ function shouldIgnoreMessage(text) {
 
   // 영어만 있는 메시지는 무시
   if (isEnglishOnly(clean)) return true;
+
+  // 장식/이모지만 있는 메시지는 무시
+  if (isDecorationOnly(clean)) return true;
 
   return false;
 }
@@ -180,19 +199,6 @@ Rules:
 - ㅋㅋ or ㅎㅎ should become 555 ONLY if actually present.
 - Preserve English app/brand names.
 
-Good examples:
-잘자요 -> นอนหลับฝันดีครับ
-입금하세요 -> โอนเงินมาครับ
-상환하세요 -> ชำระคืนครับ
-왜 안하세요? -> ทำไมไม่ทำครับ?
-할말있나요? -> มีอะไรจะพูดไหมครับ?
-네 -> ครับ
-응 -> อืมครับ
-
-Bad examples:
-잘자요 -> สวัสดีครับ
-잘자요 -> ราตรีสวัสดิ์ครับ
-
 Output only Thai translation.`
     },
     {
@@ -261,7 +267,7 @@ export default async function handler(req, res) {
       const text = normalizeText(event.message.text);
       if (!text) continue;
 
-      // 1,000,000 / @태그 / 영어만 있는 메시지는 답장하지 않음
+      // 특정 패턴 메시지는 답장하지 않음
       if (shouldIgnoreMessage(text)) {
         continue;
       }
