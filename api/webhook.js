@@ -52,22 +52,24 @@ function isDecorationOnly(text) {
 }
 
 function shouldIgnoreMessage(text) {
-
   const clean = normalizeText(text);
 
   for (const keyword of ignoreKeywords) {
     if (clean.includes(keyword)) return true;
   }
 
-  if (clean.includes("@")) return true;
+  // 영어만 있는 메시지는 무시
+  // 예: SUMALEE JUTTANO, @Dex Loan
+  // 단, @Dex Loan บอสช้า 처럼 태국어/한국어가 함께 있으면 번역함
   if (isEnglishOnly(clean)) return true;
+
+  // 장식/이모지만 있는 메시지는 무시
   if (isDecorationOnly(clean)) return true;
 
   return false;
 }
 
 function cleanup(text) {
-
   return String(text || "")
     .replace(/^(\s*\.\.\.\s*)+/g, "")
     .replace(/^(\s*…\s*)+/g, "")
@@ -75,7 +77,6 @@ function cleanup(text) {
 }
 
 async function replyToLine(replyToken, text) {
-
   return axios.post(
     "https://api.line.me/v2/bot/message/reply",
     {
@@ -92,7 +93,6 @@ async function replyToLine(replyToken, text) {
 }
 
 async function askOpenAI(messages) {
-
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -117,7 +117,6 @@ async function askOpenAI(messages) {
 }
 
 async function translateKoToTh(text) {
-
   const direct = shortDictionary[text];
   if (direct) return direct;
 
@@ -221,7 +220,6 @@ Output Thai only.`
 }
 
 async function translateThToKo(text) {
-
   return await askOpenAI([
     {
       role: "system",
@@ -245,7 +243,6 @@ Rules:
 }
 
 async function translateText(text) {
-
   if (containsKorean(text)) {
     return await translateKoToTh(text);
   }
@@ -258,7 +255,6 @@ async function translateText(text) {
 }
 
 export default async function handler(req, res) {
-
   if (req.method !== "POST") {
     return res.status(200).send("OK");
   }
@@ -266,9 +262,7 @@ export default async function handler(req, res) {
   const events = req.body.events || [];
 
   for (const event of events) {
-
     try {
-
       if (event.type !== "message") continue;
       if (event.message.type !== "text") continue;
 
@@ -278,7 +272,6 @@ export default async function handler(req, res) {
       }
 
       const text = normalizeText(event.message.text);
-
       if (!text) continue;
 
       // ignore repetitive/system/decorative messages
@@ -287,7 +280,6 @@ export default async function handler(req, res) {
       }
 
       const translated = await translateText(text);
-
       if (!translated) continue;
 
       await replyToLine(event.replyToken, translated);
