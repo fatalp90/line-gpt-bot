@@ -21,8 +21,36 @@ function normalizeText(text) {
   return String(text || "").trim();
 }
 
+function isEnglishOnly(text) {
+  const clean = normalizeText(text);
+
+  if (!clean) return false;
+
+  const hasKorean = /[ㄱ-ㅎㅏ-ㅣ가-힣]/.test(clean);
+  const hasThai = /[\u0E00-\u0E7F]/.test(clean);
+  const hasEnglish = /[a-zA-Z]/.test(clean);
+
+  if (!hasEnglish) return false;
+  if (hasKorean || hasThai) return false;
+
+  return true;
+}
+
 function shouldIgnoreMessage(text) {
-  return String(text || "").includes("1,000,000");
+  const clean = normalizeText(text);
+
+  if (!clean) return true;
+
+  // 1,000,000 포함 메시지는 무시
+  if (clean.includes("1,000,000")) return true;
+
+  // 태그/멘션 포함 메시지는 무시
+  if (clean.includes("@")) return true;
+
+  // 영어만 있는 메시지는 무시
+  if (isEnglishOnly(clean)) return true;
+
+  return false;
 }
 
 function getDictionaryTranslation(text) {
@@ -55,8 +83,6 @@ function cleanup(text) {
 function forceMaleThai(text) {
   let result = String(text || "");
 
-  // 문장 전체가 깨지지 않도록 위험한 글자 단위 삭제는 하지 않고,
-  // 여성/부드러운 말투로 자주 보이는 완성 표현만 남자/중성 표현으로 교정.
   const replacements = [
     [/นะคะ/g, "ครับ"],
     [/นะค่ะ/g, "ครับ"],
@@ -235,7 +261,7 @@ export default async function handler(req, res) {
       const text = normalizeText(event.message.text);
       if (!text) continue;
 
-      // 1,000,000 포함 메시지는 답장하지 않음
+      // 1,000,000 / @태그 / 영어만 있는 메시지는 답장하지 않음
       if (shouldIgnoreMessage(text)) {
         continue;
       }
