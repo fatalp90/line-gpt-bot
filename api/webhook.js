@@ -1,36 +1,11 @@
 import axios from "axios";
 
-const shortDictionary = {
-  "오": "โอ",
-  "아": "อา",
-  "어": "อืม",
-  "응": "อืมครับ",
-  "네": "ครับ",
-  "넵": "ครับ",
-  "넹": "ครับ",
-  "아니요": "ไม่ครับ",
-  "맞아요": "ใช่ครับ",
-  "네 맞습니다": "ใช่ครับ",
-  "ㅇㅋ": "โอเค",
-  "오케이": "โอเค",
-  "ㅋㅋ": "555",
-  "ㅎㅎ": "555"
-};
-
 function normalizeText(text) {
   return String(text || "").trim();
 }
 
 function shouldIgnoreMessage(text) {
   return String(text || "").includes("1,000,000");
-}
-
-function getDictionaryTranslation(text) {
-  const clean = normalizeText(text);
-
-  if (/^[ㅋㅎ]+$/.test(clean)) return "555";
-
-  return shortDictionary[clean] || null;
 }
 
 function detectLanguage(text) {
@@ -45,13 +20,6 @@ function detectLanguage(text) {
   return "unknown";
 }
 
-function cleanup(text) {
-  return String(text || "")
-    .replace(/^(\s*\.\.\.\s*)+/g, "")
-    .replace(/^(\s*…\s*)+/g, "")
-    .trim();
-}
-
 async function replyToLine(replyToken, text) {
   return axios.post(
     "https://api.line.me/v2/bot/message/reply",
@@ -63,8 +31,7 @@ async function replyToLine(replyToken, text) {
       headers: {
         Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
         "Content-Type": "application/json"
-      },
-      timeout: 10000
+      }
     }
   );
 }
@@ -85,80 +52,35 @@ async function askOpenAI(messages) {
 
   const data = await response.json();
 
-  if (!response.ok) {
-    console.error("OpenAI Error:", JSON.stringify(data));
-    throw new Error(data?.error?.message || "OpenAI request failed");
-  }
-
-  return cleanup(data?.choices?.[0]?.message?.content || "");
+  return data?.choices?.[0]?.message?.content?.trim() || "";
 }
 
 async function translateKoToTh(text) {
-  const direct = getDictionaryTranslation(text);
-  if (direct) return direct;
-
-  const result = await askOpenAI([
+  return await askOpenAI([
     {
       role: "system",
-      content: `You are a Korean to Thai translator for LINE chat.
+      content: `Translate Korean into natural Thai male LINE chat style.
 
 Rules:
-- Translate Korean into Thai.
-- Preserve the original meaning exactly.
-- Do NOT change the intent.
-- Do NOT add emotions, reactions, greetings, or context that do not exist.
-- Do NOT overly localize.
-- Use natural Thai LINE chat wording.
-- Avoid textbook/formal Thai expressions.
-- Avoid literary expressions like ราตรีสวัสดิ์ครับ.
-- Use Thai male speech style.
-- NEVER use female particles such as ค่ะ, คะ, จ้า, จ๊ะ, นะคะ.
-- Use ครับ only when natural.
-- Keep short Korean sentences short.
-- Preserve questioning nuance.
-- Preserve pressure / serious tone if present.
-- Preserve casual tone if present.
-- ㅋㅋ or ㅎㅎ should become 555 ONLY if actually present.
-- Preserve English app/brand names.
-
-Good examples:
-잘자요 -> นอนหลับฝันดีครับ
-입금하세요 -> โอนเงินมาครับ
-상환하세요 -> ชำระคืนครับ
-왜 안하세요? -> ทำไมไม่ทำครับ?
-할말있나요? -> มีอะไรจะพูดไหมครับ?
-네 -> ครับ
-응 -> อืมครับ
-
-Bad examples:
-잘자요 -> สวัสดีครับ
-잘자요 -> ราตรีสวัสดิ์ครับ
-
-Output only Thai translation.`
+- Preserve original meaning.
+- No female particles.
+- Do not add emotions or extra meaning.
+- Do not use formal literary Thai.
+- Output Thai only.`
     },
     {
       role: "user",
       content: text
     }
   ]);
-
-  return result;
 }
 
 async function translateThToKo(text) {
   return await askOpenAI([
     {
       role: "system",
-      content: `You are a Thai to Korean translator.
-
-Rules:
-- Translate Thai into Korean.
-- Preserve original meaning and tone.
-- Do NOT summarize.
-- Do NOT answer the message.
-- Preserve awkward or casual chat style if present.
-- Keep numbers, IDs, money amounts, and names unchanged.
-- Output Korean only.`
+      content: `Translate Thai into Korean naturally.
+Output Korean only.`
     },
     {
       role: "user",
@@ -186,18 +108,20 @@ export default async function handler(req, res) {
 
   for (const event of events) {
     try {
-      if (event.type === "join") {
-        await replyToLine(event.replyToken, "번역 봇 연결 완료");
-        continue;
-      }
 
       if (event.type !== "message") continue;
       if (event.message.type !== "text") continue;
 
+      // 이모지 메시지 무시
+      if (event.message.emojis?.length > 0) {
+        continue;
+      }
+
       const text = normalizeText(event.message.text);
+
       if (!text) continue;
 
-      // 1,000,000이 포함된 메시지는 번역도 답장도 하지 않음
+      // 1,000,000 포함 메시지 무시
       if (shouldIgnoreMessage(text)) {
         continue;
       }
@@ -206,16 +130,8 @@ export default async function handler(req, res) {
 
       await replyToLine(event.replyToken, translated);
 
-    } catch (error) {
-      console.error("Webhook Error:", error?.message || error);
-
-      try {
-        if (event.replyToken) {
-          await replyToLine(event.replyToken, "번역 오류");
-        }
-      } catch (replyError) {
-        console.error("LINE Reply Error:", replyError?.response?.data || replyError?.message || replyError);
-      }
+    } catch (err) {
+      console.error(err);
     }
   }
 
