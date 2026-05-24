@@ -21,24 +21,27 @@ function normalizeText(text) {
   return String(text || "").trim();
 }
 
+function containsKorean(text) {
+  return /[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(text || "");
+}
+
+function containsThai(text) {
+  return /[\u0E00-\u0E7F]/.test(text || "");
+}
+
+function containsEnglish(text) {
+  return /[a-zA-Z]/.test(text || "");
+}
+
 function isEnglishOnly(text) {
   const clean = normalizeText(text);
-
   if (!clean) return false;
 
-  const hasKorean = /[ㄱ-ㅎㅏ-ㅣ가-힣]/.test(clean);
-  const hasThai = /[\u0E00-\u0E7F]/.test(clean);
-  const hasEnglish = /[a-zA-Z]/.test(clean);
-
-  if (!hasEnglish) return false;
-  if (hasKorean || hasThai) return false;
-
-  return true;
+  return containsEnglish(clean) && !containsKorean(clean) && !containsThai(clean);
 }
 
 function isDecorationOnly(text) {
   const clean = normalizeText(text);
-
   if (!clean) return true;
 
   // 태국어/한국어/숫자가 하나라도 있으면 정상 처리
@@ -46,7 +49,8 @@ function isDecorationOnly(text) {
     return false;
   }
 
-  // 알파벳 제거 후 특수문자/이모지만 남으면 decoration 판정
+  // 알파벳이 있더라도 CL 같은 장식만 있는 경우 무시하기 위해
+  // 알파벳 제거 후 남은 내용이 특수문자/이모지만이면 decoration으로 판단
   const removedEnglish = clean.replace(/[a-zA-Z]/g, "");
 
   return !/[ㄱ-ㅎㅏ-ㅣ가-힣\u0E00-\u0E7F0-9]/.test(removedEnglish);
@@ -54,19 +58,18 @@ function isDecorationOnly(text) {
 
 function shouldIgnoreMessage(text) {
   const clean = normalizeText(text);
-
   if (!clean) return true;
 
-  // 1,000,000 포함 메시지는 무시
+  // 반복 공지/벌금 안내 메시지 무시
   if (clean.includes("1,000,000")) return true;
 
-  // 태그/멘션 포함 메시지는 무시
+  // @태그/멘션 포함 메시지 무시
   if (clean.includes("@")) return true;
 
-  // 영어만 있는 메시지는 무시
+  // 영어만 있는 메시지 무시
   if (isEnglishOnly(clean)) return true;
 
-  // 장식/이모지만 있는 메시지는 무시
+  // 장식/이모지만 있는 메시지 무시
   if (isDecorationOnly(clean)) return true;
 
   return false;
@@ -74,60 +77,15 @@ function shouldIgnoreMessage(text) {
 
 function getDictionaryTranslation(text) {
   const clean = normalizeText(text);
-
   if (/^[ㅋㅎ]+$/.test(clean)) return "555";
-
   return shortDictionary[clean] || null;
 }
 
-function detectLanguage(text) {
-  const hasThai = /[\u0E00-\u0E7F]/.test(text);
-  const hasKorean = /[ㄱ-ㅎㅏ-ㅣ가-힣]/.test(text);
-  const hasEnglish = /[a-zA-Z]/.test(text);
-
-  if (hasKorean) return "ko";
-  if (hasThai) return "th";
-  if (hasEnglish) return "en";
-
-  return "unknown";
-}
-
-function cleanup(text) {
+function cleanupTranslationOutput(text) {
   return String(text || "")
     .replace(/^(\s*\.\.\.\s*)+/g, "")
     .replace(/^(\s*…\s*)+/g, "")
     .trim();
-}
-
-function forceMaleThai(text) {
-  let result = String(text || "");
-
-  const replacements = [
-    [/นะคะ/g, "ครับ"],
-    [/นะค่ะ/g, "ครับ"],
-    [/ค่ะ/g, "ครับ"],
-    [/คะ/g, "ครับ"],
-    [/ค่า/g, "ครับ"],
-    [/จ้า/g, "ครับ"],
-    [/จ๊ะ/g, "ครับ"],
-    [/น้า/g, "ครับ"],
-    [/เลยนะ/g, "เลยครับ"],
-    [/กันนะ/g, "กันครับ"],
-    [/ได้ไหมนะ/g, "ได้ไหมครับ"],
-    [/ไหมนะ/g, "ไหมครับ"],
-    [/มั้ยนะ/g, "มั้ยครับ"],
-    [/นะ$/g, "ครับ"],
-    [/นะ([!?？?]*)$/g, "ครับ$1"],
-    [/อะ$/g, ""],
-    [/อ่ะ$/g, ""],
-    [/จัง$/g, ""]
-  ];
-
-  for (const [pattern, replacement] of replacements) {
-    result = result.replace(pattern, replacement);
-  }
-
-  return result.replace(/\s+/g, " ").trim();
 }
 
 async function replyToLine(replyToken, text) {
@@ -147,17 +105,17 @@ async function replyToLine(replyToken, text) {
   );
 }
 
-async function askOpenAI(messages) {
+async function callChatCompletion(messages) {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: "gpt-4.1-mini",
-      temperature: 0,
-      messages
+      model: "gpt-4o-mini",
+      messages,
+      temperature: 0
     })
   });
 
@@ -168,76 +126,171 @@ async function askOpenAI(messages) {
     throw new Error(data?.error?.message || "OpenAI request failed");
   }
 
-  return cleanup(data?.choices?.[0]?.message?.content || "");
+  return data?.choices?.[0]?.message?.content?.trim() || "";
 }
 
-async function translateKoToTh(text) {
-  const direct = getDictionaryTranslation(text);
-  if (direct) return direct;
+async function translateKoreanToThai(text) {
+  const dictionaryResult = getDictionaryTranslation(text);
+  if (dictionaryResult) return dictionaryResult;
 
-  const result = await askOpenAI([
+  const result = await callChatCompletion([
     {
       role: "system",
-      content: `You are a Korean to Thai translator for LINE chat.
+      content: `You are a Korean to Thai translator.
 
-Rules:
-- Translate Korean into Thai.
-- Preserve the original meaning exactly.
-- Do NOT change the intent.
-- Do NOT add emotions, reactions, greetings, or context that do not exist.
+Output:
+- Return ONLY valid JSON.
+- Use polite male Thai ending with ครับ.
+- NEVER use female Thai particles such as ค่ะ, คะ, จ๊ะ, จ้า, ค่า, นะคะ, นะค่ะ.
+- Preserve the speaker's original Korean tone and sentence style as closely as possible.
+
+Important translation rules:
+- Preserve questioning tone naturally.
+- Preserve conversational pressure and nuance.
+- Preserve rhetorical expressions.
+- Preserve sentence rhythm and emotional flow.
+- Keep wording as close as possible to the original Korean meaning.
+- Write like a real Korean speaker talking in Thai.
+- Very short Korean replies should stay short and natural in Thai.
+- Do NOT overly summarize.
 - Do NOT overly localize.
-- Use natural Thai LINE chat wording.
-- Avoid textbook/formal Thai expressions.
-- Avoid literary expressions like ราตรีสวัสดิ์ครับ.
-- Use Thai male speech style.
-- NEVER use female particles such as ค่ะ, คะ, จ้า, จ๊ะ, นะคะ.
-- Use ครับ only when natural.
-- Keep short Korean sentences short.
-- Preserve questioning nuance.
-- Preserve pressure / serious tone if present.
-- Preserve casual tone if present.
-- ㅋㅋ or ㅎㅎ should become 555 ONLY if actually present.
-- Preserve English app/brand names.
+- Do NOT flatten questions into neutral statements.
+- Do NOT change emotional intent.
+- Do NOT add ellipsis (...), pauses, fillers, laughter, or punctuation that does not exist in the original Korean text.
+- ㅋㅋ or ㅎㅎ should become 555 ONLY if actually present in the source.
+- Keep punctuation and sentence endings as close as possible to the Korean source.
+- Preserve English app/brand names such as LINE, Facebook, Instagram, Google, Boss, SHINHAN BANK.
 
-Output only Thai translation.`
+NORMAL:
+Natural Thai while preserving the Korean speaking style.
+
+Examples:
+급여일 15일 아니었어요?
+-> วันเงินเดือนวันที่ 15 ไม่ใช่เหรอครับ?
+
+그냥 정상적으로 좀 갚으면 안될까요?
+-> ชำระคืนตามปกติหน่อยไม่ได้เหรอครับ?
+
+지금 뭐하시는거죠?
+-> ตอนนี้กำลังทำอะไรอยู่ครับ?
+
+고객이 진행안한다고 하던가요?
+-> ลูกค้าบอกว่าไม่ดำเนินการใช่ไหมครับ?
+
+할말있나요?
+-> มีอะไรจะพูดไหมครับ?
+
+잘자요
+-> นอนหลับฝันดีครับ
+
+입금하세요
+-> โอนเงินมาครับ
+
+상환하세요
+-> ชำระคืนครับ
+
+네
+-> ครับ
+
+응
+-> อืมครับ
+
+아니요
+-> ไม่ครับ
+
+맞아요
+-> ใช่ครับ
+
+네 맞습니다
+-> ใช่ครับ`
     },
     {
       role: "user",
-      content: text
+      content: `Translate this Korean source text into Thai while preserving the original Korean tone, sentence structure, questioning nuance, and conversational feeling as closely as possible.
+
+Return ONLY JSON:
+{"normal":"..."}
+
+SOURCE:
+${text}`
     }
   ]);
 
-  return forceMaleThai(result);
+  try {
+    const parsed = JSON.parse(result);
+    return cleanupTranslationOutput(parsed.normal || "");
+  } catch {
+    return cleanupTranslationOutput(result);
+  }
 }
 
-async function translateThToKo(text) {
-  return await askOpenAI([
+async function translateThaiOrMixedToKorean(text) {
+  const result = await callChatCompletion([
     {
       role: "system",
-      content: `You are a Thai to Korean translator.
+      content: `You are a professional Thai/English to Korean translator.
+
+Output language:
+- Korean only.
+
+Tasks:
+- Thai to Korean.
+- English to Korean only when mixed with Thai.
+- Mixed Thai + English to Korean.
+- Korean-containing sentences should NOT enter this mode.
+
+Keep unchanged:
+- @mentions / tags / IDs.
+- numbers, money amounts, formulas, dates, and times.
 
 Rules:
-- Translate Thai into Korean.
-- Preserve original meaning and tone.
-- Do NOT summarize.
-- Do NOT answer the message.
-- Preserve awkward or casual chat style if present.
-- Keep numbers, IDs, money amounts, and names unchanged.
-- Output Korean only.`
+- Do not answer the message.
+- Do not react to the message.
+- Do not explain the message.
+- Do not say sorry.
+- Do not say you cannot do it.
+- Only translate the source text into Korean.
+- Translate every Thai word, even when attached to numbers or formulas.
+- Preserve line order for multiple lines.
+- If grammar is messy or chat-style, translate the closest natural Korean meaning.
+- Preserve awkward or casual chat tone if present.
+
+Examples:
+วันนี้มีส่งยอดนะคะ
+-> 오늘 입금 있습니다.
+
+กรุณารักษาเวลา และชำระเงินก่อนเวลา 20.00 น
+-> 시간을 지켜주시고 20:00 이전에 입금해주세요.
+
+ลงข้างบน60000*15
+-> 위에 60,000 x 15로 올려요.
+
+@Dex Loan 500,000=60,000x15day ka (No cut ka)
+-> @Dex 대출 500,000 = 60,000 x 15일입니다 (수수료 없음).`
     },
     {
       role: "user",
-      content: text
+      content: `Translate the following source text into Korean only. Do not respond to it.
+
+${text}`
     }
   ]);
+
+  return cleanupTranslationOutput(result);
 }
 
 async function translateText(text) {
-  const lang = detectLanguage(text);
+  // Korean priority mode:
+  // If Korean exists in the sentence, always translate into Thai.
+  if (containsKorean(text)) {
+    return await translateKoreanToThai(text);
+  }
 
-  if (lang === "ko") return await translateKoToTh(text);
-  if (lang === "th") return await translateThToKo(text);
-  if (lang === "en") return text;
+  // English-only messages are ignored earlier.
+  // Thai / Thai+English messages become Korean.
+  if (containsThai(text)) {
+    return await translateThaiOrMixedToKorean(text);
+  }
 
   return text;
 }
@@ -267,15 +320,15 @@ export default async function handler(req, res) {
       const text = normalizeText(event.message.text);
       if (!text) continue;
 
-      // 특정 패턴 메시지는 답장하지 않음
+      // 1,000,000 / @태그 / 영어 only / 장식 only 메시지는 답장하지 않음
       if (shouldIgnoreMessage(text)) {
         continue;
       }
 
       const translated = await translateText(text);
+      if (!translated) continue;
 
       await replyToLine(event.replyToken, translated);
-
     } catch (error) {
       console.error("Webhook Error:", error?.message || error);
 
