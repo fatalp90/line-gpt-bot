@@ -6,6 +6,18 @@ const ignoreKeywords = [
   "Check over"
 ];
 
+const shortDictionary = {
+  "오": "โอ",
+  "아": "อา",
+  "어": "อืม",
+  "응": "อืมครับ",
+  "네": "ครับ",
+  "넵": "ครับ",
+  "넹": "ครับ",
+  "아니요": "ไม่ครับ",
+  "맞아요": "ใช่ครับ"
+};
+
 function normalizeText(text) {
   return String(text || "").trim();
 }
@@ -78,8 +90,8 @@ async function askOpenAI(messages) {
     },
     body: JSON.stringify({
       model: "gpt-4o-mini",
-      messages,
-      temperature: 0
+      temperature: 0.2,
+      messages
     })
   });
 
@@ -89,33 +101,66 @@ async function askOpenAI(messages) {
 }
 
 async function translateKoToTh(text) {
-  const response = await askOpenAI([
+
+  const direct = shortDictionary[text];
+  if (direct) return direct;
+
+  return await askOpenAI([
     {
       role: "system",
-      content: `Translate Korean to natural Thai male LINE chat style.
+      content: `Translate Korean into natural Thai LINE chat.
 
 Rules:
-- Use male polite style with ครับ
-- Never use female particles such as ค่ะ คะ จ้า จ๊ะ นะคะ
-- Preserve original Korean tone and nuance
-- Keep short messages short
-- Preserve ㅋㅋ as 555 only if present
-- Output Thai only`
+- Sound like a real Thai person chatting naturally.
+- Do NOT translate too literally.
+- Preserve meaning and emotional nuance.
+- Slightly naturalize sentence structure into Thai conversational flow.
+- Use male polite tone with ครับ naturally.
+- NEVER use female particles:
+ค่ะ คะ จ้า จ๊ะ ค่า นะคะ นะค่ะ
+
+Additional rules:
+- Preserve emotional nuance naturally.
+- Keep short Korean messages short.
+- Avoid robotic wording.
+- ㅋㅋ or ㅎㅎ may become 555 when natural.
+- Do not force 555.
+
+Examples:
+오늘도 여전히 바쁜 하루네요 ㅋㅋ
+-> วันนี้ก็ยังยุ่งเหมือนเดิมเลย 555
+
+우리 일때문에 안좋았던건가요? ㅠㅠ
+-> หรือว่าเป็นเพราะเรื่องงานของพวกเราครับ TT
+
+잘자요
+-> นอนหลับฝันดีครับ
+
+미안해요 ㅋㅋ
+-> ขอโทษครับ 555
+
+Output Thai only.`
     },
     {
       role: "user",
       content: text
     }
   ]);
-
-  return response;
 }
 
 async function translateThToKo(text) {
   return await askOpenAI([
     {
       role: "system",
-      content: `Translate Thai into Korean naturally. Output Korean only.`
+      content: `Translate Thai into natural Korean.
+
+Rules:
+- Output Korean only.
+- Preserve casual chat feeling naturally.
+- Preserve emotional nuance.
+- Keep names, IDs, money, and numbers unchanged.
+- Do not summarize.
+- Do not answer the message.`
     },
     {
       role: "user",
@@ -125,6 +170,7 @@ async function translateThToKo(text) {
 }
 
 async function translateText(text) {
+
   if (containsKorean(text)) {
     return await translateKoToTh(text);
   }
@@ -137,6 +183,7 @@ async function translateText(text) {
 }
 
 export default async function handler(req, res) {
+
   if (req.method !== "POST") {
     return res.status(200).send("OK");
   }
@@ -144,7 +191,9 @@ export default async function handler(req, res) {
   const events = req.body.events || [];
 
   for (const event of events) {
+
     try {
+
       if (event.type !== "message") continue;
       if (event.message.type !== "text") continue;
 
