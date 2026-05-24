@@ -52,6 +52,7 @@ function isDecorationOnly(text) {
 }
 
 function shouldIgnoreMessage(text) {
+
   const clean = normalizeText(text);
 
   for (const keyword of ignoreKeywords) {
@@ -66,6 +67,7 @@ function shouldIgnoreMessage(text) {
 }
 
 function cleanup(text) {
+
   return String(text || "")
     .replace(/^(\s*\.\.\.\s*)+/g, "")
     .replace(/^(\s*…\s*)+/g, "")
@@ -73,6 +75,7 @@ function cleanup(text) {
 }
 
 async function replyToLine(replyToken, text) {
+
   return axios.post(
     "https://api.line.me/v2/bot/message/reply",
     {
@@ -124,32 +127,37 @@ async function translateKoToTh(text) {
       content: `You are a Korean to Thai LINE chat translator.
 
 Goal:
-Translate Korean into NATURAL Thai LINE conversation while preserving the ORIGINAL MEANING ACCURATELY.
+Translate Korean into NATURAL Thai LINE conversation while preserving ALL original meaning accurately.
 
 VERY IMPORTANT:
-- Preserve original subject perspective exactly.
+- Preserve ALL information exactly.
+- NEVER omit words or categories.
+- NEVER simplify structured information.
+- Preserve subject perspective exactly.
 - NEVER change who is doing the action.
-- NEVER change speaker perspective.
-- NEVER reinterpret actions emotionally.
-- NEVER invent new context or implied meaning.
-- NEVER add information not written in Korean.
+- NEVER invent context not written in Korean.
 
-Examples of forbidden mistakes:
-- If Korean says "you were tired", do NOT translate as "I relaxed".
-- If Korean says "you passed out", do NOT reinterpret it as emotional relaxation.
+Meaning preservation examples:
+신규+기존 총 19명입니다 :)
+-> ลูกค้าใหม่+ลูกค้าเก่า รวมทั้งหมด 19 คนครับ :)
 
-Naturalness:
-- Sound like a real Thai person chatting naturally.
-- Slightly naturalize Thai sentence flow.
-- But preserve the original meaning accurately.
+DO NOT reduce it to:
+-> รวมทั้งหมด 19 คนครับ :)
 
-Time expression rule:
-- DO NOT add implied time words such as:
+Korean nuance understanding:
+- Understand teasing tone naturally.
+- Understand implied Korean conversational nuance.
+- Preserve humor and emotional nuance.
+- Avoid dictionary-style translation.
+- But NEVER add new meaning.
+
+Time rule:
+DO NOT add implied time expressions such as:
 วันนี้
 เมื่อคืน
 ตอนนี้
 พรุ่งนี้
-unless explicitly written in Korean source.
+unless explicitly written in Korean.
 
 Male speech rules:
 - Use male polite tone.
@@ -157,18 +165,24 @@ Male speech rules:
 - NEVER use female particles:
 ค่ะ คะ จ้า จ๊ะ ค่า นะคะ นะค่ะ
 
-Additional rules:
-- Preserve emotional nuance naturally.
-- Preserve softness / concern / humor naturally.
-- Keep short Korean messages short.
+Naturalness:
+- Sound like a real Thai person chatting naturally.
+- Slightly naturalize sentence flow into Thai conversation.
+- Avoid robotic translation.
+- Keep short messages short.
 - Do not overexplain.
-- Do not over-localize.
 
 Laughter:
 - ㅋㅋ or ㅎㅎ may become 555 ONLY when natural.
-- Do NOT force 555 into every sentence.
+- Do NOT force 555.
 
-Good examples:
+GOOD EXAMPLES:
+
+편하죠?ㅋㅋ
+-> สบายใช่ไหมครับ 555
+
+신규+기존 총 19명입니다 :)
+-> ลูกค้าใหม่+ลูกค้าเก่า รวมทั้งหมด 19 คนครับ :)
 
 오늘도 여전히 바쁜 하루네요 ㅋㅋ
 -> วันวุ่นๆอีกวันเลยครับ 555
@@ -176,7 +190,7 @@ Good examples:
 우리 일때문에 안좋았던건가요? ㅠㅠ
 -> หรือว่าเป็นเพราะเรื่องงานของพวกเราครับ TT
 
-정신 없는 하루를 보내고 긴장이 풀려서 기절 하셨던것 같아요 ㅋㅋ
+정신 없는 하루를 보내고 긴장이 풀리면서 기절 하셨던것 같아요 ㅋㅋ
 -> คงเหนื่อยมากจนหลับไปเลยครับ 555
 
 잘자요
@@ -215,9 +229,10 @@ async function translateThToKo(text) {
 
 Rules:
 - Output Korean only.
+- Preserve ALL original information.
 - Preserve casual chat feeling naturally.
 - Preserve emotional nuance.
-- Keep names, IDs, money, and numbers unchanged.
+- Keep names, IDs, money, formulas, symbols, and numbers unchanged.
 - Do not summarize.
 - Do not answer the message.
 - Do not add new meaning.`
@@ -257,7 +272,7 @@ export default async function handler(req, res) {
       if (event.type !== "message") continue;
       if (event.message.type !== "text") continue;
 
-      // LINE emoji ignore
+      // ignore LINE emoji messages
       if (event.message.emojis?.length > 0) {
         continue;
       }
