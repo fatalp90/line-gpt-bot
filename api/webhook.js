@@ -1,5 +1,10 @@
 import axios from "axios";
 
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.5";
+const OPENAI_TEMPERATURE = 0.4;
+const MAX_HISTORY_ITEMS = 10;
+const MAX_HISTORY_SESSIONS = 300;
+
 const ignoreKeywords = [
   "1,000,000",
   "Important checking",
@@ -17,6 +22,8 @@ const shortDictionary = {
   "아니요": "ไม่ครับ",
   "맞아요": "ใช่ครับ"
 };
+
+const conversationStore = new Map();
 
 function normalizeText(text) {
   return String(text || "").trim();
@@ -69,11 +76,57 @@ function shouldIgnoreMessage(text) {
   return false;
 }
 
-function cleanup(text) {
-  return String(text || "")
+function cleanup(text, options = {}) {
+  let output = String(text || "")
     .replace(/^(\s*\.\.\.\s*)+/g, "")
     .replace(/^(\s*…\s*)+/g, "")
+    .replace(/^번역[:：]\s*/i, "")
+    .replace(/^Translation[:：]\s*/i, "")
     .trim();
+
+  // Korean -> Thai output must not contain accidental Chinese/Japanese characters.
+  // Example problem: 正直ตอนนี้... -> ตอนนี้...
+  if (options.targetThai) {
+    output = output.replace(/[\u3400-\u9FFF\u3040-\u30FF]/g, "").trim();
+  }
+
+  return output;
+}
+
+function getConversationKey(event) {
+  const source = event?.source || {};
+  return source.groupId || source.roomId || source.userId || "default";
+}
+
+function getHistory(conversationKey) {
+  return conversationStore.get(conversationKey) || [];
+}
+
+function saveHistory(conversationKey, sourceText, translatedText) {
+  if (!conversationKey || !sourceText || !translatedText) return;
+
+  const history = getHistory(conversationKey);
+  history.push({
+    source: sourceText,
+    translated: translatedText,
+    at: Date.now()
+  });
+
+  conversationStore.set(conversationKey, history.slice(-MAX_HISTORY_ITEMS));
+
+  if (conversationStore.size > MAX_HISTORY_SESSIONS) {
+    const oldestKey = conversationStore.keys().next().value;
+    if (oldestKey) conversationStore.delete(oldestKey);
+  }
+}
+
+function buildContextText(history) {
+  if (!history?.length) return "";
+
+  return history
+    .slice(-MAX_HISTORY_ITEMS)
+    .map((item, index) => `${index + 1}. 원문: ${item.source}\n   번역: ${item.translated}`)
+    .join("\n");
 }
 
 async function replyToLine(replyToken, text) {
@@ -92,7 +145,28 @@ async function replyToLine(replyToken, text) {
   );
 }
 
-async function askOpenAI(messages) {
+async function askOpenAI({ systemPrompt, userText, history = [], targetThai = false }) {
+  const contextText = buildContextText(history);
+
+  const messages = [
+    {
+      role: "system",
+      content: systemPrompt
+    }
+  ];
+
+  if (contextText) {
+    messages.push({
+      role: "user",
+      content: `최근 대화 맥락입니다. 이 내용은 참고만 하고, 아래의 새 메시지만 번역하세요.\n\n${contextText}`
+    });
+  }
+
+  messages.push({
+    role: "user",
+    content: `새 메시지:\n${userText}`
+  });
+
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -100,9 +174,10 @@ async function askOpenAI(messages) {
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
-      temperature: 0.12,
-      messages
+      model: OPENAI_MODEL,
+      temperature: OPENAI_TEMPERATURE,
+      messages,
+      max_completion_tokens: 1200
     })
   });
 
@@ -113,75 +188,74 @@ async function askOpenAI(messages) {
     throw new Error("OpenAI Error");
   }
 
-  return cleanup(data?.choices?.[0]?.message?.content || "");
+  return cleanup(data?.choices?.[0]?.message?.content || "", { targetThai });
 }
 
-async function translateKoToTh(text) {
-  const direct = shortDictionary[text];
-  if (direct) return direct;
+const KO_TO_TH_SYSTEM_PROMPT = `You are a Korean to Thai LINE chat interpreter.
 
-  return await askOpenAI([
-    {
-      role: "system",
-      content: `You are a Korean to Thai LINE chat translator.
+Your goal is NOT literal word-by-word translation.
+Your goal is to preserve:
+- original meaning
+- emotional nuance
+- implied Korean conversational intent
+- relationship tone
+- natural Thai LINE chat style
 
-Goal:
-Translate Korean into NATURAL Thai LINE conversation while preserving ALL original meaning accurately.
+Core rules:
+- Translate Korean into natural Thai only.
+- Output Thai only. Do not add explanations.
+- NEVER mix Chinese, Japanese, Korean, or other languages into Thai output. Thai output must contain Thai language only, except original names, IDs, brand names, English terms, numbers, and symbols.
+- Preserve all names, IDs, amounts, dates, numbers, symbols, formulas, and structured categories.
+- Never omit important information.
+- Never summarize.
+- Never invent context that is not written or strongly implied.
+- Never add new money, dates, times, promises, threats, or legal/police wording.
+- Use the recent context only to understand tone and implied meaning, not to add new facts.
 
-VERY IMPORTANT:
-- Preserve ALL information exactly.
-- NEVER omit words or categories.
-- NEVER simplify structured information.
-- Preserve subject perspective exactly.
-- NEVER change who is doing the action.
-- NEVER invent context not written in Korean.
+Relationship / tone mode rules:
+Before translating, silently infer who the message is for from the current message and recent context.
+
+1) Customer-facing mode:
+Use this when the Korean message is directed to a borrower/customer or asks for payment, repayment, documents, passport, QR, video call, address, workplace, deadline, confirmation, or cooperation.
+Tone: polite male Thai, firm when needed, clear and businesslike. Do not sound like joking with an admin. Avoid overly cute or casual wording.
+
+2) Admin/internal mode:
+Use this when talking to an admin, boss, manager, assistant, or teammate about customers, groups, checks, approvals, commissions, documents, status, or internal handling.
+Tone: cooperative, natural, colleague-like, softer and more explanatory.
+
+3) Casual/personal mode:
+Use this for friendly personal chat, jokes, comfort, teasing, thanks, apology, or light conversation.
+Tone: warm, natural LINE chat style.
+
+If uncertain, choose the safest polite male Thai tone without adding assumptions.
+
+Male speech rules:
+- The speaker is male by default.
+- Use polite male Thai naturally.
+- Use ครับ when natural.
+- Never use female particles: ค่ะ, คะ, จ้า, จ๊ะ, ค่า, นะคะ, นะค่ะ.
+
+Natural Thai rules:
+- Make it sound like a real Thai person chatting on LINE.
+- Keep short messages short.
+- Preserve teasing, soft joking, worry, frustration, apology, firmness, and affection naturally.
+- In customer-facing warning/payment messages, be firm but not childish.
+- For 짜증나게 하지마라 / 장난하세요 / 뭐하는 겁니까, translate the pressure naturally, not as literal dictionary Thai.
+- Understand Korean casual expressions like ㅋㅋ, ㅎㅎ, ㅠㅠ, TT, 아/오/어/응/네.
+- ㅋㅋ or ㅎㅎ may become 555 only when natural. Do not force it.
+- Avoid robotic dictionary-style Thai.
+
+Time rule:
+- Do not add วันนี้, เมื่อคืน, ตอนนี้, พรุ่งนี้, or other time words unless they exist in Korean or are absolutely required by grammar.
 
 Meaning preservation examples:
 신규+기존 총 19명입니다 :)
 -> ลูกค้าใหม่+ลูกค้าเก่า รวมทั้งหมด 19 คนครับ :)
+Do not reduce this to only รวมทั้งหมด 19 คนครับ :)
 
-DO NOT reduce it to:
--> รวมทั้งหมด 19 คนครับ :)
-
-Korean nuance understanding:
-- Understand teasing tone naturally.
-- Understand implied Korean conversational nuance.
-- Preserve humor and emotional nuance.
-- Avoid dictionary-style translation.
-- But NEVER add new meaning.
-
-Time rule:
-DO NOT add implied time expressions such as:
-วันนี้
-เมื่อคืน
-ตอนนี้
-พรุ่งนี้
-unless explicitly written in Korean.
-
-Male speech rules:
-- Use male polite tone.
-- Use ครับ naturally.
-- NEVER use female particles:
-ค่ะ คะ จ้า จ๊ะ ค่า นะคะ นะค่ะ
-
-Naturalness:
-- Sound like a real Thai person chatting naturally.
-- Slightly naturalize sentence flow into Thai conversation.
-- Avoid robotic translation.
-- Keep short messages short.
-- Do not overexplain.
-
-Laughter:
-- ㅋㅋ or ㅎㅎ may become 555 ONLY when natural.
-- Do NOT force 555.
-
-GOOD EXAMPLES:
-
+Good examples:
 편하죠?ㅋㅋ
 -> สบายใช่ไหมครับ 555
-
-신규+기존 총 19명입니다 :)
--> ลูกค้าใหม่+ลูกค้าเก่า รวมทั้งหมด 19 คนครับ :)
 
 오늘도 여전히 바쁜 하루네요 ㅋㅋ
 -> วันวุ่นๆอีกวันเลยครับ 555
@@ -198,6 +272,12 @@ GOOD EXAMPLES:
 입금하세요
 -> โอนเงินมาครับ
 
+입금하세요. 빨리 ㅡㅡ 장난하세요?
+-> โอนเงินมาครับ เร็วๆหน่อย นี่ล้อเล่นอยู่หรือเปล่าครับ?
+
+짜증나게 하지마라?? 빨리 입금
+-> อย่าทำให้เรื่องมันปวดหัวเลยครับ รีบโอนเงินมาครับ
+
 상환하세요
 -> ชำระคืนครับ
 
@@ -208,47 +288,75 @@ GOOD EXAMPLES:
 -> มีอะไรจะพูดไหมครับ?
 
 미안해요 ㅋㅋ
--> ขอโทษครับ 555
+-> ขอโทษครับ 555`;
 
-Output Thai only.`
-    },
-    {
-      role: "user",
-      content: text
-    }
-  ]);
+const TH_TO_KO_SYSTEM_PROMPT = `You are a Thai to Korean LINE chat interpreter.
+
+Your goal is NOT literal word-by-word translation.
+Your goal is to preserve:
+- original meaning
+- emotional nuance
+- implied Thai conversational intent
+- relationship tone
+- natural Korean chat style
+
+Core rules:
+- Translate Thai into natural Korean only.
+- Output Korean only. Do not add explanations.
+- Preserve all names, IDs, amounts, dates, numbers, symbols, formulas, and structured categories.
+- Never omit important information.
+- Never summarize.
+- Never answer the message.
+- Never invent context that is not written or strongly implied.
+- Use the recent context only to understand tone and implied meaning, not to add new facts.
+
+Relationship / tone mode rules:
+Silently infer whether the Thai message is from/to a customer, admin/internal teammate, or casual personal chat.
+- Customer message: translate into Korean with the feeling of a borrower/customer explaining, delaying, apologizing, resisting, or confirming.
+- Admin/internal message: translate with colleague/admin tone about customers, groups, approvals, commissions, checks, documents, or handling.
+- Casual/personal message: translate warmly and naturally.
+Do not flatten every message into the same tone.
+
+Thai understanding rules:
+- Thai LINE messages often contain typos, slang, missing spaces, repeated letters, particles, or informal wording.
+- If there is an obvious typo, infer the most natural meaning from context.
+- Preserve casual, cute, teasing, annoyed, worried, apologetic, or firm tone naturally in Korean.
+- Translate particles like ค่ะ/คะ/ครับ according to the speaker's tone, not mechanically.
+- Keep short messages short.
+
+Safety/accuracy rules:
+- Do not add new money, dates, times, promises, threats, or legal/police wording.
+- If the Thai is genuinely ambiguous, translate in a way that keeps the ambiguity rather than guessing too much.`;
+
+async function translateKoToTh(text, history = []) {
+  const direct = shortDictionary[text];
+  if (direct) return direct;
+
+  return await askOpenAI({
+    systemPrompt: KO_TO_TH_SYSTEM_PROMPT,
+    userText: text,
+    history,
+    targetThai: true
+  });
 }
 
-async function translateThToKo(text) {
-  return await askOpenAI([
-    {
-      role: "system",
-      content: `Translate Thai into natural Korean.
-
-Rules:
-- Output Korean only.
-- Preserve ALL original information.
-- Preserve casual chat feeling naturally.
-- Preserve emotional nuance.
-- Keep names, IDs, money, formulas, symbols, and numbers unchanged.
-- Do not summarize.
-- Do not answer the message.
-- Do not add new meaning.`
-    },
-    {
-      role: "user",
-      content: text
-    }
-  ]);
+async function translateThToKo(text, history = []) {
+  return await askOpenAI({
+    systemPrompt: TH_TO_KO_SYSTEM_PROMPT,
+    userText: text,
+    history
+  });
 }
 
-async function translateText(text) {
+async function translateText(text, conversationKey) {
+  const history = getHistory(conversationKey);
+
   if (containsKorean(text)) {
-    return await translateKoToTh(text);
+    return await translateKoToTh(text, history);
   }
 
   if (containsThai(text)) {
-    return await translateThToKo(text);
+    return await translateThToKo(text, history);
   }
 
   return text;
@@ -279,9 +387,11 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const translated = await translateText(text);
+      const conversationKey = getConversationKey(event);
+      const translated = await translateText(text, conversationKey);
       if (!translated) continue;
 
+      saveHistory(conversationKey, text, translated);
       await replyToLine(event.replyToken, translated);
 
     } catch (err) {
