@@ -75,13 +75,21 @@ function shouldIgnoreMessage(text) {
   return false;
 }
 
-function cleanup(text) {
-  return String(text || "")
+function cleanup(text, options = {}) {
+  let output = String(text || "")
     .replace(/^(\s*\.\.\.\s*)+/g, "")
     .replace(/^(\s*…\s*)+/g, "")
     .replace(/^번역[:：]\s*/i, "")
     .replace(/^Translation[:：]\s*/i, "")
     .trim();
+
+  // Korean -> Thai output must not contain accidental Chinese/Japanese characters.
+  // Example problem: 正直ตอนนี้... -> ตอนนี้...
+  if (options.targetThai) {
+    output = output.replace(/[\u3400-\u9FFF\u3040-\u30FF]/g, "").trim();
+  }
+
+  return output;
 }
 
 function getConversationKey(event) {
@@ -136,29 +144,24 @@ async function replyToLine(replyToken, text) {
   );
 }
 
-async function askOpenAI({ systemPrompt, userText, history = [] }) {
+async function askOpenAI({ systemPrompt, userText, history = [], targetThai = false }) {
   const contextText = buildContextText(history);
 
-  const messages = [
-    {
-      role: "system",
-      content: systemPrompt
-    }
-  ];
+  const input = [];
 
   if (contextText) {
-    messages.push({
+    input.push({
       role: "user",
       content: `최근 대화 맥락입니다. 이 내용은 참고만 하고, 아래의 새 메시지만 번역하세요.\n\n${contextText}`
     });
   }
 
-  messages.push({
+  input.push({
     role: "user",
     content: `새 메시지:\n${userText}`
   });
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -166,19 +169,29 @@ async function askOpenAI({ systemPrompt, userText, history = [] }) {
     },
     body: JSON.stringify({
       model: OPENAI_MODEL,
-      messages,
-      max_completion_tokens: 1200
+      instructions: systemPrompt,
+      input,
+      max_output_tokens: 700,
+      reasoning: { effort: "low" },
+      text: { verbosity: "low" }
     })
   });
 
   const data = await response.json();
 
   if (!response.ok) {
-    console.error(data);
+    console.error("OpenAI Error:", JSON.stringify(data, null, 2));
     throw new Error("OpenAI Error");
   }
 
-  return cleanup(data?.choices?.[0]?.message?.content || "");
+  const outputText =
+    data?.output_text ||
+    data?.output?.flatMap(item => item?.content || [])
+      ?.map(content => content?.text || "")
+      ?.join("") ||
+    "";
+
+  return cleanup(outputText, { targetThai });
 }
 
 const KO_TO_TH_SYSTEM_PROMPT = `You are a Korean to Thai LINE chat interpreter.
@@ -194,12 +207,30 @@ Your goal is to preserve:
 Core rules:
 - Translate Korean into natural Thai only.
 - Output Thai only. Do not add explanations.
+- NEVER mix Chinese, Japanese, Korean, or other languages into Thai output. Thai output must contain Thai language only, except original names, IDs, brand names, English terms, numbers, and symbols.
 - Preserve all names, IDs, amounts, dates, numbers, symbols, formulas, and structured categories.
 - Never omit important information.
 - Never summarize.
 - Never invent context that is not written or strongly implied.
 - Never add new money, dates, times, promises, threats, or legal/police wording.
 - Use the recent context only to understand tone and implied meaning, not to add new facts.
+
+Relationship / tone mode rules:
+Before translating, silently infer who the message is for from the current message and recent context.
+
+1) Customer-facing mode:
+Use this when the Korean message is directed to a borrower/customer or asks for payment, repayment, documents, passport, QR, video call, address, workplace, deadline, confirmation, or cooperation.
+Tone: polite male Thai, firm when needed, clear and businesslike. Do not sound like joking with an admin. Avoid overly cute or casual wording.
+
+2) Admin/internal mode:
+Use this when talking to an admin, boss, manager, assistant, or teammate about customers, groups, checks, approvals, commissions, documents, status, or internal handling.
+Tone: cooperative, natural, colleague-like, softer and more explanatory.
+
+3) Casual/personal mode:
+Use this for friendly personal chat, jokes, comfort, teasing, thanks, apology, or light conversation.
+Tone: warm, natural LINE chat style.
+
+If uncertain, choose the safest polite male Thai tone without adding assumptions.
 
 Male speech rules:
 - The speaker is male by default.
@@ -211,6 +242,8 @@ Natural Thai rules:
 - Make it sound like a real Thai person chatting on LINE.
 - Keep short messages short.
 - Preserve teasing, soft joking, worry, frustration, apology, firmness, and affection naturally.
+- In customer-facing warning/payment messages, be firm but not childish.
+- For 짜증나게 하지마라 / 장난하세요 / 뭐하는 겁니까, translate the pressure naturally, not as literal dictionary Thai.
 - Understand Korean casual expressions like ㅋㅋ, ㅎㅎ, ㅠㅠ, TT, 아/오/어/응/네.
 - ㅋㅋ or ㅎㅎ may become 555 only when natural. Do not force it.
 - Avoid robotic dictionary-style Thai.
@@ -241,6 +274,12 @@ Good examples:
 
 입금하세요
 -> โอนเงินมาครับ
+
+입금하세요. 빨리 ㅡㅡ 장난하세요?
+-> โอนเงินมาครับ เร็วๆหน่อย นี่ล้อเล่นอยู่หรือเปล่าครับ?
+
+짜증나게 하지마라?? 빨리 입금
+-> อย่าทำให้เรื่องมันปวดหัวเลยครับ รีบโอนเงินมาครับ
 
 상환하세요
 -> ชำระคืนครับ
@@ -274,6 +313,13 @@ Core rules:
 - Never invent context that is not written or strongly implied.
 - Use the recent context only to understand tone and implied meaning, not to add new facts.
 
+Relationship / tone mode rules:
+Silently infer whether the Thai message is from/to a customer, admin/internal teammate, or casual personal chat.
+- Customer message: translate into Korean with the feeling of a borrower/customer explaining, delaying, apologizing, resisting, or confirming.
+- Admin/internal message: translate with colleague/admin tone about customers, groups, approvals, commissions, checks, documents, or handling.
+- Casual/personal message: translate warmly and naturally.
+Do not flatten every message into the same tone.
+
 Thai understanding rules:
 - Thai LINE messages often contain typos, slang, missing spaces, repeated letters, particles, or informal wording.
 - If there is an obvious typo, infer the most natural meaning from context.
@@ -292,7 +338,8 @@ async function translateKoToTh(text, history = []) {
   return await askOpenAI({
     systemPrompt: KO_TO_TH_SYSTEM_PROMPT,
     userText: text,
-    history
+    history,
+    targetThai: true
   });
 }
 
