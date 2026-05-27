@@ -44,7 +44,19 @@ const adminStatusKeywords = [
   "เลื่อน",
   "ต่อยอด",
   "รียอด",
-  "รี ยอด"
+  "รี ยอด",
+
+  // urgent / announcement style keywords
+  "sos",
+  "ด่วน",
+  "แจ้งยอด",
+  "ส่งยอด",
+  "โอนเงิน",
+  "ฝากเงิน",
+  "ส่งสลิป",
+  "สลิป",
+  "เตือน",
+  "ประกาศ"
 ];
 
 const conversationStore = new Map();
@@ -109,7 +121,7 @@ function hasRepeatedWrapperEmoji(text) {
   // 20.10ได้มัยค่ะเลิกงานค่ะทำโอที
   // 는 차단하지 않음
 
-  return /[📌✅🔥💸✔️🔔⚠️📍]/u.test(clean);
+  return /[📌✅🔥💸✔️🔔⚠️📍🚨🆘❗‼️⛔]/u.test(clean) || /sos/i.test(clean);
 }
 
 function hasDateLikePattern(text) {
@@ -127,12 +139,20 @@ function isAdminPatternMessage(text) {
   if (!clean) return false;
 
   const shortMessage = clean.length <= 80;
-  const hasWrapper = hasRepeatedWrapperEmoji(clean);
+  const hasNoticeEmoji = hasRepeatedWrapperEmoji(clean);
   const hasDate = hasDateLikePattern(clean);
+  const hasKeyword = hasAdminStatusKeyword(clean);
 
-  // 날짜가 있어도 일반 대화형 문장은 번역 허용
-  // 차단 조건은 "이모지/기호 감싸기 + 날짜" 조합으로 제한
-  if (shortMessage && hasWrapper && hasDate) {
+  // 1) 날짜형 관리자 공지 차단
+  // 예: 📌02/06, 02/06📌, ✅✅26/05✅✅
+  if (shortMessage && hasNoticeEmoji && hasDate) {
+    return true;
+  }
+
+  // 2) 긴급/공지형 메시지 차단
+  // 예: SOS🔥ส่งยอด🔥SOS, 🚨 입금 보내주세요 🚨, 🆘 ด่วน
+  // 단, 이모지/공지표시가 함께 있을 때만 차단해서 일반 대화 오차를 줄임
+  if (shortMessage && hasNoticeEmoji && hasKeyword) {
     return true;
   }
 
