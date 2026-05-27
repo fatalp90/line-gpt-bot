@@ -96,12 +96,20 @@ function isMentionOnlyMessage(text) {
 
 function hasRepeatedWrapperEmoji(text) {
   const clean = normalizeText(text);
-  const compact = clean.replace(/\s+/g, " ").trim();
 
-  // 앞뒤가 이모지/기호로 감싸진 짧은 관리자 표기만 감지
-  // 예: 📌 31/5 📌, ✅✅26/05✅✅, 🔥 งวดถัดไป 02/06 🔥
-  // 일반 문장 "นัด31/5 ค่ะบอส" 는 감지하지 않음
-  return /^[^\p{L}\p{N}]+\s*.+?\s*[^\p{L}\p{N}]+$/u.test(compact);
+  // 짧은 날짜형 관리자 메시지에 포함된 이모지/기호 감지
+  // 예:
+  // 📌02/06
+  // 02/06📌
+  // 🔥 งวด 02/06
+  // ✅✅26/05✅✅
+  //
+  // 일반 대화:
+  // นัด31/5 ค่ะบอส
+  // 20.10ได้มัยค่ะเลิกงานค่ะทำโอที
+  // 는 차단하지 않음
+
+  return /[📌✅🔥💸✔️🔔⚠️📍]/u.test(clean);
 }
 
 function hasDateLikePattern(text) {
