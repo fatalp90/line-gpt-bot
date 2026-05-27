@@ -307,7 +307,7 @@ async function askOpenAI({ systemPrompt, userText, history = [], convertWonToTha
     body: JSON.stringify({
       model: OPENAI_MODEL,
       messages,
-      max_completion_tokens: 1200
+      max_completion_tokens: 400
     })
   });
 
