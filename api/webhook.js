@@ -157,13 +157,11 @@ function cleanup(text) {
 
 function normalizeCurrencyForThaiOutput(text) {
   return String(text || "")
-    // 태국어 번역 결과에 한글 원이 남으면 태국어 วอน 으로 변환
-    .replace(/(\d[\d,]*(?:\.\d+)?)\s*원/g, "$1 วอน")
-    .replace(/(\d[\d,]*(?:\.\d+)?)\s*만원/g, "$1 หมื่นวอน")
-    .replace(/(\d[\d,]*(?:\.\d+)?)\s*천원/g, "$1 พันวอน")
-    // วอน 앞뒤 띄어쓰기 정리
-    .replace(/(\d[\d,]*(?:\.\d+)?)\s*วอน/g, "$1 วอน")
-    .replace(/วอน\s+(ครับ|ค่ะ|คะ|นะครับ|นะคะ)/g, "วอน$1");
+    // 숫자 뒤 한국 원화 단위만 자연스럽게 태국어 วอน 으로 변환
+    // 예: 600,000원 -> 600,000วอน
+    .replace(/(\d[\d,]*(?:\.\d+)?)\s*원/g, "$1วอน")
+    .replace(/(\d[\d,]*(?:\.\d+)?)\s*만원/g, "$1หมื่นวอน")
+    .replace(/(\d[\d,]*(?:\.\d+)?)\s*천원/g, "$1พันวอน");
 }
 
 function getConversationKey(event) {
@@ -279,7 +277,7 @@ Core rules:
 - Output Thai only. Do not add explanations.
 - Preserve all names, IDs, amounts, dates, numbers, symbols, formulas, and structured categories.
 - For Korean won amounts, keep the number exactly but translate the Korean unit 원 into Thai วอน. Never leave Korean 원 in Thai output.
-- Example: 600,000원 -> 600,000 วอนครับ
+- Example: 600,000원 -> 600,000วอน
 - Never omit important information.
 - Never summarize.
 - Never invent context that is not written or strongly implied.
