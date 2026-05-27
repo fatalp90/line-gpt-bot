@@ -7,7 +7,11 @@ const MAX_HISTORY_SESSIONS = 500;
 const ignoreKeywords = [
   "110551366954",
   "Important checking",
-  "Check over"
+  "Check over",
+  "커미션",
+  "ค่าคอม",
+  "commission",
+  "Commission"
 ];
 
 const shortDictionary = {
