@@ -124,7 +124,7 @@ function isAdminPatternMessage(text) {
 
   // 체크, 핀, 별, 불꽃 등 어떤 이모지를 쓰든
   // 앞뒤 이모지 + 날짜 또는 관리자 상태 키워드 조합이면 번역 제외
-  if (shortMessage && hasWrapper && (hasDate || hasKeyword)) {
+  if (shortMessage && hasWrapper && hasDate) {
     return true;
   }
 
