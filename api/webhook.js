@@ -216,7 +216,7 @@ async function replyToLine(replyToken, text) {
   );
 }
 
-async function askOpenAI({ systemPrompt, userText, history = [] }) {
+async function askOpenAI({ systemPrompt, userText, history = [], convertWonToThai = false }) {
   const contextText = buildContextText(history);
 
   const messages = [
@@ -259,7 +259,7 @@ async function askOpenAI({ systemPrompt, userText, history = [] }) {
   }
 
   const translated = cleanup(data?.choices?.[0]?.message?.content || "");
-  return normalizeCurrencyForThaiOutput(translated);
+  return convertWonToThai ? normalizeCurrencyForThaiOutput(translated) : translated;
 }
 
 const KO_TO_TH_SYSTEM_PROMPT = `You are a Korean to Thai LINE chat interpreter.
@@ -351,6 +351,7 @@ Core rules:
 - Translate Thai into natural Korean only.
 - Output Korean only. Do not add explanations.
 - Preserve all names, IDs, amounts, dates, numbers, symbols, formulas, and structured categories.
+- When Thai text contains วอน as Korean currency, translate it naturally into Korean as 원. Never leave Thai วอน in Korean output.
 - Never omit important information.
 - Never summarize.
 - Never answer the message.
@@ -375,7 +376,8 @@ async function translateKoToTh(text, history = []) {
   return await askOpenAI({
     systemPrompt: KO_TO_TH_SYSTEM_PROMPT,
     userText: text,
-    history
+    history,
+    convertWonToThai: true
   });
 }
 
@@ -383,7 +385,8 @@ async function translateThToKo(text, history = []) {
   return await askOpenAI({
     systemPrompt: TH_TO_KO_SYSTEM_PROMPT,
     userText: text,
-    history
+    history,
+    convertWonToThai: false
   });
 }
 
