@@ -102,7 +102,7 @@ function isMentionOnlyMessage(text) {
   if (/[?!?.,。！？]/.test(clean)) return false;
   if (clean.length > 40) return false;
 
-  return /^@[\p{L}\p{N}_ .\-]+[\p{Emoji_Presentation}\p{Extended_Pictographic}]?$/u.test(clean);
+  return /^@[\p{L}\p{M}\p{N}_ .\-]+[\p{Emoji_Presentation}\p{Extended_Pictographic}]?$/u.test(clean);
 }
 
 function hasRepeatedWrapperEmoji(text) {
