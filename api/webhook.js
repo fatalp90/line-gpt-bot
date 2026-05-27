@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.5";
 const MAX_HISTORY_ITEMS = 8;
 const MAX_HISTORY_SESSIONS = 500;
 
