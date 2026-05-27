@@ -1,11 +1,11 @@
 import axios from "axios";
 
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.5";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4";
 const MAX_HISTORY_ITEMS = 20;
 const MAX_HISTORY_SESSIONS = 500;
 
 const ignoreKeywords = [
-  "1,000,000",
+  "110551366954",
   "Important checking",
   "Check over"
 ];
@@ -25,22 +25,23 @@ const shortDictionary = {
 const adminStatusKeywords = [
   "รอยอด",
   "รอ ยอด",
-  "รอเงิน",
-  "รอ เงิน",
-  "รอโอน",
-  "รอ โอน",
-  "ยอด",
   "งวด",
   "งวดถัดไป",
-  "ปิดยอด",
-  "ปิด ยอด",
+  "ยอด",
   "ยอดวันนี้",
   "ยอดพรุ่งนี้",
-  "ยอดถัดไป",
-  "รอบ",
-  "คิว",
+  "ปิดยอด",
+  "เคลียร์ยอด",
+  "โอนยอด",
   "นัดยอด",
-  "นัด ยอด"
+  "ชำระ",
+  "จ่าย",
+  "ครบ",
+  "ค้าง",
+  "เลื่อน",
+  "ต่อยอด",
+  "รียอด",
+  "รี ยอด"
 ];
 
 const conversationStore = new Map();
@@ -78,106 +79,58 @@ function isDecorationOnly(text) {
   return !/[ㄱ-ㅎㅏ-ㅣ가-힣\u0E00-\u0E7F0-9]/.test(removedEnglish);
 }
 
-function stripEmojiAndSymbols(text) {
-  return normalizeText(text)
-    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F]/gu, "")
-    .replace(/[✅✔☑📌📍🔴🟢🟡🔵⭐🌟✨💰💸💵💳🧾📅📆⏰⏳⌛➡️➜➤▶️◀️🔻🔺]/gu, "")
-    .replace(/[\[\]{}()<>:：,，.。!！?？|\\_*~`'"“”‘’+＝=]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+function isMentionOnlyMessage(text) {
+  const clean = normalizeText(text);
+  if (!clean.startsWith("@")) return false;
+
+  // @팀, @ยูนา, @Dex Loan, @Melalada👑 처럼 멘션만 있는 경우만 무시
+  // 멘션 뒤에 실제 문장부호/문장이 붙으면 번역 대상으로 남김
+  if (/[?!?.,。！？]/.test(clean)) return false;
+  if (clean.length > 40) return false;
+
+  return /^@[\p{L}\p{N}_ .\-]+[\p{Emoji_Presentation}\p{Extended_Pictographic}]?$/u.test(clean);
 }
 
-function hasEmojiOrDecorativeSymbol(text) {
-  return /[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F]/u.test(text || "") ||
-    /[✅✔☑📌📍🔴🟢🟡🔵⭐🌟✨💰💸💵💳🧾📅📆⏰⏳⌛➡️➜➤▶️◀️🔻🔺]/u.test(text || "");
+function hasRepeatedWrapperEmoji(text) {
+  const clean = normalizeText(text);
+  const compact = clean.replace(/\s+/g, " ").trim();
+
+  // 어떤 이모지를 쓰든 앞뒤로 같은 스타일의 이모지가 감싸는 관리자 패턴 감지
+  // 예: 📌📌 รอยอด 📌📌, ✅✅26/05✅✅, 🔥 งวดถัดไป 02/06 🔥
+  return /^[^\p{L}\p{N}]+\s*.+?\s*[^\p{L}\p{N}]+$/u.test(compact);
 }
 
 function hasDateLikePattern(text) {
-  const clean = normalizeText(text);
-  return /\d{1,2}[\/\-\.월]\d{1,2}(?:[\/\-\.년]\d{2,4})?/.test(clean) ||
-    /\d{1,2}\s*(일|วัน|โมง|น\.|시|분)/.test(clean);
+  const clean = normalizeText(text).replace(/\s+/g, "");
+  return /\d{1,2}[\/\-.]\d{1,2}(?:[\/\-.]\d{2,4})?/.test(clean);
 }
 
-function isMostlyScheduleCode(text) {
-  const clean = normalizeText(text);
-  if (!clean) return false;
-
-  const compact = clean.replace(/\s+/g, "");
-  const stripped = stripEmojiAndSymbols(clean).replace(/\s+/g, "");
-
-  if (hasDateLikePattern(clean) && /^[\d\/\-\.]+$/.test(stripped)) {
-    return true;
-  }
-
-  if (hasDateLikePattern(clean) && /^[\u0E00-\u0E7Fa-zA-Z\d\/\-\.]+$/.test(stripped) && compact.length <= 40) {
-    return true;
-  }
-
-  return false;
+function hasAdminStatusKeyword(text) {
+  const clean = normalizeText(text).toLowerCase();
+  return adminStatusKeywords.some((keyword) => clean.includes(keyword.toLowerCase()));
 }
 
 function isAdminPatternMessage(text) {
   const clean = normalizeText(text);
   if (!clean) return false;
 
-  const hasDecor = hasEmojiOrDecorativeSymbol(clean);
-  const stripped = stripEmojiAndSymbols(clean);
-  const compactStripped = stripped.replace(/\s+/g, "");
+  const shortMessage = clean.length <= 80;
+  const hasWrapper = hasRepeatedWrapperEmoji(clean);
+  const hasDate = hasDateLikePattern(clean);
+  const hasKeyword = hasAdminStatusKeyword(clean);
 
-  if (!hasDecor) return false;
-
-  // 체크/핀/기타 이모지 + 날짜/회차 패턴은 번역 제외
-  if (isMostlyScheduleCode(clean)) return true;
-
-  // 이모지로 감싼 짧은 관리자 상태 메모는 번역 제외
-  const hasAdminKeyword = adminStatusKeywords.some((keyword) =>
-    stripped.toLowerCase().includes(keyword.toLowerCase())
-  );
-
-  if (hasAdminKeyword && stripped.length <= 45) {
+  // 체크, 핀, 별, 불꽃 등 어떤 이모지를 쓰든
+  // 앞뒤 이모지 + 날짜 또는 관리자 상태 키워드 조합이면 번역 제외
+  if (shortMessage && hasWrapper && (hasDate || hasKeyword)) {
     return true;
   }
 
-  // 이모지 + 짧은 태국어/숫자 조합이며 일반 문장이라기보다 상태 라벨에 가까운 경우 제외
-  const wordCount = stripped.split(/\s+/).filter(Boolean).length;
-  const hasThai = containsThai(stripped);
-  const hasKo = containsKorean(stripped);
-
-  if (hasThai && !hasKo && wordCount <= 4 && stripped.length <= 35 && /ยอด|งวด|โอน|ปิด|รอ|นัด|คิว|รอบ/.test(stripped)) {
-    return true;
-  }
-
-  // 이모지만 걷어냈을 때 날짜/숫자 위주이면 제외
-  if (compactStripped && /^[\d\/\-\.]+$/.test(compactStripped)) {
+  // 날짜 중심 일정 알림: ✅ 26/05, 🔔 02/06 등
+  if (shortMessage && hasDate && /^[^\p{L}\p{N}]?\s*[\u0E00-\u0E7Fa-zA-Z0-9\s\/\-.]+\s*[^\p{L}\p{N}]?$/u.test(clean)) {
     return true;
   }
 
   return false;
-}
-
-
-function isMentionOnlyMessage(text) {
-  const clean = normalizeText(text);
-  if (!clean) return false;
-  if (!clean.startsWith("@")) return false;
-  if (clean.includes("\n")) return false;
-  if (clean.length > 40) return false;
-
-  // 문장처럼 보이는 기호가 있으면 멘션-only로 보지 않음
-  if (/[?!?.。,，:：]/.test(clean)) return false;
-
-  const withoutAt = clean.slice(1).trim();
-  if (!withoutAt) return false;
-
-  const parts = withoutAt.split(/\s+/).filter(Boolean);
-  if (parts.length === 1) return true;
-
-  // @Dex Loan 처럼 영어 표시명에 띄어쓰기가 있는 경우는 멘션-only로 처리
-  // 단, @유나 입금확인 / @ทีม ลูกค้า... 처럼 한국어·태국어 실제 문장이 붙은 경우는 번역 대상으로 둠
-  const restAfterFirst = parts.slice(1).join(" ");
-  if (/[가-힣ㄱ-ㅎㅏ-ㅣ\u0E00-\u0E7F]/.test(restAfterFirst)) return false;
-
-  return parts.length <= 3;
 }
 
 function shouldIgnoreMessage(text) {
@@ -187,19 +140,9 @@ function shouldIgnoreMessage(text) {
     if (clean.includes(keyword)) return true;
   }
 
-  // 멘션만 단독으로 있는 메시지는 번역하지 않음
-  // 예: @팀, @ยูนา, @Dex Loan
   if (isMentionOnlyMessage(clean)) return true;
-
-  // 관리자들이 체크, 핀 등 다양한 이모지로 표시하는 상환/일정/상태 패턴 메시지는 번역하지 않음
   if (isAdminPatternMessage(clean)) return true;
-
-  // 영어만 있는 메시지는 무시
-  // 예: SUMALEE JUTTANO, @Dex Loan
-  // 단, @Dex Loan บอสช้า 처럼 태국어/한국어가 함께 있으면 번역함
   if (isEnglishOnly(clean)) return true;
-
-  // 장식/이모지만 있는 메시지는 무시
   if (isDecorationOnly(clean)) return true;
 
   return false;
@@ -297,7 +240,7 @@ async function askOpenAI({ systemPrompt, userText, history = [] }) {
     body: JSON.stringify({
       model: OPENAI_MODEL,
       messages,
-      max_completion_tokens: 1500
+      max_completion_tokens: 1200
     })
   });
 
@@ -436,19 +379,10 @@ async function translateThToKo(text, history = []) {
 
 async function translateText(text, conversationKey) {
   const history = getHistory(conversationKey);
+  const hasKorean = containsKorean(text);
+  const hasThai = containsThai(text);
 
-  const hasKo = containsKorean(text);
-  const hasTh = containsThai(text);
-
-  if (hasKo && !hasTh) {
-    return await translateKoToTh(text, history);
-  }
-
-  if (hasTh && !hasKo) {
-    return await translateThToKo(text, history);
-  }
-
-  if (hasKo && hasTh) {
+  if (hasKorean && hasThai) {
     const koreanCount = (text.match(/[가-힣ㄱ-ㅎㅏ-ㅣ]/g) || []).length;
     const thaiCount = (text.match(/[\u0E00-\u0E7F]/g) || []).length;
 
@@ -456,6 +390,14 @@ async function translateText(text, conversationKey) {
       return await translateKoToTh(text, history);
     }
 
+    return await translateThToKo(text, history);
+  }
+
+  if (hasKorean) {
+    return await translateKoToTh(text, history);
+  }
+
+  if (hasThai) {
     return await translateThToKo(text, history);
   }
 
@@ -482,7 +424,7 @@ export default async function handler(req, res) {
       const text = normalizeText(event.message.text);
       if (!text) continue;
 
-      // ignore repetitive/system/decorative/admin schedule messages
+      // ignore repetitive/system/decorative/admin-pattern messages
       if (shouldIgnoreMessage(text)) {
         continue;
       }
