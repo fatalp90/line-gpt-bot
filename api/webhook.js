@@ -22,6 +22,27 @@ const shortDictionary = {
   "맞아요": "ใช่ครับ"
 };
 
+const adminStatusKeywords = [
+  "รอยอด",
+  "รอ ยอด",
+  "รอเงิน",
+  "รอ เงิน",
+  "รอโอน",
+  "รอ โอน",
+  "ยอด",
+  "งวด",
+  "งวดถัดไป",
+  "ปิดยอด",
+  "ปิด ยอด",
+  "ยอดวันนี้",
+  "ยอดพรุ่งนี้",
+  "ยอดถัดไป",
+  "รอบ",
+  "คิว",
+  "นัดยอด",
+  "นัด ยอด"
+];
+
 const conversationStore = new Map();
 
 function normalizeText(text) {
@@ -57,23 +78,81 @@ function isDecorationOnly(text) {
   return !/[ㄱ-ㅎㅏ-ㅣ가-힣\u0E00-\u0E7F0-9]/.test(removedEnglish);
 }
 
-function isCheckmarkScheduleMessage(text) {
+function stripEmojiAndSymbols(text) {
+  return normalizeText(text)
+    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F]/gu, "")
+    .replace(/[✅✔☑📌📍🔴🟢🟡🔵⭐🌟✨💰💸💵💳🧾📅📆⏰⏳⌛➡️➜➤▶️◀️🔻🔺]/gu, "")
+    .replace(/[\[\]{}()<>:：,，.。!！?？|\\_*~`'"“”‘’+＝=]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasEmojiOrDecorativeSymbol(text) {
+  return /[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F]/u.test(text || "") ||
+    /[✅✔☑📌📍🔴🟢🟡🔵⭐🌟✨💰💸💵💳🧾📅📆⏰⏳⌛➡️➜➤▶️◀️🔻🔺]/u.test(text || "");
+}
+
+function hasDateLikePattern(text) {
+  const clean = normalizeText(text);
+  return /\d{1,2}[\/\-\.월]\d{1,2}(?:[\/\-\.년]\d{2,4})?/.test(clean) ||
+    /\d{1,2}\s*(일|วัน|โมง|น\.|시|분)/.test(clean);
+}
+
+function isMostlyScheduleCode(text) {
   const clean = normalizeText(text);
   if (!clean) return false;
 
-  if (!clean.includes("✅") && !clean.includes("✔")) {
-    return false;
+  const compact = clean.replace(/\s+/g, "");
+  const stripped = stripEmojiAndSymbols(clean).replace(/\s+/g, "");
+
+  if (hasDateLikePattern(clean) && /^[\d\/\-\.]+$/.test(stripped)) {
+    return true;
   }
 
-  const noSpace = clean.replace(/\s+/g, "");
-  const hasDate = /\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?/.test(noSpace);
+  if (hasDateLikePattern(clean) && /^[\u0E00-\u0E7Fa-zA-Z\d\/\-\.]+$/.test(stripped) && compact.length <= 40) {
+    return true;
+  }
 
-  if (!hasDate) return false;
+  return false;
+}
 
-  const allowedScheduleChars = /^[✅✔\u0E00-\u0E7Fa-zA-Z0-9\s\/\-_.:]+$/u;
-  if (!allowedScheduleChars.test(clean)) return false;
+function isAdminPatternMessage(text) {
+  const clean = normalizeText(text);
+  if (!clean) return false;
 
-  return true;
+  const hasDecor = hasEmojiOrDecorativeSymbol(clean);
+  const stripped = stripEmojiAndSymbols(clean);
+  const compactStripped = stripped.replace(/\s+/g, "");
+
+  if (!hasDecor) return false;
+
+  // 체크/핀/기타 이모지 + 날짜/회차 패턴은 번역 제외
+  if (isMostlyScheduleCode(clean)) return true;
+
+  // 이모지로 감싼 짧은 관리자 상태 메모는 번역 제외
+  const hasAdminKeyword = adminStatusKeywords.some((keyword) =>
+    stripped.toLowerCase().includes(keyword.toLowerCase())
+  );
+
+  if (hasAdminKeyword && stripped.length <= 45) {
+    return true;
+  }
+
+  // 이모지 + 짧은 태국어/숫자 조합이며 일반 문장이라기보다 상태 라벨에 가까운 경우 제외
+  const wordCount = stripped.split(/\s+/).filter(Boolean).length;
+  const hasThai = containsThai(stripped);
+  const hasKo = containsKorean(stripped);
+
+  if (hasThai && !hasKo && wordCount <= 4 && stripped.length <= 35 && /ยอด|งวด|โอน|ปิด|รอ|นัด|คิว|รอบ/.test(stripped)) {
+    return true;
+  }
+
+  // 이모지만 걷어냈을 때 날짜/숫자 위주이면 제외
+  if (compactStripped && /^[\d\/\-\.]+$/.test(compactStripped)) {
+    return true;
+  }
+
+  return false;
 }
 
 function shouldIgnoreMessage(text) {
@@ -83,7 +162,8 @@ function shouldIgnoreMessage(text) {
     if (clean.includes(keyword)) return true;
   }
 
-  if (isCheckmarkScheduleMessage(clean)) return true;
+  // 관리자들이 체크, 핀 등 다양한 이모지로 표시하는 상환/일정/상태 패턴 메시지는 번역하지 않음
+  if (isAdminPatternMessage(clean)) return true;
 
   // 영어만 있는 메시지는 무시
   // 예: SUMALEE JUTTANO, @Dex Loan
@@ -325,43 +405,29 @@ async function translateThToKo(text, history = []) {
   });
 }
 
-function getDominantLanguage(text) {
-  const koreanCount = (text.match(/[가-힣ㄱ-ㅎㅏ-ㅣ]/g) || []).length;
-  const thaiCount = (text.match(/[\u0E00-\u0E7F]/g) || []).length;
-
-  if (koreanCount > thaiCount) return "ko";
-  if (thaiCount > koreanCount) return "th";
-
-  if (containsKorean(text)) return "ko";
-  if (containsThai(text)) return "th";
-
-  return "unknown";
-}
-
 async function translateText(text, conversationKey) {
   const history = getHistory(conversationKey);
 
-  const hasKorean = containsKorean(text);
-  const hasThai = containsThai(text);
+  const hasKo = containsKorean(text);
+  const hasTh = containsThai(text);
 
-  if (hasKorean && !hasThai) {
+  if (hasKo && !hasTh) {
     return await translateKoToTh(text, history);
   }
 
-  if (hasThai && !hasKorean) {
+  if (hasTh && !hasKo) {
     return await translateThToKo(text, history);
   }
 
-  if (hasKorean && hasThai) {
-    const dominantLanguage = getDominantLanguage(text);
+  if (hasKo && hasTh) {
+    const koreanCount = (text.match(/[가-힣ㄱ-ㅎㅏ-ㅣ]/g) || []).length;
+    const thaiCount = (text.match(/[\u0E00-\u0E7F]/g) || []).length;
 
-    if (dominantLanguage === "ko") {
+    if (koreanCount >= thaiCount) {
       return await translateKoToTh(text, history);
     }
 
-    if (dominantLanguage === "th") {
-      return await translateThToKo(text, history);
-    }
+    return await translateThToKo(text, history);
   }
 
   return text;
@@ -379,15 +445,15 @@ export default async function handler(req, res) {
       if (event.type !== "message") continue;
       if (event.message.type !== "text") continue;
 
-      // ignore LINE emoji-only messages
-      // Unicode emoji like ✅ is still included in event.message.text and handled by shouldIgnoreMessage.
-      if (event.message.emojis?.length > 0 && !normalizeText(event.message.text)) {
+      // ignore LINE emoji messages
+      if (event.message.emojis?.length > 0) {
         continue;
       }
 
       const text = normalizeText(event.message.text);
       if (!text) continue;
 
+      // ignore repetitive/system/decorative/admin schedule messages
       if (shouldIgnoreMessage(text)) {
         continue;
       }
