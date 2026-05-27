@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4";
-const MAX_HISTORY_ITEMS = 20;
+const MAX_HISTORY_ITEMS = 8;
 const MAX_HISTORY_SESSIONS = 500;
 
 const ignoreKeywords = [
@@ -22,6 +22,24 @@ const shortDictionary = {
   "넹": "ครับ",
   "아니요": "ไม่ครับ",
   "맞아요": "ใช่ครับ"
+};
+
+
+const thaiShortDictionary = {
+  "โอนเงินมาครับ": "입금하세요",
+  "โอนเงินครับ": "입금하세요",
+  "โอนมาครับ": "입금하세요",
+  "ชำระคืนครับ": "상환하세요",
+  "ชำระครับ": "상환하세요",
+  "จ่ายเงินครับ": "입금하세요",
+  "ส่งสลิปครับ": "슬립 올려주세요",
+  "รอสักครู่ครับ": "잠시만 기다려 주세요",
+  "ครับ": "네",
+  "ใช่ครับ": "맞아요",
+  "ไม่ครับ": "아니요",
+  "โอเคครับ": "알겠습니다",
+  "ขอบคุณครับ": "감사합니다",
+  "ขอโทษครับ": "죄송합니다"
 };
 
 const adminStatusKeywords = [
@@ -442,6 +460,9 @@ async function translateKoToTh(text, history = []) {
 }
 
 async function translateThToKo(text, history = []) {
+  const direct = thaiShortDictionary[text];
+  if (direct) return direct;
+
   return await askOpenAI({
     systemPrompt: TH_TO_KO_SYSTEM_PROMPT,
     userText: text,
