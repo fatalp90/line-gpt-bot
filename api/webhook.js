@@ -155,12 +155,41 @@ function isAdminPatternMessage(text) {
   return false;
 }
 
+
+function isMentionOnlyMessage(text) {
+  const clean = normalizeText(text);
+  if (!clean) return false;
+  if (!clean.startsWith("@")) return false;
+  if (clean.includes("\n")) return false;
+  if (clean.length > 40) return false;
+
+  // 문장처럼 보이는 기호가 있으면 멘션-only로 보지 않음
+  if (/[?!?.。,，:：]/.test(clean)) return false;
+
+  const withoutAt = clean.slice(1).trim();
+  if (!withoutAt) return false;
+
+  const parts = withoutAt.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return true;
+
+  // @Dex Loan 처럼 영어 표시명에 띄어쓰기가 있는 경우는 멘션-only로 처리
+  // 단, @유나 입금확인 / @ทีม ลูกค้า... 처럼 한국어·태국어 실제 문장이 붙은 경우는 번역 대상으로 둠
+  const restAfterFirst = parts.slice(1).join(" ");
+  if (/[가-힣ㄱ-ㅎㅏ-ㅣ\u0E00-\u0E7F]/.test(restAfterFirst)) return false;
+
+  return parts.length <= 3;
+}
+
 function shouldIgnoreMessage(text) {
   const clean = normalizeText(text);
 
   for (const keyword of ignoreKeywords) {
     if (clean.includes(keyword)) return true;
   }
+
+  // 멘션만 단독으로 있는 메시지는 번역하지 않음
+  // 예: @팀, @ยูนา, @Dex Loan
+  if (isMentionOnlyMessage(clean)) return true;
 
   // 관리자들이 체크, 핀 등 다양한 이모지로 표시하는 상환/일정/상태 패턴 메시지는 번역하지 않음
   if (isAdminPatternMessage(clean)) return true;
