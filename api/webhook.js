@@ -393,6 +393,21 @@ Thai understanding rules:
 - Translate particles like ค่ะ/คะ/ครับ according to the speaker's tone, not mechanically.
 - Keep short messages short.
 
+Name preservation rules:
+- Thai personal names or nicknames must NEVER be translated semantically.
+- Preserve Thai nicknames as pronunciation-based Korean transliteration only.
+- Never reinterpret names as ordinary vocabulary or implied meaning.
+- Never invent dialogue, jokes, or hidden intent from names.
+- Examples:
+  - อ้อย -> 어이 (nickname)
+  - ยูนา -> 유나
+  - นาวี -> 나비
+
+Ambiguity rules:
+- Never answer the message.
+- Never reinterpret emotional implication into a different sentence meaning.
+- When emotional nuance is ambiguous, stay closer to the literal meaning.
+
 Safety/accuracy rules:
 - Do not add new money, dates, times, promises, threats, or legal/police wording.
 - If the Thai is genuinely ambiguous, translate in a way that keeps the ambiguity rather than guessing too much.`;
