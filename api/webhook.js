@@ -1,8 +1,8 @@
 import axios from "axios";
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.5";
-const MAX_HISTORY_ITEMS = 10;
-const MAX_HISTORY_SESSIONS = 300;
+const MAX_HISTORY_ITEMS = 20;
+const MAX_HISTORY_SESSIONS = 500;
 
 const ignoreKeywords = [
   "1,000,000",
@@ -57,12 +57,33 @@ function isDecorationOnly(text) {
   return !/[ㄱ-ㅎㅏ-ㅣ가-힣\u0E00-\u0E7F0-9]/.test(removedEnglish);
 }
 
+function isCheckmarkScheduleMessage(text) {
+  const clean = normalizeText(text);
+  if (!clean) return false;
+
+  if (!clean.includes("✅") && !clean.includes("✔")) {
+    return false;
+  }
+
+  const noSpace = clean.replace(/\s+/g, "");
+  const hasDate = /\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?/.test(noSpace);
+
+  if (!hasDate) return false;
+
+  const allowedScheduleChars = /^[✅✔\u0E00-\u0E7Fa-zA-Z0-9\s\/\-_.:]+$/u;
+  if (!allowedScheduleChars.test(clean)) return false;
+
+  return true;
+}
+
 function shouldIgnoreMessage(text) {
   const clean = normalizeText(text);
 
   for (const keyword of ignoreKeywords) {
     if (clean.includes(keyword)) return true;
   }
+
+  if (isCheckmarkScheduleMessage(clean)) return true;
 
   // 영어만 있는 메시지는 무시
   // 예: SUMALEE JUTTANO, @Dex Loan
@@ -167,7 +188,7 @@ async function askOpenAI({ systemPrompt, userText, history = [] }) {
     body: JSON.stringify({
       model: OPENAI_MODEL,
       messages,
-      max_completion_tokens: 1200
+      max_completion_tokens: 1500
     })
   });
 
@@ -304,15 +325,43 @@ async function translateThToKo(text, history = []) {
   });
 }
 
+function getDominantLanguage(text) {
+  const koreanCount = (text.match(/[가-힣ㄱ-ㅎㅏ-ㅣ]/g) || []).length;
+  const thaiCount = (text.match(/[\u0E00-\u0E7F]/g) || []).length;
+
+  if (koreanCount > thaiCount) return "ko";
+  if (thaiCount > koreanCount) return "th";
+
+  if (containsKorean(text)) return "ko";
+  if (containsThai(text)) return "th";
+
+  return "unknown";
+}
+
 async function translateText(text, conversationKey) {
   const history = getHistory(conversationKey);
 
-  if (containsKorean(text)) {
+  const hasKorean = containsKorean(text);
+  const hasThai = containsThai(text);
+
+  if (hasKorean && !hasThai) {
     return await translateKoToTh(text, history);
   }
 
-  if (containsThai(text)) {
+  if (hasThai && !hasKorean) {
     return await translateThToKo(text, history);
+  }
+
+  if (hasKorean && hasThai) {
+    const dominantLanguage = getDominantLanguage(text);
+
+    if (dominantLanguage === "ko") {
+      return await translateKoToTh(text, history);
+    }
+
+    if (dominantLanguage === "th") {
+      return await translateThToKo(text, history);
+    }
   }
 
   return text;
@@ -330,15 +379,15 @@ export default async function handler(req, res) {
       if (event.type !== "message") continue;
       if (event.message.type !== "text") continue;
 
-      // ignore LINE emoji messages
-      if (event.message.emojis?.length > 0) {
+      // ignore LINE emoji-only messages
+      // Unicode emoji like ✅ is still included in event.message.text and handled by shouldIgnoreMessage.
+      if (event.message.emojis?.length > 0 && !normalizeText(event.message.text)) {
         continue;
       }
 
       const text = normalizeText(event.message.text);
       if (!text) continue;
 
-      // ignore repetitive/system/decorative messages
       if (shouldIgnoreMessage(text)) {
         continue;
       }
