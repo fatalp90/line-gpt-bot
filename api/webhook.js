@@ -155,43 +155,15 @@ function cleanup(text) {
     .trim();
 }
 
-function protectPreservedTokens(text) {
-  const tokens = [];
-  let protectedText = String(text || "");
-
-  const patterns = [
-    // Korean won / currency amount preservation
-    /₩\s*\d[\d,]*(?:\.\d+)?/g,
-    /\d[\d,]*(?:\.\d+)?\s*원/g,
-    /\d[\d,]*(?:\.\d+)?\s*만원/g,
-    /\d[\d,]*(?:\.\d+)?\s*천원/g,
-
-    // Common numeric units that should not be translated or rewritten
-    /\d[\d,]*(?:\.\d+)?\s*%/g,
-    /\d[\d,]*(?:\.\d+)?\s*KRW/gi
-  ];
-
-  function saveToken(match) {
-    const key = `__PRESERVE_TOKEN_${tokens.length}__`;
-    tokens.push({ key, value: match });
-    return key;
-  }
-
-  for (const pattern of patterns) {
-    protectedText = protectedText.replace(pattern, saveToken);
-  }
-
-  return { protectedText, tokens };
-}
-
-function restorePreservedTokens(text, tokens = []) {
-  let restoredText = String(text || "");
-
-  for (const { key, value } of tokens) {
-    restoredText = restoredText.split(key).join(value);
-  }
-
-  return restoredText;
+function normalizeCurrencyForThaiOutput(text) {
+  return String(text || "")
+    // 태국어 번역 결과에 한글 원이 남으면 태국어 วอน 으로 변환
+    .replace(/(\d[\d,]*(?:\.\d+)?)\s*원/g, "$1 วอน")
+    .replace(/(\d[\d,]*(?:\.\d+)?)\s*만원/g, "$1 หมื่นวอน")
+    .replace(/(\d[\d,]*(?:\.\d+)?)\s*천원/g, "$1 พันวอน")
+    // วอน 앞뒤 띄어쓰기 정리
+    .replace(/(\d[\d,]*(?:\.\d+)?)\s*วอน/g, "$1 วอน")
+    .replace(/วอน\s+(ครับ|ค่ะ|คะ|นะครับ|นะคะ)/g, "วอน$1");
 }
 
 function getConversationKey(event) {
@@ -247,7 +219,6 @@ async function replyToLine(replyToken, text) {
 }
 
 async function askOpenAI({ systemPrompt, userText, history = [] }) {
-  const { protectedText, tokens } = protectPreservedTokens(userText);
   const contextText = buildContextText(history);
 
   const messages = [
@@ -266,7 +237,7 @@ async function askOpenAI({ systemPrompt, userText, history = [] }) {
 
   messages.push({
     role: "user",
-    content: `새 메시지:\n${protectedText}`
+    content: `새 메시지:\n${userText}`
   });
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -290,7 +261,7 @@ async function askOpenAI({ systemPrompt, userText, history = [] }) {
   }
 
   const translated = cleanup(data?.choices?.[0]?.message?.content || "");
-  return restorePreservedTokens(translated, tokens);
+  return normalizeCurrencyForThaiOutput(translated);
 }
 
 const KO_TO_TH_SYSTEM_PROMPT = `You are a Korean to Thai LINE chat interpreter.
@@ -307,8 +278,8 @@ Core rules:
 - Translate Korean into natural Thai only.
 - Output Thai only. Do not add explanations.
 - Preserve all names, IDs, amounts, dates, numbers, symbols, formulas, and structured categories.
-- If the message contains placeholders like __PRESERVE_TOKEN_0__, copy them exactly without translating or changing them.
-- If the message contains placeholders like __PRESERVE_TOKEN_0__, copy them exactly without translating or changing them.
+- For Korean won amounts, keep the number exactly but translate the Korean unit 원 into Thai วอน. Never leave Korean 원 in Thai output.
+- Example: 600,000원 -> 600,000 วอนครับ
 - Never omit important information.
 - Never summarize.
 - Never invent context that is not written or strongly implied.
