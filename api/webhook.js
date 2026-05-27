@@ -9,8 +9,7 @@ const ignoreKeywords = [
   "Important checking",
   "Check over",
   "커미션",
-  "ค่าคอม",
-  "commission",
+    "commission",
   "Commission"
 ];
 
