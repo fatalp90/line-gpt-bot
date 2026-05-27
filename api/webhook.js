@@ -155,6 +155,45 @@ function cleanup(text) {
     .trim();
 }
 
+function protectPreservedTokens(text) {
+  const tokens = [];
+  let protectedText = String(text || "");
+
+  const patterns = [
+    // Korean won / currency amount preservation
+    /₩\s*\d[\d,]*(?:\.\d+)?/g,
+    /\d[\d,]*(?:\.\d+)?\s*원/g,
+    /\d[\d,]*(?:\.\d+)?\s*만원/g,
+    /\d[\d,]*(?:\.\d+)?\s*천원/g,
+
+    // Common numeric units that should not be translated or rewritten
+    /\d[\d,]*(?:\.\d+)?\s*%/g,
+    /\d[\d,]*(?:\.\d+)?\s*KRW/gi
+  ];
+
+  function saveToken(match) {
+    const key = `__PRESERVE_TOKEN_${tokens.length}__`;
+    tokens.push({ key, value: match });
+    return key;
+  }
+
+  for (const pattern of patterns) {
+    protectedText = protectedText.replace(pattern, saveToken);
+  }
+
+  return { protectedText, tokens };
+}
+
+function restorePreservedTokens(text, tokens = []) {
+  let restoredText = String(text || "");
+
+  for (const { key, value } of tokens) {
+    restoredText = restoredText.split(key).join(value);
+  }
+
+  return restoredText;
+}
+
 function getConversationKey(event) {
   const source = event?.source || {};
   return source.groupId || source.roomId || source.userId || "default";
@@ -208,6 +247,7 @@ async function replyToLine(replyToken, text) {
 }
 
 async function askOpenAI({ systemPrompt, userText, history = [] }) {
+  const { protectedText, tokens } = protectPreservedTokens(userText);
   const contextText = buildContextText(history);
 
   const messages = [
@@ -226,7 +266,7 @@ async function askOpenAI({ systemPrompt, userText, history = [] }) {
 
   messages.push({
     role: "user",
-    content: `새 메시지:\n${userText}`
+    content: `새 메시지:\n${protectedText}`
   });
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -249,7 +289,8 @@ async function askOpenAI({ systemPrompt, userText, history = [] }) {
     throw new Error("OpenAI Error");
   }
 
-  return cleanup(data?.choices?.[0]?.message?.content || "");
+  const translated = cleanup(data?.choices?.[0]?.message?.content || "");
+  return restorePreservedTokens(translated, tokens);
 }
 
 const KO_TO_TH_SYSTEM_PROMPT = `You are a Korean to Thai LINE chat interpreter.
@@ -266,6 +307,8 @@ Core rules:
 - Translate Korean into natural Thai only.
 - Output Thai only. Do not add explanations.
 - Preserve all names, IDs, amounts, dates, numbers, symbols, formulas, and structured categories.
+- If the message contains placeholders like __PRESERVE_TOKEN_0__, copy them exactly without translating or changing them.
+- If the message contains placeholders like __PRESERVE_TOKEN_0__, copy them exactly without translating or changing them.
 - Never omit important information.
 - Never summarize.
 - Never invent context that is not written or strongly implied.
