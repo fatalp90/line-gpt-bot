@@ -192,6 +192,21 @@ function normalizeCurrencyForThaiOutput(text) {
     .replace(/(\d[\d,]*(?:\.\d+)?)\s*천원/g, "$1พันวอน");
 }
 
+function normalizeKoreanFragmentsInThaiOutput(text) {
+  return String(text || "")
+    // 모델이 금액 뒤 조사/연결어를 보존 대상으로 오해해서 한국어를 남기는 경우 보정
+    // 예: 195,000วอน 기준으로 -> 기준 195,000วอน
+    .replace(/(\d[\d,]*(?:\.\d+)?\s*วอน)\s*기준으로/g, "โดยอิงจากยอด $1")
+    .replace(/(\d[\d,]*(?:\.\d+)?\s*วอน)\s*기준/g, "โดยอิงจากยอด $1")
+    .replace(/기준으로/g, "โดยอิงจาก")
+    .replace(/기준/g, "เกณฑ์")
+    .replace(/정상납부/g, "ชำระตามปกติ")
+    .replace(/정상 납부/g, "ชำระตามปกติ")
+    .replace(/입니다/g, "ครับ")
+    .replace(/이에요/g, "ครับ")
+    .replace(/예요/g, "ครับ");
+}
+
 function getConversationKey(event) {
   const source = event?.source || {};
   return source.groupId || source.roomId || source.userId || "default";
@@ -287,7 +302,7 @@ async function askOpenAI({ systemPrompt, userText, history = [], convertWonToTha
   }
 
   const translated = cleanup(data?.choices?.[0]?.message?.content || "");
-  return convertWonToThai ? normalizeCurrencyForThaiOutput(translated) : translated;
+  return convertWonToThai ? normalizeKoreanFragmentsInThaiOutput(normalizeCurrencyForThaiOutput(translated)) : translated;
 }
 
 const KO_TO_TH_SYSTEM_PROMPT = `You are a Korean to Thai LINE chat interpreter.
@@ -306,6 +321,9 @@ Core rules:
 - Preserve all names, IDs, amounts, dates, numbers, symbols, formulas, and structured categories.
 - For Korean won amounts, keep the number exactly but translate the Korean unit 원 into Thai วอน. Never leave Korean 원 in Thai output.
 - Example: 600,000원 -> 600,000วอน
+- Do not preserve Korean connector words or particles around money amounts. Translate them naturally into Thai.
+- Especially translate 기준으로 as โดยอิงจาก / 기준 as เกณฑ์ or rewrite naturally depending on context.
+- Example: 195,000원을 4회 정상납부 기준으로 780,000원 입니다 -> ถ้าชำระตามปกติ 4 งวด งวดละ 195,000วอน รวมเป็น 780,000วอนครับ
 - Never omit important information.
 - Never summarize.
 - Never invent context that is not written or strongly implied.
