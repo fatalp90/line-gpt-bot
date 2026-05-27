@@ -98,8 +98,9 @@ function hasRepeatedWrapperEmoji(text) {
   const clean = normalizeText(text);
   const compact = clean.replace(/\s+/g, " ").trim();
 
-  // 어떤 이모지를 쓰든 앞뒤로 같은 스타일의 이모지가 감싸는 관리자 패턴 감지
-  // 예: 📌📌 รอยอด 📌📌, ✅✅26/05✅✅, 🔥 งวดถัดไป 02/06 🔥
+  // 앞뒤가 이모지/기호로 감싸진 짧은 관리자 표기만 감지
+  // 예: 📌 31/5 📌, ✅✅26/05✅✅, 🔥 งวดถัดไป 02/06 🔥
+  // 일반 문장 "นัด31/5 ค่ะบอส" 는 감지하지 않음
   return /^[^\p{L}\p{N}]+\s*.+?\s*[^\p{L}\p{N}]+$/u.test(compact);
 }
 
@@ -120,16 +121,10 @@ function isAdminPatternMessage(text) {
   const shortMessage = clean.length <= 80;
   const hasWrapper = hasRepeatedWrapperEmoji(clean);
   const hasDate = hasDateLikePattern(clean);
-  const hasKeyword = hasAdminStatusKeyword(clean);
 
-  // 체크, 핀, 별, 불꽃 등 어떤 이모지를 쓰든
-  // 앞뒤 이모지 + 날짜 또는 관리자 상태 키워드 조합이면 번역 제외
+  // 날짜가 있어도 일반 대화형 문장은 번역 허용
+  // 차단 조건은 "이모지/기호 감싸기 + 날짜" 조합으로 제한
   if (shortMessage && hasWrapper && hasDate) {
-    return true;
-  }
-
-  // 날짜 중심 일정 알림: ✅ 26/05, 🔔 02/06 등
-  if (shortMessage && hasDate && /^[^\p{L}\p{N}]?\s*[\u0E00-\u0E7Fa-zA-Z0-9\s\/\-.]+\s*[^\p{L}\p{N}]?$/u.test(clean)) {
     return true;
   }
 
@@ -418,11 +413,6 @@ export default async function handler(req, res) {
     try {
       if (event.type !== "message") continue;
       if (event.message.type !== "text") continue;
-
-      // ignore LINE emoji messages
-      if (event.message.emojis?.length > 0) {
-        continue;
-      }
 
       const text = normalizeText(event.message.text);
       if (!text) continue;
