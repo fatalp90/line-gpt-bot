@@ -21,25 +21,13 @@ const shortDictionary = {
   "넵": "ครับ",
   "넹": "ครับ",
   "아니요": "ไม่ครับ",
-  "맞아요": "ใช่ครับ"
-};
-
-
-const thaiShortDictionary = {
-  "โอนเงินมาครับ": "입금하세요",
-  "โอนเงินครับ": "입금하세요",
-  "โอนมาครับ": "입금하세요",
-  "ชำระคืนครับ": "상환하세요",
-  "ชำระครับ": "상환하세요",
-  "จ่ายเงินครับ": "입금하세요",
-  "ส่งสลิปครับ": "슬립 올려주세요",
-  "รอสักครู่ครับ": "잠시만 기다려 주세요",
-  "ครับ": "네",
-  "ใช่ครับ": "맞아요",
-  "ไม่ครับ": "아니요",
-  "โอเคครับ": "알겠습니다",
-  "ขอบคุณครับ": "감사합니다",
-  "ขอโทษครับ": "죄송합니다"
+  "맞아요": "ใช่ครับ",
+  "ㅋㅋ": "555",
+  "ㅋㅋㅋ": "555",
+  "ㅋㅋㅋㅋ": "5555",
+  "ㅋㅋㅋㅋㅋ": "55555",
+  "ㅎㅎ": "555",
+  "ㅎㅎㅎ": "5555"
 };
 
 const adminStatusKeywords = [
@@ -120,7 +108,7 @@ function isMentionOnlyMessage(text) {
   if (/[?!?.,。！？]/.test(clean)) return false;
   if (clean.length > 40) return false;
 
-  return /^@[\p{L}\p{M}\p{N}_ .\-]+[\p{Emoji_Presentation}\p{Extended_Pictographic}]?$/u.test(clean);
+  return /^@[\p{L}\p{N}_ .\-]+[\p{Emoji_Presentation}\p{Extended_Pictographic}]?$/u.test(clean);
 }
 
 function hasRepeatedWrapperEmoji(text) {
@@ -463,12 +451,23 @@ async function translateThToKo(text, history = []) {
   const direct = thaiShortDictionary[text];
   if (direct) return direct;
 
-  return await askOpenAI({
+  let translated = await askOpenAI({
     systemPrompt: TH_TO_KO_SYSTEM_PROMPT,
     userText: text,
     history,
     convertWonToThai: false
   });
+
+  if (containsThai(translated) && !containsKorean(translated)) {
+    translated = await askOpenAI({
+      systemPrompt: TH_TO_KO_SYSTEM_PROMPT + "\nIMPORTANT: You MUST translate Thai into Korean. Never output Thai-only text.",
+      userText: text,
+      history,
+      convertWonToThai: false
+    });
+  }
+
+  return translated;
 }
 
 async function translateText(text, conversationKey) {
