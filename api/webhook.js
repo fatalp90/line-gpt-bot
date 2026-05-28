@@ -447,7 +447,23 @@ Safety/accuracy rules:
 - Do not add new money, dates, times, promises, threats, or legal/police wording.
 - If the Thai is genuinely ambiguous, translate in a way that keeps the ambiguity rather than guessing too much.`;
 
+
+function isKoreanLaughOnly(text) {
+  const clean = normalizeText(text);
+  return /^[ㅋㅎ]+$/.test(clean);
+}
+
+function translateKoreanLaughToThai(text) {
+  const clean = normalizeText(text);
+  const length = Math.max(3, Math.min(clean.length, 12));
+  return "5".repeat(length);
+}
+
 async function translateKoToTh(text, history = []) {
+  if (isKoreanLaughOnly(text)) {
+    return translateKoreanLaughToThai(text);
+  }
+
   const direct = shortDictionary[text];
   if (direct) return direct;
 
@@ -463,12 +479,24 @@ async function translateThToKo(text, history = []) {
   const direct = thaiShortDictionary[text];
   if (direct) return direct;
 
-  return await askOpenAI({
+  let translated = await askOpenAI({
     systemPrompt: TH_TO_KO_SYSTEM_PROMPT,
     userText: text,
     history,
     convertWonToThai: false
   });
+
+  // 모델이 태국어를 한국어로 번역하지 않고 태국어만 다시 출력한 경우 1회 재시도
+  if (containsThai(translated) && !containsKorean(translated)) {
+    translated = await askOpenAI({
+      systemPrompt: TH_TO_KO_SYSTEM_PROMPT + "\nIMPORTANT: The input is Thai. You MUST output Korean only. Do NOT rewrite or paraphrase in Thai.",
+      userText: text,
+      history: [],
+      convertWonToThai: false
+    });
+  }
+
+  return translated;
 }
 
 async function translateText(text, conversationKey) {
