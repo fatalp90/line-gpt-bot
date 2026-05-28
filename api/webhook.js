@@ -16,8 +16,8 @@ const shortDictionary = {
   "오": "โอ",
   "아": "อา",
   "어": "อืม",
-  "응": "อืม",
-  "네": "ใช่ครับ",
+  "응": "อืมครับ",
+  "네": "ครับ",
   "넵": "ครับ",
   "넹": "ครับ",
   "아니요": "ไม่ครับ",
@@ -34,10 +34,7 @@ const thaiShortDictionary = {
   "จ่ายเงินครับ": "입금하세요",
   "ส่งสลิปครับ": "슬립 올려주세요",
   "รอสักครู่ครับ": "잠시만 기다려 주세요",
-  "คะ": "네?",
-  "ค่ะ": "네",
-  "ค่า": "네",
-  "คับ": "네",
+  "ครับ": "네",
   "ใช่ครับ": "맞아요",
   "ไม่ครับ": "아니요",
   "โอเคครับ": "알겠습니다",
@@ -358,7 +355,17 @@ Male speech rules:
 
 Natural Thai rules:
 - Make it sound like a real Thai person chatting on LINE.
-- Keep short messages short.
+- Keep short messages short.\n
+- Very important:
+- For extremely short acknowledgement replies,
+- never convert them into question tone unless the original message contains a question mark or clear questioning intent.
+- Never add ?, 요?, 네?, 응?, 왜요? unless explicitly present in the original.
+- Examples:
+- คะ -> 네
+- ครับ -> 네
+- อืม -> 응
+- โอเค -> 알겠습니다
+
 - Preserve teasing, soft joking, worry, frustration, apology, firmness, and affection naturally.
 - Understand Korean casual expressions like ㅋㅋ, ㅎㅎ, ㅠㅠ, TT, 아/오/어/응/네.
 - ㅋㅋ or ㅎㅎ may become 555 only when natural. Do not force it.
@@ -429,8 +436,17 @@ Thai understanding rules:
 - If there is an obvious typo, infer the most natural meaning from context.
 - Preserve casual, cute, teasing, annoyed, worried, apologetic, or firm tone naturally in Korean.
 - Translate particles like ค่ะ/คะ/ครับ according to the speaker's tone, not mechanically.
-- Keep short messages short.
-- For standalone Thai particles like คะ / ค่ะ / ค่า, translate naturally as 네? / 네 depending on question nuance. Do not translate them as 응? unless the source clearly has a casual questioning tone.
+- Keep short messages short.\n
+- Very important:
+- For extremely short acknowledgement replies,
+- never convert them into question tone unless the original message contains a question mark or clear questioning intent.
+- Never add ?, 요?, 네?, 응?, 왜요? unless explicitly present in the original.
+- Examples:
+- คะ -> 네
+- ครับ -> 네
+- อืม -> 응
+- โอเค -> 알겠습니다
+
 
 Name preservation rules:
 - Thai personal names or nicknames must NEVER be translated semantically.
@@ -455,7 +471,22 @@ async function translateKoToTh(text, history = []) {
   const direct = shortDictionary[text];
   if (direct) return direct;
 
-  return await askOpenAI({
+  
+function normalizeShortKoreanResponse(text) {
+  const clean = String(text || "").trim();
+
+  const replacements = {
+    "네?": "네",
+    "응?": "응",
+    "왜요?": "왜요",
+    "예?": "네"
+  };
+
+  return replacements[clean] || clean;
+}
+
+return await askOpenAI({
+
     systemPrompt: KO_TO_TH_SYSTEM_PROMPT,
     userText: text,
     history,
@@ -467,12 +498,14 @@ async function translateThToKo(text, history = []) {
   const direct = thaiShortDictionary[text];
   if (direct) return direct;
 
-  return await askOpenAI({
+  const translated = await askOpenAI({
     systemPrompt: TH_TO_KO_SYSTEM_PROMPT,
     userText: text,
     history,
     convertWonToThai: false
   });
+
+  return normalizeShortKoreanResponse(translated);
 }
 
 async function translateText(text, conversationKey) {
