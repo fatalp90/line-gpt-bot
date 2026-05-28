@@ -16,7 +16,7 @@ const shortDictionary = {
   "오": "โอ",
   "아": "อา",
   "어": "อืม",
-  "응": "อืมครับ",
+  "응": "อืม",
   "네": "ครับ",
   "넵": "ครับ",
   "넹": "ครับ",
@@ -34,7 +34,6 @@ const thaiShortDictionary = {
   "จ่ายเงินครับ": "입금하세요",
   "ส่งสลิปครับ": "슬립 올려주세요",
   "รอสักครู่ครับ": "잠시만 기다려 주세요",
-  "ครับ": "네",
   "ใช่ครับ": "맞아요",
   "ไม่ครับ": "아니요",
   "โอเคครับ": "알겠습니다",
@@ -326,7 +325,7 @@ async function askOpenAI({ systemPrompt, userText, history = [], convertWonToTha
   if (contextText) {
     messages.push({
       role: "user",
-      content: `최근 대화 맥락입니다. 이 내용은 참고만 하고, 아래의 새 메시지만 번역하세요.\n\n${contextText}`
+      content: `최근 대화 맥락입니다. 짧은 단답 메시지의 경우 최근 맥락보다 원문 자체를 우선 해석하세요. 이 내용은 참고만 하고, 아래의 새 메시지만 번역하세요.\n\n${contextText}`
     });
   }
 
@@ -393,10 +392,47 @@ Male speech rules:
 Natural Thai rules:
 - Make it sound like a real Thai person chatting on LINE.
 - Keep short messages short.
+
+- Very important:
+- For extremely short acknowledgement replies, prioritize the original message itself over conversation history.
+- Never convert short acknowledgement replies into question tone unless the original message clearly contains a question mark or questioning intent.
+- Do not output:
+  - 네?
+  - 응?
+  - 왜요?
+  - 예?
+for messages like:
+  - คะ
+  - ค่ะ
+  - ค่า
+  - ครับ
+  - คับ
+  - อืม
+  - โอเค
+- Examples:
+  - คะ -> 네
+  - ค่ะ -> 네
+  - ค่า -> 네
+  - ครับ -> 네
+  - อืม -> 응
+  - โอเค -> 알겠습니다
+
 - Preserve teasing, soft joking, worry, frustration, apology, firmness, and affection naturally.
 - Understand Korean casual expressions like ㅋㅋ, ㅎㅎ, ㅠㅠ, TT, 아/오/어/응/네.
 - ㅋㅋ or ㅎㅎ may become 555 only when natural. Do not force it.
 - Avoid robotic dictionary-style Thai.
+
+- For mixed Korean + English phrases:
+  preserve the English proper noun,
+  but translate generic Korean words naturally.
+
+Examples:
+- PLP 그룹 -> กลุ่ม PLP
+- KN 팀 -> ทีม KN
+- VIP 고객 -> ลูกค้า VIP
+- Line 그룹 -> กลุ่มไลน์
+- Telegram 방 -> ห้อง Telegram
+
 
 Time rule:
 - Do not add วันนี้, เมื่อคืน, ตอนนี้, พรุ่งนี้, or other time words unless they exist in Korean or are absolutely required by grammar.
@@ -465,6 +501,31 @@ Thai understanding rules:
 - Translate particles like ค่ะ/คะ/ครับ according to the speaker's tone, not mechanically.
 - Keep short messages short.
 
+- Very important:
+- For extremely short acknowledgement replies, prioritize the original message itself over conversation history.
+- Never convert short acknowledgement replies into question tone unless the original message clearly contains a question mark or questioning intent.
+- Do not output:
+  - 네?
+  - 응?
+  - 왜요?
+  - 예?
+for messages like:
+  - คะ
+  - ค่ะ
+  - ค่า
+  - ครับ
+  - คับ
+  - อืม
+  - โอเค
+- Examples:
+  - คะ -> 네
+  - ค่ะ -> 네
+  - ค่า -> 네
+  - ครับ -> 네
+  - อืม -> 응
+  - โอเค -> 알겠습니다
+
+
 Name preservation rules:
 - Thai personal names or nicknames must NEVER be translated semantically.
 - Preserve Thai nicknames as pronunciation-based Korean transliteration only.
@@ -494,6 +555,7 @@ function getThaiShortDirectTranslation(text) {
     return "네";
   }
 
+  // 단독 말끝 조사만 직접 변환
   if (/^(ครับ|คับ|ค้าบ|คร้าบ)$/u.test(clean)) {
     return "네";
   }
@@ -516,7 +578,9 @@ function normalizeShortKoreanResponse(text) {
     "네?": "네",
     "응?": "응",
     "예?": "네",
-    "어?": "어"
+    "어?": "어",
+    "왜요?": "왜요",
+    "그래요?": "그래요"
   };
 
   return replacements[clean] || clean;
