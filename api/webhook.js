@@ -125,28 +125,33 @@ function isMentionOnlyMessage(text) {
     .map(v => v.trim())
     .filter(Boolean);
 
-  // 첫 줄만 멘션이고 아래 줄에 실제 내용이 있으면 번역 허용
-  if (
-    lines.length >= 2 &&
-    /^@[\p{L}\p{M}\p{N}_ .\-]+[\p{Emoji_Presentation}\p{Extended_Pictographic}]?$/u.test(lines[0])
-  ) {
+  // 첫 줄이 순수 멘션이고 아래 줄에 실제 내용이 있으면 번역 허용
+  if (lines.length >= 2) {
+    const firstLine = lines[0];
+
+    if (/^@[^\s]+$/u.test(firstLine) || /^@[^\n]{1,30}$/u.test(firstLine)) {
+      return false;
+    }
+  }
+
+  // @멘션 뒤에 공백이 있고, 그 뒤에 실제 한/태 문장이 있으면 번역 허용
+  // 예: @พี่เม มาโอน / @เอ็มดอย น้อง เคลียร์ยอดให้หน่อยค่ะ
+  const inlineMentionMatch = clean.match(/^@\S+\s+(.+)$/u);
+  if (inlineMentionMatch && /[가-힣\u0E00-\u0E7F]/u.test(inlineMentionMatch[1])) {
     return false;
   }
 
-  // 멘션 제거 후 실제 한/태 문장이 있으면 번역 허용
-  const withoutMention = clean.replace(
-    /^@[\p{L}\p{M}\p{N}_ .\-]+[\p{Emoji_Presentation}\p{Extended_Pictographic}]?\s*/u,
-    ""
-  );
-
-  if (/[가-힣\u0E00-\u0E7F]/u.test(withoutMention)) {
-    return false;
+  // 줄바꿈이 있는 멘션 메시지에서 첫 줄을 제외한 본문이 있으면 번역 허용
+  if (lines.length >= 2) {
+    const body = lines.slice(1).join(" ");
+    if (/[가-힣\u0E00-\u0E7F]/u.test(body)) {
+      return false;
+    }
   }
 
   // 순수 멘션만 무시
-  return /^@[\p{L}\p{M}\p{N}_ .\-]+[\p{Emoji_Presentation}\p{Extended_Pictographic}]?$/u.test(clean);
+  return /^@[^\s\n]+$/u.test(clean) || /^@[^\n]{1,30}$/u.test(clean);
 }
-
 function hasRepeatedWrapperEmoji(text) {
   const clean = normalizeText(text);
 
