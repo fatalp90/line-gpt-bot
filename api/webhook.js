@@ -26,15 +26,6 @@ const shortDictionary = {
 
 
 const thaiShortDictionary = {
-  "คะ": "네",
-  "ค่ะ": "네",
-  "ค่า": "네",
-  "ครับ": "네",
-  "ค้าบ": "네",
-  "คับ": "네",
-  "จ้า": "네",
-  "จ๊ะ": "네",
-  "จ่ะ": "네",
   "โอนเงินมาครับ": "입금하세요",
   "โอนเงินครับ": "입금하세요",
   "โอนมาครับ": "입금하세요",
@@ -43,6 +34,7 @@ const thaiShortDictionary = {
   "จ่ายเงินครับ": "입금하세요",
   "ส่งสลิปครับ": "슬립 올려주세요",
   "รอสักครู่ครับ": "잠시만 기다려 주세요",
+  "ครับ": "네",
   "ใช่ครับ": "맞아요",
   "ไม่ครับ": "아니요",
   "โอเคครับ": "알겠습니다",
@@ -123,13 +115,35 @@ function isDecorationOnly(text) {
 
 function isMentionOnlyMessage(text) {
   const clean = normalizeText(text);
-  if (!clean.startsWith("@")) return false;
 
-  // @팀, @ยูนา, @Dex Loan, @Melalada👑 처럼 멘션만 있는 경우만 무시
-  // 멘션 뒤에 실제 문장부호/문장이 붙으면 번역 대상으로 남김
-  if (/[?!?.,。！？]/.test(clean)) return false;
-  if (clean.length > 40) return false;
+  if (!clean.startsWith("@")) {
+    return false;
+  }
 
+  const lines = clean
+    .split(/\n+/)
+    .map(v => v.trim())
+    .filter(Boolean);
+
+  // 첫 줄만 멘션이고 아래 줄에 실제 내용이 있으면 번역 허용
+  if (
+    lines.length >= 2 &&
+    /^@[\p{L}\p{M}\p{N}_ .\-]+[\p{Emoji_Presentation}\p{Extended_Pictographic}]?$/u.test(lines[0])
+  ) {
+    return false;
+  }
+
+  // 멘션 제거 후 실제 한/태 문장이 있으면 번역 허용
+  const withoutMention = clean.replace(
+    /^@[\p{L}\p{M}\p{N}_ .\-]+[\p{Emoji_Presentation}\p{Extended_Pictographic}]?\s*/u,
+    ""
+  );
+
+  if (/[가-힣\u0E00-\u0E7F]/u.test(withoutMention)) {
+    return false;
+  }
+
+  // 순수 멘션만 무시
   return /^@[\p{L}\p{M}\p{N}_ .\-]+[\p{Emoji_Presentation}\p{Extended_Pictographic}]?$/u.test(clean);
 }
 
@@ -437,16 +451,6 @@ Thai understanding rules:
 - Preserve casual, cute, teasing, annoyed, worried, apologetic, or firm tone naturally in Korean.
 - Translate particles like ค่ะ/คะ/ครับ according to the speaker's tone, not mechanically.
 - Keep short messages short.
-- Very important:
-- For extremely short acknowledgement replies, never convert them into a question tone unless the original message contains a question mark or a clear questioning word.
-- Do not output 네?, 응?, 예?, 어?, 왜요? for short replies like คะ, ค่ะ, ค่า, ครับ, คับ, อืม, โอเค.
-- Examples:
-  - คะ -> 네
-  - ค่ะ -> 네
-  - ค่า -> 네
-  - ครับ -> 네
-  - อืม -> 응
-  - โอเค -> 알겠습니다
 
 Name preservation rules:
 - Thai personal names or nicknames must NEVER be translated semantically.
@@ -466,32 +470,6 @@ Ambiguity rules:
 Safety/accuracy rules:
 - Do not add new money, dates, times, promises, threats, or legal/police wording.
 - If the Thai is genuinely ambiguous, translate in a way that keeps the ambiguity rather than guessing too much.`;
-
-
-function normalizeShortKoreanResponse(text) {
-  const clean = String(text || "").trim();
-
-  const replacements = {
-    "네?": "네",
-    "응?": "응",
-    "예?": "네",
-    "어?": "어"
-  };
-
-  return replacements[clean] || clean;
-}
-
-async function translateKoToTh(text, history = []) {
-  const direct = shortDictionary[text];
-  if (direct) return direct;
-
-  return await askOpenAI({
-    systemPrompt: KO_TO_TH_SYSTEM_PROMPT,
-    userText: text,
-    history,
-    convertWonToThai: true
-  });
-}
 
 
 function getThaiShortDirectTranslation(text) {
@@ -516,6 +494,31 @@ function getThaiShortDirectTranslation(text) {
   }
 
   return null;
+}
+
+function normalizeShortKoreanResponse(text) {
+  const clean = String(text || "").trim();
+
+  const replacements = {
+    "네?": "네",
+    "응?": "응",
+    "예?": "네",
+    "어?": "어"
+  };
+
+  return replacements[clean] || clean;
+}
+
+async function translateKoToTh(text, history = []) {
+  const direct = shortDictionary[text];
+  if (direct) return direct;
+
+  return await askOpenAI({
+    systemPrompt: KO_TO_TH_SYSTEM_PROMPT,
+    userText: text,
+    history,
+    convertWonToThai: true
+  });
 }
 
 async function translateThToKo(text, history = []) {
