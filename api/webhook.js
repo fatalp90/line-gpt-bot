@@ -125,23 +125,10 @@ function isMentionOnlyMessage(text) {
     .map(v => v.trim())
     .filter(Boolean);
 
-  // 첫 줄이 순수 멘션이고 아래 줄에 실제 내용이 있으면 번역 허용
-  if (lines.length >= 2) {
-    const firstLine = lines[0];
-
-    if (/^@[^\s]+$/u.test(firstLine) || /^@[^\n]{1,30}$/u.test(firstLine)) {
-      return false;
-    }
-  }
-
-  // @멘션 뒤에 공백이 있고, 그 뒤에 실제 한/태 문장이 있으면 번역 허용
-  // 예: @พี่เม มาโอน / @เอ็มดอย น้อง เคลียร์ยอดให้หน่อยค่ะ
-  const inlineMentionMatch = clean.match(/^@\S+\s+(.+)$/u);
-  if (inlineMentionMatch && /[가-힣\u0E00-\u0E7F]/u.test(inlineMentionMatch[1])) {
-    return false;
-  }
-
-  // 줄바꿈이 있는 멘션 메시지에서 첫 줄을 제외한 본문이 있으면 번역 허용
+  // 여러 줄이면 첫 줄이 멘션이어도 아래 줄에 실제 내용이 있다고 보고 번역 허용
+  // 예:
+  // @เอ็มดอย น้อง
+  // เคลียร์ยอดให้หน่อยค่ะ
   if (lines.length >= 2) {
     const body = lines.slice(1).join(" ");
     if (/[가-힣\u0E00-\u0E7F]/u.test(body)) {
@@ -149,8 +136,29 @@ function isMentionOnlyMessage(text) {
     }
   }
 
+  // 한 줄 메시지에서 @멘션 뒤에 공백 + 실제 문장이 있으면 번역 허용
+  // 예: @พี่เม มาโอน
+  const parts = clean.split(/\s+/).filter(Boolean);
+
+  if (parts.length >= 2) {
+    const afterMention = parts.slice(1).join(" ");
+
+    const hasLanguage = /[가-힣\u0E00-\u0E7F]/u.test(afterMention);
+    const hasSentenceSignal = /[가-힣]|(โอน|จ่าย|เคลียร์|ยอด|สลิป|เงิน|ชำระ|นัด|มา|ไป|ให้|หน่อย|แล้ว|ค่ะ|คะ|ครับ|คับ|นะ|อะ|จ้า|ได้|ไม่|ทำ|บอก|ถาม|รอ|ปิด|ค้าง|ครบ)/u.test(afterMention);
+
+    if (hasLanguage && hasSentenceSignal) {
+      return false;
+    }
+
+    // 멘션 뒤 단어가 2개 이상이면 실제 문장일 가능성이 높으므로 번역 허용
+    if (hasLanguage && parts.length >= 3) {
+      return false;
+    }
+  }
+
   // 순수 멘션만 무시
-  return /^@[^\s\n]+$/u.test(clean) || /^@[^\n]{1,30}$/u.test(clean);
+  // 예: @ยูนา / @Dex / @Melalada👑
+  return /^@[^\s\n]+(?:\s[^\s\n]+)?[\p{Emoji_Presentation}\p{Extended_Pictographic}]?$/u.test(clean);
 }
 function hasRepeatedWrapperEmoji(text) {
   const clean = normalizeText(text);
