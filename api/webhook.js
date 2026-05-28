@@ -16,8 +16,8 @@ const shortDictionary = {
   "오": "โอ",
   "아": "อา",
   "어": "อืม",
-  "응": "อืมครับ",
-  "네": "ครับ",
+  "응": "อืม",
+  "네": "ใช่ครับ",
   "넵": "ครับ",
   "넹": "ครับ",
   "아니요": "ไม่ครับ",
@@ -34,7 +34,10 @@ const thaiShortDictionary = {
   "จ่ายเงินครับ": "입금하세요",
   "ส่งสลิปครับ": "슬립 올려주세요",
   "รอสักครู่ครับ": "잠시만 기다려 주세요",
-  "ครับ": "네",
+  "คะ": "네?",
+  "ค่ะ": "네",
+  "ค่า": "네",
+  "คับ": "네",
   "ใช่ครับ": "맞아요",
   "ไม่ครับ": "아니요",
   "โอเคครับ": "알겠습니다",
@@ -427,6 +430,7 @@ Thai understanding rules:
 - Preserve casual, cute, teasing, annoyed, worried, apologetic, or firm tone naturally in Korean.
 - Translate particles like ค่ะ/คะ/ครับ according to the speaker's tone, not mechanically.
 - Keep short messages short.
+- For standalone Thai particles like คะ / ค่ะ / ค่า, translate naturally as 네? / 네 depending on question nuance. Do not translate them as 응? unless the source clearly has a casual questioning tone.
 
 Name preservation rules:
 - Thai personal names or nicknames must NEVER be translated semantically.
@@ -447,23 +451,7 @@ Safety/accuracy rules:
 - Do not add new money, dates, times, promises, threats, or legal/police wording.
 - If the Thai is genuinely ambiguous, translate in a way that keeps the ambiguity rather than guessing too much.`;
 
-
-function isKoreanLaughOnly(text) {
-  const clean = normalizeText(text);
-  return /^[ㅋㅎ]+$/.test(clean);
-}
-
-function translateKoreanLaughToThai(text) {
-  const clean = normalizeText(text);
-  const length = Math.max(3, Math.min(clean.length, 12));
-  return "5".repeat(length);
-}
-
 async function translateKoToTh(text, history = []) {
-  if (isKoreanLaughOnly(text)) {
-    return translateKoreanLaughToThai(text);
-  }
-
   const direct = shortDictionary[text];
   if (direct) return direct;
 
@@ -479,24 +467,12 @@ async function translateThToKo(text, history = []) {
   const direct = thaiShortDictionary[text];
   if (direct) return direct;
 
-  let translated = await askOpenAI({
+  return await askOpenAI({
     systemPrompt: TH_TO_KO_SYSTEM_PROMPT,
     userText: text,
     history,
     convertWonToThai: false
   });
-
-  // 모델이 태국어를 한국어로 번역하지 않고 태국어만 다시 출력한 경우 1회 재시도
-  if (containsThai(translated) && !containsKorean(translated)) {
-    translated = await askOpenAI({
-      systemPrompt: TH_TO_KO_SYSTEM_PROMPT + "\nIMPORTANT: The input is Thai. You MUST output Korean only. Do NOT rewrite or paraphrase in Thai.",
-      userText: text,
-      history: [],
-      convertWonToThai: false
-    });
-  }
-
-  return translated;
 }
 
 async function translateText(text, conversationKey) {
