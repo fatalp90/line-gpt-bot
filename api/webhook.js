@@ -26,6 +26,15 @@ const shortDictionary = {
 
 
 const thaiShortDictionary = {
+  "คะ": "네",
+  "ค่ะ": "네",
+  "ค่า": "네",
+  "ครับ": "네",
+  "ค้าบ": "네",
+  "คับ": "네",
+  "จ้า": "네",
+  "จ๊ะ": "네",
+  "จ่ะ": "네",
   "โอนเงินมาครับ": "입금하세요",
   "โอนเงินครับ": "입금하세요",
   "โอนมาครับ": "입금하세요",
@@ -34,7 +43,6 @@ const thaiShortDictionary = {
   "จ่ายเงินครับ": "입금하세요",
   "ส่งสลิปครับ": "슬립 올려주세요",
   "รอสักครู่ครับ": "잠시만 기다려 주세요",
-  "ครับ": "네",
   "ใช่ครับ": "맞아요",
   "ไม่ครับ": "아니요",
   "โอเคครับ": "알겠습니다",
@@ -79,7 +87,9 @@ const adminStatusKeywords = [
 const conversationStore = new Map();
 
 function normalizeText(text) {
-  return String(text || "").trim();
+  return String(text || "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .trim();
 }
 
 function containsKorean(text) {
@@ -355,17 +365,7 @@ Male speech rules:
 
 Natural Thai rules:
 - Make it sound like a real Thai person chatting on LINE.
-- Keep short messages short.\n
-- Very important:
-- For extremely short acknowledgement replies,
-- never convert them into question tone unless the original message contains a question mark or clear questioning intent.
-- Never add ?, 요?, 네?, 응?, 왜요? unless explicitly present in the original.
-- Examples:
-- คะ -> 네
-- ครับ -> 네
-- อืม -> 응
-- โอเค -> 알겠습니다
-
+- Keep short messages short.
 - Preserve teasing, soft joking, worry, frustration, apology, firmness, and affection naturally.
 - Understand Korean casual expressions like ㅋㅋ, ㅎㅎ, ㅠㅠ, TT, 아/오/어/응/네.
 - ㅋㅋ or ㅎㅎ may become 555 only when natural. Do not force it.
@@ -436,17 +436,17 @@ Thai understanding rules:
 - If there is an obvious typo, infer the most natural meaning from context.
 - Preserve casual, cute, teasing, annoyed, worried, apologetic, or firm tone naturally in Korean.
 - Translate particles like ค่ะ/คะ/ครับ according to the speaker's tone, not mechanically.
-- Keep short messages short.\n
+- Keep short messages short.
 - Very important:
-- For extremely short acknowledgement replies,
-- never convert them into question tone unless the original message contains a question mark or clear questioning intent.
-- Never add ?, 요?, 네?, 응?, 왜요? unless explicitly present in the original.
+- For extremely short acknowledgement replies, never convert them into a question tone unless the original message contains a question mark or a clear questioning word.
+- Do not output 네?, 응?, 예?, 어?, 왜요? for short replies like คะ, ค่ะ, ค่า, ครับ, คับ, อืม, โอเค.
 - Examples:
-- คะ -> 네
-- ครับ -> 네
-- อืม -> 응
-- โอเค -> 알겠습니다
-
+  - คะ -> 네
+  - ค่ะ -> 네
+  - ค่า -> 네
+  - ครับ -> 네
+  - อืม -> 응
+  - โอเค -> 알겠습니다
 
 Name preservation rules:
 - Thai personal names or nicknames must NEVER be translated semantically.
@@ -467,26 +467,25 @@ Safety/accuracy rules:
 - Do not add new money, dates, times, promises, threats, or legal/police wording.
 - If the Thai is genuinely ambiguous, translate in a way that keeps the ambiguity rather than guessing too much.`;
 
-async function translateKoToTh(text, history = []) {
-  const direct = shortDictionary[text];
-  if (direct) return direct;
 
-  
 function normalizeShortKoreanResponse(text) {
   const clean = String(text || "").trim();
 
   const replacements = {
     "네?": "네",
     "응?": "응",
-    "왜요?": "왜요",
-    "예?": "네"
+    "예?": "네",
+    "어?": "어"
   };
 
   return replacements[clean] || clean;
 }
 
-return await askOpenAI({
+async function translateKoToTh(text, history = []) {
+  const direct = shortDictionary[text];
+  if (direct) return direct;
 
+  return await askOpenAI({
     systemPrompt: KO_TO_TH_SYSTEM_PROMPT,
     userText: text,
     history,
@@ -494,8 +493,36 @@ return await askOpenAI({
   });
 }
 
+
+function getThaiShortDirectTranslation(text) {
+  const clean = normalizeText(text)
+    .replace(/\s+/g, "")
+    .replace(/[.。!！~～…]+$/g, "");
+
+  if (/^(คะ|ค่ะ|ค่า|ค๊า|ค๋า|คร้า|จ้า|จ๊ะ|จ่ะ)$/u.test(clean)) {
+    return "네";
+  }
+
+  if (/^(ครับ|คับ|ค้าบ|คร้าบ)$/u.test(clean)) {
+    return "네";
+  }
+
+  if (/^(โอเค|ok|okay)$/iu.test(clean)) {
+    return "알겠습니다";
+  }
+
+  if (/^(อืม|อือ|อ่า|อา)$/u.test(clean)) {
+    return "응";
+  }
+
+  return null;
+}
+
 async function translateThToKo(text, history = []) {
-  const direct = thaiShortDictionary[text];
+  const shortDirect = getThaiShortDirectTranslation(text);
+  if (shortDirect) return shortDirect;
+
+  const direct = thaiShortDictionary[normalizeText(text)];
   if (direct) return direct;
 
   const translated = await askOpenAI({
