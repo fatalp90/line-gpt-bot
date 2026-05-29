@@ -565,6 +565,16 @@ Name preservation rules:
   - ยูนา -> 유나
   - นาวี -> 나비
 
+Meaning preservation rules:
+- เจ้าหนี้ = 채권자
+- ลูกหนี้ = 채무자
+- คนปล่อยกู้ = 대출업자 / 돈을 빌려주는 사람
+- Never translate any of the above as:
+  - 사채업자
+  - 불법대부업자
+  - 대부업체
+unless those exact meanings are explicitly written in Thai.
+
 Ambiguity rules:
 - Never answer the message.
 - Never reinterpret emotional implication into a different sentence meaning.
