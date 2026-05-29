@@ -21,7 +21,15 @@ const shortDictionary = {
   "넵": "ครับ",
   "넹": "ครับ",
   "아니요": "ไม่ครับ",
-  "맞아요": "ใช่ครับ"
+  "맞아요": "ใช่ครับ",
+  "답하세요": "ตอบด้วยครับ",
+  "대답하세요": "ตอบด้วยครับ",
+  "답변하세요": "ตอบกลับด้วยครับ",
+  "답장하세요": "ตอบแชทด้วยครับ",
+  "답해주세요": "ช่วยตอบด้วยครับ",
+  "대답해주세요": "ช่วยตอบด้วยครับ",
+  "답변해주세요": "ช่วยตอบกลับด้วยครับ",
+  "답장해주세요": "ช่วยตอบแชทด้วยครับ"
 };
 
 
@@ -89,6 +97,41 @@ function containsKorean(text) {
 
 function containsThai(text) {
   return /[\u0E00-\u0E7F]/.test(text || "");
+}
+
+function normalizeForLanguageCheck(text) {
+  return normalizeText(text)
+    .replace(/[\s.。!！?？~～…"'`]+/g, "")
+    .toLowerCase();
+}
+
+function isBadKoToThOutput(sourceText, translatedText) {
+  const source = normalizeForLanguageCheck(sourceText);
+  const output = normalizeForLanguageCheck(translatedText);
+
+  if (!output) return true;
+  if (source && output === source) return true;
+
+  // Korean -> Thai 결과에 한글이 남고 태국어가 없으면 실패로 판단
+  if (containsKorean(translatedText) && !containsThai(translatedText)) return true;
+
+  // 짧은 한국어 원문이 거의 그대로 반복되는 경우 방지
+  if (source.length <= 20 && output.includes(source)) return true;
+
+  return false;
+}
+
+function isBadThToKoOutput(sourceText, translatedText) {
+  const source = normalizeForLanguageCheck(sourceText);
+  const output = normalizeForLanguageCheck(translatedText);
+
+  if (!output) return true;
+  if (source && output === source) return true;
+
+  // Thai -> Korean 결과에 태국어가 남고 한글이 없으면 실패로 판단
+  if (containsThai(translatedText) && !containsKorean(translatedText)) return true;
+
+  return false;
 }
 
 function containsEnglish(text) {
@@ -394,28 +437,14 @@ Natural Thai rules:
 - Keep short messages short.
 
 - Very important:
-- For extremely short acknowledgement replies, prioritize the original message itself over conversation history.
-- Never convert short acknowledgement replies into question tone unless the original message clearly contains a question mark or questioning intent.
-- Do not output:
-  - 네?
-  - 응?
-  - 왜요?
-  - 예?
-for messages like:
-  - คะ
-  - ค่ะ
-  - ค่า
-  - ครับ
-  - คับ
-  - อืม
-  - โอเค
+- For short Korean commands or acknowledgements, translate the exact intent into Thai.
+- Never repeat Korean text in the output.
+- Never answer the message; only translate it.
 - Examples:
-  - คะ -> 네
-  - ค่ะ -> 네
-  - ค่า -> 네
-  - ครับ -> 네
-  - อืม -> 응
-  - โอเค -> 알겠습니다
+  - 답하세요 -> ตอบด้วยครับ
+  - 대답하세요 -> ตอบด้วยครับ
+  - 알겠습니다 -> รับทราบครับ
+  - 네 -> ครับ
 
 - Preserve teasing, soft joking, worry, frustration, apology, firmness, and affection naturally.
 - Understand Korean casual expressions like ㅋㅋ, ㅎㅎ, ㅠㅠ, TT, 아/오/어/응/네.
@@ -587,32 +616,70 @@ function normalizeShortKoreanResponse(text) {
 }
 
 async function translateKoToTh(text, history = []) {
-  const direct = shortDictionary[text];
+  const clean = normalizeText(text);
+  const direct = shortDictionary[clean];
   if (direct) return direct;
 
-  return await askOpenAI({
+  let translated = await askOpenAI({
     systemPrompt: KO_TO_TH_SYSTEM_PROMPT,
-    userText: text,
+    userText: clean,
     history,
     convertWonToThai: true
   });
+
+  if (isBadKoToThOutput(clean, translated)) {
+    translated = await askOpenAI({
+      systemPrompt: `${KO_TO_TH_SYSTEM_PROMPT}
+
+CRITICAL OUTPUT VALIDATION:
+The input is Korean. The final answer must be Thai only.
+Do not copy the Korean source text.
+Do not leave any Korean letters in the output.
+Translate the exact message into natural Thai.`,
+      userText: clean,
+      history: [],
+      convertWonToThai: true
+    });
+  }
+
+  return translated;
 }
 
 async function translateThToKo(text, history = []) {
-  const shortDirect = getThaiShortDirectTranslation(text);
+  const clean = normalizeText(text);
+  const shortDirect = getThaiShortDirectTranslation(clean);
   if (shortDirect) return shortDirect;
 
-  const direct = thaiShortDictionary[normalizeText(text)];
+  const direct = thaiShortDictionary[clean];
   if (direct) return direct;
 
-  const translated = await askOpenAI({
+  let translated = await askOpenAI({
     systemPrompt: TH_TO_KO_SYSTEM_PROMPT,
-    userText: text,
+    userText: clean,
     history,
     convertWonToThai: false
   });
 
-  return normalizeShortKoreanResponse(translated);
+  translated = normalizeShortKoreanResponse(translated);
+
+  if (isBadThToKoOutput(clean, translated)) {
+    translated = await askOpenAI({
+      systemPrompt: `${TH_TO_KO_SYSTEM_PROMPT}
+
+CRITICAL OUTPUT VALIDATION:
+The input is Thai. The final answer must be Korean only.
+Do not copy the Thai source text.
+Do not leave Thai letters in the output.
+Translate the exact message into natural Korean.`,
+      userText: clean,
+      history: [],
+      convertWonToThai: false
+    });
+
+    translated = normalizeShortKoreanResponse(translated);
+  }
+
+  return translated;
 }
 
 async function translateText(text, conversationKey) {
