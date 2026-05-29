@@ -14,22 +14,29 @@ const GOOGLE_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
 const DATE_START_COLUMN_INDEX = 11; // L column, 0-based
 const DATE_END_COLUMN_INDEX = 41; // AP column, 0-based
 const GROUP_MAP_SHEET_NAME = process.env.LINE_GROUP_MAP_SHEET_NAME || "LINE그룹매핑";
+const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "")
+  .split(",")
+  .map(v => v.trim())
+  .filter(Boolean);
+
 const LINE_CUSTOMER_START_ROW = 1058;
 const LINE_CUSTOMER_START_INDEX0 = LINE_CUSTOMER_START_ROW - 1;
 
 const REPAYMENT_MORNING_MESSAGE = `📌 กรุณาโอนชำระครับ
 
 วันนี้เป็นวันชำระของคุณครับ
-กรุณาโอนก่อนเวลา 20:00 น. ของวันนี้`;
+กรุณาโอนก่อนเวลา 20:00 น. ของวันนี้
+
+ขอบคุณครับ`;
 
 const REPAYMENT_AFTERNOON_MESSAGE = `📌 กรุณาโอนชำระด่วนครับ
 
 ขณะนี้ยังไม่พบรายการชำระของคุณครับ
 
 กรุณารีบดำเนินการโอนโดยเร็วที่สุด
-และส่งสลิปหลังโอนเสร็จครับ`;
+และส่งสลิปหลังโอนเสร็จครับ
 
-const PAYMENT_REQUEST_MESSAGE = `📌 กรุณาโอนชำระครับ`;
+ขอบคุณครับ`;
 
 
 function base64Url(input) {
@@ -305,10 +312,6 @@ async function pushToLine(to, text) {
 function parseTodayRepaymentBroadcastCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
 
-  if (clean === "오늘입금요청") {
-    return { type: "payment", message: PAYMENT_REQUEST_MESSAGE };
-  }
-
   if (clean === "오늘상환오전") {
     return { type: "morning", message: REPAYMENT_MORNING_MESSAGE };
   }
@@ -318,20 +321,6 @@ function parseTodayRepaymentBroadcastCommand(text) {
   }
 
   return null;
-}
-
-function parseUnregisteredCheckCommand(text) {
-  const clean = normalizeText(text).replace(/\s+/g, "");
-  return clean === "미등록확인";
-}
-
-function parseMyIdCommand(text) {
-  const clean = normalizeText(text).replace(/\s+/g, "");
-  return clean === "내아이디";
-}
-
-function getLineUserId(event) {
-  return event?.source?.userId || "";
 }
 
 function extractCustomerCodeFromProductName(productName) {
@@ -374,63 +363,6 @@ function findTodayDollarCodes(values) {
   }
 
   return codes;
-}
-
-function findActiveLineCustomerCodes(values) {
-  const codes = [];
-  const seen = new Set();
-
-  // 미등록확인은 라인 그룹 고객 구간인 1058행부터, 고객 1명당 2행씩 검색
-  for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
-    const row = values[i] || [];
-    const status = String(row[2] || "").trim(); // C열 상태
-    const productName = String(row[5] || "").trim(); // F열 상품명
-
-    if (status !== "진행중") continue;
-
-    const code = extractCustomerCodeFromProductName(productName);
-    if (!code) continue;
-
-    if (!seen.has(code)) {
-      seen.add(code);
-      codes.push(code);
-    }
-  }
-
-  return codes;
-}
-
-async function checkUnregisteredGroups() {
-  if (!SHEET_ID) {
-    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
-  }
-
-  const accessToken = await getGoogleAccessToken();
-  const values = await getSheetValues(accessToken);
-  const activeCodes = findActiveLineCustomerCodes(values);
-
-  if (!activeCodes.length) {
-    return "⚠️ 진행중 고객이 없습니다.";
-  }
-
-  const groupMapValues = await getGroupMapValues(accessToken);
-  const registeredCodes = new Set();
-
-  for (let i = 1; i < groupMapValues.length; i += 1) {
-    const code = String(groupMapValues[i]?.[0] || "").trim().toUpperCase();
-    const groupId = String(groupMapValues[i]?.[1] || "").trim();
-    if (code && groupId) {
-      registeredCodes.add(code);
-    }
-  }
-
-  const unregisteredCodes = activeCodes.filter(code => !registeredCodes.has(code));
-
-  if (!unregisteredCodes.length) {
-    return "✅ 미등록 고객이 없습니다.";
-  }
-
-  return `❌ 미등록 고객\n\n${unregisteredCodes.join("\n")}`;
 }
 
 async function sendTodayRepaymentBroadcast(broadcastMessage) {
@@ -533,9 +465,7 @@ async function writeSheetCommand(command) {
   const todayColumnIndex0 = findTodayColumnIndex(values, today.day);
 
   const matches = [];
-  // 코드/숫자 입력은 전체 행을 검색하되, 상태가 진행중인 건만 반영
-  // 고객 1명은 해당 행과 바로 아래 행 2줄 구조로 처리
-  for (let i = 1; i < values.length; i += 1) {
+  for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
     const productName = String(row[5] || "").trim(); // F열 상품명
@@ -1323,20 +1253,13 @@ export default async function handler(req, res) {
       const text = normalizeText(event.message.text);
       if (!text) continue;
 
-      if (parseMyIdCommand(text)) {
-        const userId = getLineUserId(event);
-        await replyToLine(event.replyToken, userId ? `내아이디\n${userId}` : "⚠️ userId를 확인할 수 없습니다.");
-        continue;
-      }
-
-      if (parseUnregisteredCheckCommand(text)) {
-        const unregisteredReply = await checkUnregisteredGroups();
-        await replyToLine(event.replyToken, unregisteredReply);
-        continue;
-      }
-
       const registerGroupCommand = parseRegisterGroupCommand(text);
       if (registerGroupCommand) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
         const registerReply = await registerGroupCode(registerGroupCommand, event);
         await replyToLine(event.replyToken, registerReply);
         continue;
@@ -1344,6 +1267,11 @@ export default async function handler(req, res) {
 
       const todayRepaymentBroadcastCommand = parseTodayRepaymentBroadcastCommand(text);
       if (todayRepaymentBroadcastCommand) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
         const broadcastReply = await sendTodayRepaymentBroadcast(todayRepaymentBroadcastCommand.message);
         if (broadcastReply) {
           await replyToLine(event.replyToken, broadcastReply);
@@ -1353,6 +1281,11 @@ export default async function handler(req, res) {
 
       const sheetCommand = parseSheetCommand(text);
       if (sheetCommand) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
         const sheetReply = await writeSheetCommand(sheetCommand);
         await replyToLine(event.replyToken, sheetReply);
         continue;
