@@ -325,6 +325,15 @@ function parseUnregisteredCheckCommand(text) {
   return clean === "미등록확인";
 }
 
+function parseMyIdCommand(text) {
+  const clean = normalizeText(text).replace(/\s+/g, "");
+  return clean === "내아이디";
+}
+
+function getLineUserId(event) {
+  return event?.source?.userId || "";
+}
+
 function extractCustomerCodeFromProductName(productName) {
   const match = String(productName || "").match(/([A-Za-z]{2,3}\d{2,3})/);
   return match ? match[1].toUpperCase() : null;
@@ -371,7 +380,7 @@ function findActiveLineCustomerCodes(values) {
   const codes = [];
   const seen = new Set();
 
-  // 라인 그룹 고객은 1058행부터 시작하고, 고객 1명당 2행씩 사용함
+  // 미등록확인은 라인 그룹 고객 구간인 1058행부터, 고객 1명당 2행씩 검색
   for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
@@ -524,7 +533,9 @@ async function writeSheetCommand(command) {
   const todayColumnIndex0 = findTodayColumnIndex(values, today.day);
 
   const matches = [];
-  for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
+  // 코드/숫자 입력은 전체 행을 검색하되, 상태가 진행중인 건만 반영
+  // 고객 1명은 해당 행과 바로 아래 행 2줄 구조로 처리
+  for (let i = 1; i < values.length; i += 1) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
     const productName = String(row[5] || "").trim(); // F열 상품명
@@ -1312,16 +1323,22 @@ export default async function handler(req, res) {
       const text = normalizeText(event.message.text);
       if (!text) continue;
 
-      const registerGroupCommand = parseRegisterGroupCommand(text);
-      if (registerGroupCommand) {
-        const registerReply = await registerGroupCode(registerGroupCommand, event);
-        await replyToLine(event.replyToken, registerReply);
+      if (parseMyIdCommand(text)) {
+        const userId = getLineUserId(event);
+        await replyToLine(event.replyToken, userId ? `내아이디\n${userId}` : "⚠️ userId를 확인할 수 없습니다.");
         continue;
       }
 
       if (parseUnregisteredCheckCommand(text)) {
         const unregisteredReply = await checkUnregisteredGroups();
         await replyToLine(event.replyToken, unregisteredReply);
+        continue;
+      }
+
+      const registerGroupCommand = parseRegisterGroupCommand(text);
+      if (registerGroupCommand) {
+        const registerReply = await registerGroupCode(registerGroupCommand, event);
+        await replyToLine(event.replyToken, registerReply);
         continue;
       }
 
