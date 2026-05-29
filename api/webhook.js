@@ -320,6 +320,11 @@ function parseTodayRepaymentBroadcastCommand(text) {
   return null;
 }
 
+function parseUnregisteredCheckCommand(text) {
+  const clean = normalizeText(text).replace(/\s+/g, "");
+  return clean === "미등록확인";
+}
+
 function extractCustomerCodeFromProductName(productName) {
   const match = String(productName || "").match(/([A-Za-z]{2,3}\d{2,3})/);
   return match ? match[1].toUpperCase() : null;
@@ -360,6 +365,63 @@ function findTodayDollarCodes(values) {
   }
 
   return codes;
+}
+
+function findActiveLineCustomerCodes(values) {
+  const codes = [];
+  const seen = new Set();
+
+  // 라인 그룹 고객은 1058행부터 시작하고, 고객 1명당 2행씩 사용함
+  for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
+    const row = values[i] || [];
+    const status = String(row[2] || "").trim(); // C열 상태
+    const productName = String(row[5] || "").trim(); // F열 상품명
+
+    if (status !== "진행중") continue;
+
+    const code = extractCustomerCodeFromProductName(productName);
+    if (!code) continue;
+
+    if (!seen.has(code)) {
+      seen.add(code);
+      codes.push(code);
+    }
+  }
+
+  return codes;
+}
+
+async function checkUnregisteredGroups() {
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const values = await getSheetValues(accessToken);
+  const activeCodes = findActiveLineCustomerCodes(values);
+
+  if (!activeCodes.length) {
+    return "⚠️ 진행중 고객이 없습니다.";
+  }
+
+  const groupMapValues = await getGroupMapValues(accessToken);
+  const registeredCodes = new Set();
+
+  for (let i = 1; i < groupMapValues.length; i += 1) {
+    const code = String(groupMapValues[i]?.[0] || "").trim().toUpperCase();
+    const groupId = String(groupMapValues[i]?.[1] || "").trim();
+    if (code && groupId) {
+      registeredCodes.add(code);
+    }
+  }
+
+  const unregisteredCodes = activeCodes.filter(code => !registeredCodes.has(code));
+
+  if (!unregisteredCodes.length) {
+    return "✅ 미등록 고객이 없습니다.";
+  }
+
+  return `❌ 미등록 고객\n\n${unregisteredCodes.join("\n")}`;
 }
 
 async function sendTodayRepaymentBroadcast(broadcastMessage) {
@@ -1254,6 +1316,12 @@ export default async function handler(req, res) {
       if (registerGroupCommand) {
         const registerReply = await registerGroupCode(registerGroupCommand, event);
         await replyToLine(event.replyToken, registerReply);
+        continue;
+      }
+
+      if (parseUnregisteredCheckCommand(text)) {
+        const unregisteredReply = await checkUnregisteredGroups();
+        await replyToLine(event.replyToken, unregisteredReply);
         continue;
       }
 
