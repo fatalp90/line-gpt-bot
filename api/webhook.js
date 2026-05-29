@@ -265,7 +265,7 @@ async function registerGroupCode(command, event) {
     );
   }
 
-  return "✅ OK";
+  return "✅ 등록완료";
 }
 
 async function findMappedGroupId(accessToken, codeToFind) {
@@ -294,20 +294,134 @@ async function pushToLine(to, text) {
   );
 }
 
+function parseTodayRepaymentBroadcastCommand(text) {
+  const clean = normalizeText(text).replace(/\s+/g, "");
+  return /^(오늘상환공지|상환공지|오늘입금요청)$/.test(clean);
+}
+
+function extractCustomerCodeFromProductName(productName) {
+  const match = String(productName || "").match(/([A-Za-z]{2,3}\d{2,3})/);
+  return match ? match[1].toUpperCase() : null;
+}
+
+function hasDollarToday(values, topIndex0, todayColumnIndex0) {
+  const topRow = values[topIndex0] || [];
+  const bottomRow = values[topIndex0 + 1] || [];
+  const topToday = String(topRow[todayColumnIndex0] ?? "").trim();
+  const bottomToday = String(bottomRow[todayColumnIndex0] ?? "").trim();
+  return topToday === "$" || bottomToday === "$";
+}
+
+function findTodayDollarCodes(values) {
+  const today = getKoreaToday();
+  const todayColumnIndex0 = findTodayColumnIndex(values, today.day);
+  const codes = [];
+  const seen = new Set();
+
+  for (let i = 1; i < values.length; i += 1) {
+    const row = values[i] || [];
+    const status = String(row[2] || "").trim(); // C열 상태
+    const productName = String(row[5] || "").trim(); // F열 상품명
+
+    if (status !== "진행중") continue;
+
+    const code = extractCustomerCodeFromProductName(productName);
+    if (!code) continue;
+
+    if (!hasDollarToday(values, i, todayColumnIndex0)) continue;
+
+    if (!seen.has(code)) {
+      seen.add(code);
+      codes.push(code);
+    }
+  }
+
+  return codes;
+}
+
+function isTodayRepaymentTarget(values, codeToFind) {
+  const today = getKoreaToday();
+  const todayColumnIndex0 = findTodayColumnIndex(values, today.day);
+
+  for (let i = 1; i < values.length; i += 1) {
+    const row = values[i] || [];
+    const status = String(row[2] || "").trim(); // C열 상태
+    const productName = String(row[5] || "").trim(); // F열 상품명
+
+    if (status !== "진행중") continue;
+
+    const code = extractCustomerCodeFromProductName(productName);
+    if (code !== codeToFind) continue;
+
+    return hasDollarToday(values, i, todayColumnIndex0);
+  }
+
+  return false;
+}
+
 async function sendMappedGroupMessage(command) {
   if (!SHEET_ID) {
     return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
   }
 
   const accessToken = await getGoogleAccessToken();
+  const values = await getSheetValues(accessToken);
+
+  // 진행중 건 + 오늘 날짜 상/하 중 $ 표시가 있는 경우에만 발송
+  if (!isTodayRepaymentTarget(values, command.code)) {
+    return "⚠️ 오늘 상환 대상이 아닙니다.";
+  }
+
   const groupId = await findMappedGroupId(accessToken, command.code);
 
   if (!groupId) {
-    return `⚠️ ${command.code} 등록된 그룹방이 없습니다.`;
+    return `❌ 그룹을 찾을 수 없습니다.\n\n${command.code}`;
   }
 
-  await pushToLine(groupId, command.message);
-  return "✅ OK";
+  try {
+    await pushToLine(groupId, command.message);
+    return null; // 성공 시 관리자방에는 답장하지 않음
+  } catch (err) {
+    console.error(err);
+    return `❌ 발송 실패\n\n${command.code}`;
+  }
+}
+
+async function sendTodayRepaymentBroadcast() {
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const values = await getSheetValues(accessToken);
+  const codes = findTodayDollarCodes(values);
+
+  if (!codes.length) {
+    return "⚠️ 오늘 발송 대상이 없습니다.";
+  }
+
+  const failedCodes = [];
+
+  for (const code of codes) {
+    const groupId = await findMappedGroupId(accessToken, code);
+    if (!groupId) {
+      failedCodes.push(code);
+      continue;
+    }
+
+    try {
+      await pushToLine(groupId, "입금하세요");
+    } catch (err) {
+      console.error(err);
+      failedCodes.push(code);
+    }
+  }
+
+  if (failedCodes.length) {
+    return `❌ 그룹을 찾을 수 없습니다.\n\n${failedCodes.join("\n")}`;
+  }
+
+  return null; // 전부 성공 시 관리자방에는 답장하지 않음
 }
 
 function findTodayColumnIndex(values, day) {
@@ -1135,10 +1249,20 @@ export default async function handler(req, res) {
         continue;
       }
 
+      if (parseTodayRepaymentBroadcastCommand(text)) {
+        const broadcastReply = await sendTodayRepaymentBroadcast();
+        if (broadcastReply) {
+          await replyToLine(event.replyToken, broadcastReply);
+        }
+        continue;
+      }
+
       const pushRequestCommand = parsePushRequestCommand(text);
       if (pushRequestCommand) {
         const pushReply = await sendMappedGroupMessage(pushRequestCommand);
-        await replyToLine(event.replyToken, pushReply);
+        if (pushReply) {
+          await replyToLine(event.replyToken, pushReply);
+        }
         continue;
       }
 
