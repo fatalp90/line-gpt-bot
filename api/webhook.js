@@ -14,6 +14,24 @@ const GOOGLE_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
 const DATE_START_COLUMN_INDEX = 11; // L column, 0-based
 const DATE_END_COLUMN_INDEX = 41; // AP column, 0-based
 const GROUP_MAP_SHEET_NAME = process.env.LINE_GROUP_MAP_SHEET_NAME || "LINE그룹매핑";
+const LINE_CUSTOMER_START_ROW = 1058;
+const LINE_CUSTOMER_START_INDEX0 = LINE_CUSTOMER_START_ROW - 1;
+
+const REPAYMENT_MORNING_MESSAGE = `📌 กรุณาโอนชำระครับ
+
+วันนี้เป็นวันชำระของคุณครับ
+กรุณาโอนก่อนเวลา 20:00 น. ของวันนี้
+
+ขอบคุณครับ`;
+
+const REPAYMENT_AFTERNOON_MESSAGE = `📌 กรุณาโอนชำระด่วนครับ
+
+ขณะนี้ยังไม่พบรายการชำระของคุณครับ
+
+กรุณารีบดำเนินการโอนโดยเร็วที่สุด
+และส่งสลิปหลังโอนเสร็จครับ
+
+ขอบคุณครับ`;
 
 
 function base64Url(input) {
@@ -72,25 +90,6 @@ function parseRegisterGroupCommand(text) {
   };
 }
 
-function parsePushRequestCommand(text) {
-  const clean = normalizeText(text).replace(/\s+/g, "");
-  const match = clean.match(/^([A-Za-z]{2,3}\d{2,3})\/(입금요청|상환요청|슬립요청|대기)$/);
-  if (!match) return null;
-
-  const messageMap = {
-    "입금요청": "입금하세요",
-    "상환요청": "상환하세요",
-    "슬립요청": "슬립 올려주세요",
-    "대기": "잠시만 기다려 주세요"
-  };
-
-  return {
-    code: match[1].toUpperCase(),
-    action: match[2],
-    message: messageMap[match[2]]
-  };
-}
-
 function isBlankCell(value) {
   return value === undefined || value === null || String(value).trim() === "";
 }
@@ -103,6 +102,17 @@ function isInputCandidateCell(value) {
 function isActualPaymentCell(value) {
   const v = String(value ?? "").trim();
   return /^-?\d+(?:\.\d+)?$/.test(v);
+}
+
+function parseAmountValue(value) {
+  const n = Number(String(value ?? "").trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatAmountValue(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value ?? "");
+  return String(Math.round((n + Number.EPSILON) * 1000) / 1000).replace(/\.0+$/, "");
 }
 
 async function getGoogleAccessToken() {
@@ -296,7 +306,16 @@ async function pushToLine(to, text) {
 
 function parseTodayRepaymentBroadcastCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
-  return /^(오늘상환공지|상환공지|오늘입금요청)$/.test(clean);
+
+  if (clean === "오늘상환오전") {
+    return { type: "morning", message: REPAYMENT_MORNING_MESSAGE };
+  }
+
+  if (clean === "오늘상환오후") {
+    return { type: "afternoon", message: REPAYMENT_AFTERNOON_MESSAGE };
+  }
+
+  return null;
 }
 
 function extractCustomerCodeFromProductName(productName) {
@@ -318,7 +337,9 @@ function findTodayDollarCodes(values) {
   const codes = [];
   const seen = new Set();
 
-  for (let i = 1; i < values.length; i += 1) {
+  // 라인 그룹 고객은 1058행부터 시작하고, 고객 1명당 2행씩 사용함
+  // 1058~1059 = 1명, 1060~1061 = 1명... 구조만 검색
+  for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
     const productName = String(row[5] || "").trim(); // F열 상품명
@@ -339,55 +360,7 @@ function findTodayDollarCodes(values) {
   return codes;
 }
 
-function isTodayRepaymentTarget(values, codeToFind) {
-  const today = getKoreaToday();
-  const todayColumnIndex0 = findTodayColumnIndex(values, today.day);
-
-  for (let i = 1; i < values.length; i += 1) {
-    const row = values[i] || [];
-    const status = String(row[2] || "").trim(); // C열 상태
-    const productName = String(row[5] || "").trim(); // F열 상품명
-
-    if (status !== "진행중") continue;
-
-    const code = extractCustomerCodeFromProductName(productName);
-    if (code !== codeToFind) continue;
-
-    return hasDollarToday(values, i, todayColumnIndex0);
-  }
-
-  return false;
-}
-
-async function sendMappedGroupMessage(command) {
-  if (!SHEET_ID) {
-    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
-  }
-
-  const accessToken = await getGoogleAccessToken();
-  const values = await getSheetValues(accessToken);
-
-  // 진행중 건 + 오늘 날짜 상/하 중 $ 표시가 있는 경우에만 발송
-  if (!isTodayRepaymentTarget(values, command.code)) {
-    return "⚠️ 오늘 상환 대상이 아닙니다.";
-  }
-
-  const groupId = await findMappedGroupId(accessToken, command.code);
-
-  if (!groupId) {
-    return `❌ 그룹을 찾을 수 없습니다.\n\n${command.code}`;
-  }
-
-  try {
-    await pushToLine(groupId, command.message);
-    return null; // 성공 시 관리자방에는 답장하지 않음
-  } catch (err) {
-    console.error(err);
-    return `❌ 발송 실패\n\n${command.code}`;
-  }
-}
-
-async function sendTodayRepaymentBroadcast() {
+async function sendTodayRepaymentBroadcast(broadcastMessage) {
   if (!SHEET_ID) {
     return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
   }
@@ -410,7 +383,7 @@ async function sendTodayRepaymentBroadcast() {
     }
 
     try {
-      await pushToLine(groupId, "입금하세요");
+      await pushToLine(groupId, broadcastMessage);
     } catch (err) {
       console.error(err);
       failedCodes.push(code);
@@ -439,24 +412,38 @@ function chooseTargetRow(values, topIndex0, todayColumnIndex0) {
   const topToday = topRow[todayColumnIndex0];
   const bottomToday = bottomRow[todayColumnIndex0];
 
-  const candidates = [];
+  const newInputCandidates = [];
+  const sumCandidates = [];
 
-  // 입력 가능 칸은 정확히 하이픈(-) 또는 달러($)만 허용
-  // 공백, X, 숫자, 기타 문자는 자동 입력 대상에서 제외
+  // 1순위: 하이픈(-) 또는 달러($) 칸은 신규 입력 가능
+  // 2순위: 숫자 칸은 추가 입금 시 기존값 + 신규값으로 합산 가능
+  // 공백, X, 기타 문자는 자동 입력 대상에서 제외
   if (isInputCandidateCell(topToday)) {
-    candidates.push(topIndex0 + 1);
+    newInputCandidates.push({ rowNumber: topIndex0 + 1, currentValue: topToday });
+  } else if (isActualPaymentCell(topToday)) {
+    sumCandidates.push({ rowNumber: topIndex0 + 1, currentValue: topToday });
   }
 
   if (isInputCandidateCell(bottomToday)) {
-    candidates.push(topIndex0 + 2);
+    newInputCandidates.push({ rowNumber: topIndex0 + 2, currentValue: bottomToday });
+  } else if (isActualPaymentCell(bottomToday)) {
+    sumCandidates.push({ rowNumber: topIndex0 + 2, currentValue: bottomToday });
   }
 
-  if (candidates.length === 1) {
-    return { status: "ok", rowNumber: candidates[0] };
+  if (newInputCandidates.length === 1) {
+    return { status: "ok", mode: "new", ...newInputCandidates[0] };
   }
 
-  if (candidates.length >= 2) {
+  if (newInputCandidates.length >= 2) {
     return { status: "multiple" };
+  }
+
+  if (sumCandidates.length === 1) {
+    return { status: "ok", mode: "sum", ...sumCandidates[0] };
+  }
+
+  if (sumCandidates.length >= 2) {
+    return { status: "none" };
   }
 
   return { status: "none" };
@@ -473,7 +460,7 @@ async function writeSheetCommand(command) {
   const todayColumnIndex0 = findTodayColumnIndex(values, today.day);
 
   const matches = [];
-  for (let i = 1; i < values.length; i += 1) {
+  for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
     const productName = String(row[5] || "").trim(); // F열 상품명
@@ -507,9 +494,28 @@ async function writeSheetCommand(command) {
     return "⚠️ 입력 가능 칸이 없습니다.";
   }
 
-  await updateSheetCell(accessToken, target.rowNumber, todayColumnIndex0, command.value);
+  if (target.mode === "sum") {
+    const currentAmount = parseAmountValue(target.currentValue);
+    const addAmount = parseAmountValue(command.value);
 
-  return "✅ OK";
+    if (currentAmount === null || addAmount === null) {
+      return "⚠️ 입력 가능 칸이 없습니다.";
+    }
+
+    const totalAmount = currentAmount + addAmount;
+    const currentText = formatAmountValue(currentAmount);
+    const addText = formatAmountValue(addAmount);
+    const totalText = formatAmountValue(totalAmount);
+
+    await updateSheetCell(accessToken, target.rowNumber, todayColumnIndex0, totalText);
+
+    return `✅ ${command.code} : ${currentText} + ${addText} = ${totalText}`;
+  }
+
+  const inputText = formatAmountValue(command.value);
+  await updateSheetCell(accessToken, target.rowNumber, todayColumnIndex0, inputText);
+
+  return `✅ ${command.code} : ${inputText} 등록완료`;
 }
 
 const ignoreKeywords = [
@@ -1249,19 +1255,11 @@ export default async function handler(req, res) {
         continue;
       }
 
-      if (parseTodayRepaymentBroadcastCommand(text)) {
-        const broadcastReply = await sendTodayRepaymentBroadcast();
+      const todayRepaymentBroadcastCommand = parseTodayRepaymentBroadcastCommand(text);
+      if (todayRepaymentBroadcastCommand) {
+        const broadcastReply = await sendTodayRepaymentBroadcast(todayRepaymentBroadcastCommand.message);
         if (broadcastReply) {
           await replyToLine(event.replyToken, broadcastReply);
-        }
-        continue;
-      }
-
-      const pushRequestCommand = parsePushRequestCommand(text);
-      if (pushRequestCommand) {
-        const pushReply = await sendMappedGroupMessage(pushRequestCommand);
-        if (pushReply) {
-          await replyToLine(event.replyToken, pushReply);
         }
         continue;
       }
