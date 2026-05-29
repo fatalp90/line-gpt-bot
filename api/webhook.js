@@ -13,6 +13,8 @@ const GOOGLE_PRIVATE_KEY = (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g
 const GOOGLE_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
 const DATE_START_COLUMN_INDEX = 11; // L column, 0-based
 const DATE_END_COLUMN_INDEX = 41; // AP column, 0-based
+const GROUP_MAP_SHEET_NAME = process.env.LINE_GROUP_MAP_SHEET_NAME || "LINE그룹매핑";
+
 
 function base64Url(input) {
   return Buffer.from(input)
@@ -57,6 +59,35 @@ function parseSheetCommand(text) {
   return {
     code: match[1].toUpperCase(),
     value: match[2]
+  };
+}
+
+function parseRegisterGroupCommand(text) {
+  const clean = normalizeText(text).replace(/\s+/g, "");
+  const match = clean.match(/^([A-Za-z]{2,3}\d{2,3})\/등록$/);
+  if (!match) return null;
+
+  return {
+    code: match[1].toUpperCase()
+  };
+}
+
+function parsePushRequestCommand(text) {
+  const clean = normalizeText(text).replace(/\s+/g, "");
+  const match = clean.match(/^([A-Za-z]{2,3}\d{2,3})\/(입금요청|상환요청|슬립요청|대기)$/);
+  if (!match) return null;
+
+  const messageMap = {
+    "입금요청": "입금하세요",
+    "상환요청": "상환하세요",
+    "슬립요청": "슬립 올려주세요",
+    "대기": "잠시만 기다려 주세요"
+  };
+
+  return {
+    code: match[1].toUpperCase(),
+    action: match[2],
+    message: messageMap[match[2]]
   };
 }
 
@@ -133,6 +164,150 @@ async function updateSheetCell(accessToken, rowNumber, columnIndex0, value) {
   );
 
   return `${columnLetter}${rowNumber}`;
+}
+
+async function getSpreadsheetSheetTitles(accessToken) {
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}?fields=sheets.properties.title`;
+  const response = await axios.get(url, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+
+  return (response.data.sheets || []).map(sheet => sheet.properties?.title).filter(Boolean);
+}
+
+async function ensureGroupMapSheet(accessToken) {
+  const titles = await getSpreadsheetSheetTitles(accessToken);
+  if (titles.includes(GROUP_MAP_SHEET_NAME)) return;
+
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}:batchUpdate`;
+  await axios.post(
+    url,
+    {
+      requests: [
+        {
+          addSheet: {
+            properties: {
+              title: GROUP_MAP_SHEET_NAME
+            }
+          }
+        }
+      ]
+    },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+
+  const headerRange = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A1:C1`;
+  const headerUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(headerRange)}?valueInputOption=USER_ENTERED`;
+  await axios.put(
+    headerUrl,
+    { range: headerRange, majorDimension: "ROWS", values: [["코드", "그룹ID", "등록일시"]] },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+}
+
+async function getGroupMapValues(accessToken) {
+  await ensureGroupMapSheet(accessToken);
+  const range = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A:C`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`;
+  const response = await axios.get(url, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  return response.data.values || [];
+}
+
+async function registerGroupCode(command, event) {
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const groupId = event?.source?.groupId || event?.source?.roomId;
+  if (!groupId) {
+    return "⚠️ 그룹방에서만 등록 가능합니다.";
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const values = await getGroupMapValues(accessToken);
+  const nowText = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(new Date());
+
+  let existingRowNumber = null;
+  for (let i = 1; i < values.length; i += 1) {
+    const code = String(values[i]?.[0] || "").trim().toUpperCase();
+    if (code === command.code) {
+      existingRowNumber = i + 1;
+      break;
+    }
+  }
+
+  if (existingRowNumber) {
+    const range = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A${existingRowNumber}:C${existingRowNumber}`;
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
+    await axios.put(
+      url,
+      { range, majorDimension: "ROWS", values: [[command.code, groupId, nowText]] },
+      { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+    );
+  } else {
+    const range = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A:C`;
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+    await axios.post(
+      url,
+      { range, majorDimension: "ROWS", values: [[command.code, groupId, nowText]] },
+      { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+    );
+  }
+
+  return "✅ OK";
+}
+
+async function findMappedGroupId(accessToken, codeToFind) {
+  const values = await getGroupMapValues(accessToken);
+  for (let i = 1; i < values.length; i += 1) {
+    const code = String(values[i]?.[0] || "").trim().toUpperCase();
+    const groupId = String(values[i]?.[1] || "").trim();
+    if (code === codeToFind && groupId) return groupId;
+  }
+  return null;
+}
+
+async function pushToLine(to, text) {
+  return axios.post(
+    "https://api.line.me/v2/bot/message/push",
+    {
+      to,
+      messages: [{ type: "text", text }]
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+}
+
+async function sendMappedGroupMessage(command) {
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const groupId = await findMappedGroupId(accessToken, command.code);
+
+  if (!groupId) {
+    return `⚠️ ${command.code} 등록된 그룹방이 없습니다.`;
+  }
+
+  await pushToLine(groupId, command.message);
+  return "✅ OK";
 }
 
 function findTodayColumnIndex(values, day) {
@@ -952,6 +1127,20 @@ export default async function handler(req, res) {
 
       const text = normalizeText(event.message.text);
       if (!text) continue;
+
+      const registerGroupCommand = parseRegisterGroupCommand(text);
+      if (registerGroupCommand) {
+        const registerReply = await registerGroupCode(registerGroupCommand, event);
+        await replyToLine(event.replyToken, registerReply);
+        continue;
+      }
+
+      const pushRequestCommand = parsePushRequestCommand(text);
+      if (pushRequestCommand) {
+        const pushReply = await sendMappedGroupMessage(pushRequestCommand);
+        await replyToLine(event.replyToken, pushReply);
+        continue;
+      }
 
       const sheetCommand = parseSheetCommand(text);
       if (sheetCommand) {
