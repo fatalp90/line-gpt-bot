@@ -64,13 +64,12 @@ function isBlankCell(value) {
   return value === undefined || value === null || String(value).trim() === "";
 }
 
-function isPlaceholderCell(value) {
+function isInputCandidateCell(value) {
   const v = String(value ?? "").trim();
-  return v === "" || v === "-" || v === "$" || /^x$/i.test(v);
+  return v === "-" || v === "$";
 }
 
 function isActualPaymentCell(value) {
-  if (isPlaceholderCell(value)) return false;
   const v = String(value ?? "").trim();
   return /^-?\d+(?:\.\d+)?$/.test(v);
 }
@@ -151,24 +150,27 @@ function chooseTargetRow(values, topIndex0, todayColumnIndex0) {
   const topToday = topRow[todayColumnIndex0];
   const bottomToday = bottomRow[todayColumnIndex0];
 
-  // 오늘 칸에 이미 실제 숫자가 있다면 같은 줄에 덮어쓰기
-  if (isActualPaymentCell(topToday) && !isActualPaymentCell(bottomToday)) return topIndex0 + 1;
-  if (isActualPaymentCell(bottomToday) && !isActualPaymentCell(topToday)) return topIndex0 + 2;
+  const candidates = [];
 
-  // 현재 날짜 칸 중 한쪽만 비어 있지 않은 경우, 해당 줄을 우선 사용
-  if (!isPlaceholderCell(topToday) && isPlaceholderCell(bottomToday)) return topIndex0 + 1;
-  if (!isPlaceholderCell(bottomToday) && isPlaceholderCell(topToday)) return topIndex0 + 2;
-
-  // 과거 입력 패턴을 보고 상단/하단 중 실제 숫자 입력이 많았던 줄을 선택
-  let topActualCount = 0;
-  let bottomActualCount = 0;
-  for (let col = DATE_START_COLUMN_INDEX; col <= DATE_END_COLUMN_INDEX; col += 1) {
-    if (isActualPaymentCell(topRow[col])) topActualCount += 1;
-    if (isActualPaymentCell(bottomRow[col])) bottomActualCount += 1;
+  // 입력 가능 칸은 정확히 하이픈(-) 또는 달러($)만 허용
+  // 공백, X, 숫자, 기타 문자는 자동 입력 대상에서 제외
+  if (isInputCandidateCell(topToday)) {
+    candidates.push(topIndex0 + 1);
   }
 
-  if (bottomActualCount > topActualCount) return topIndex0 + 2;
-  return topIndex0 + 1;
+  if (isInputCandidateCell(bottomToday)) {
+    candidates.push(topIndex0 + 2);
+  }
+
+  if (candidates.length === 1) {
+    return { status: "ok", rowNumber: candidates[0] };
+  }
+
+  if (candidates.length >= 2) {
+    return { status: "multiple" };
+  }
+
+  return { status: "none" };
 }
 
 async function writeSheetCommand(command) {
@@ -206,10 +208,19 @@ async function writeSheetCommand(command) {
   }
 
   const match = matches[0];
-  const rowNumber = chooseTargetRow(values, match.rowIndex0, todayColumnIndex0);
-  const updatedCell = await updateSheetCell(accessToken, rowNumber, todayColumnIndex0, command.value);
+  const target = chooseTargetRow(values, match.rowIndex0, todayColumnIndex0);
 
-  return `✅ OK\n${command.code} / ${today.month}월 ${today.day}일 / ${command.value}\n${updatedCell} 입력 완료`;
+  if (target.status === "multiple") {
+    return "⚠️ 입력 가능 칸이 2개 발견되었습니다.";
+  }
+
+  if (target.status === "none") {
+    return "⚠️ 입력 가능 칸이 없습니다.";
+  }
+
+  await updateSheetCell(accessToken, target.rowNumber, todayColumnIndex0, command.value);
+
+  return "✅ OK";
 }
 
 const ignoreKeywords = [
