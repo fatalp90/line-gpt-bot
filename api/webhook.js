@@ -1,8 +1,216 @@
 import axios from "axios";
+import crypto from "crypto";
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4";
 const MAX_HISTORY_ITEMS = 8;
 const MAX_HISTORY_SESSIONS = 500;
+
+
+const SHEET_ID = process.env.GOOGLE_SHEET_ID || "";
+const SHEET_NAME = process.env.GOOGLE_SHEET_NAME || "2026(통합)";
+const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "";
+const GOOGLE_PRIVATE_KEY = (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
+const GOOGLE_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
+const DATE_START_COLUMN_INDEX = 11; // L column, 0-based
+const DATE_END_COLUMN_INDEX = 41; // AP column, 0-based
+
+function base64Url(input) {
+  return Buffer.from(input)
+    .toString("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+}
+
+function columnNumberToLetter(columnNumber) {
+  let temp = "";
+  let n = columnNumber;
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    temp = String.fromCharCode(65 + rem) + temp;
+    n = Math.floor((n - rem - 1) / 26);
+  }
+  return temp;
+}
+
+function escapeSheetName(name) {
+  return String(name).replace(/'/g, "''");
+}
+
+function getKoreaToday() {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  });
+
+  const [year, month, day] = formatter.format(new Date()).split("-").map(Number);
+  return { year, month, day };
+}
+
+function parseSheetCommand(text) {
+  const clean = normalizeText(text).replace(/\s+/g, "");
+  const match = clean.match(/^([A-Za-z]{2,3}\d{2,3})\/(\d+(?:\.\d+)?)$/);
+  if (!match) return null;
+
+  return {
+    code: match[1].toUpperCase(),
+    value: match[2]
+  };
+}
+
+function isBlankCell(value) {
+  return value === undefined || value === null || String(value).trim() === "";
+}
+
+function isPlaceholderCell(value) {
+  const v = String(value ?? "").trim();
+  return v === "" || v === "-" || v === "$" || /^x$/i.test(v);
+}
+
+function isActualPaymentCell(value) {
+  if (isPlaceholderCell(value)) return false;
+  const v = String(value ?? "").trim();
+  return /^-?\d+(?:\.\d+)?$/.test(v);
+}
+
+async function getGoogleAccessToken() {
+  if (!GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_PRIVATE_KEY) {
+    throw new Error("Google service account environment variables are missing.");
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: "RS256", typ: "JWT" };
+  const payload = {
+    iss: GOOGLE_SERVICE_ACCOUNT_EMAIL,
+    scope: GOOGLE_SHEETS_SCOPE,
+    aud: "https://oauth2.googleapis.com/token",
+    iat: now,
+    exp: now + 3600
+  };
+
+  const unsignedToken = `${base64Url(JSON.stringify(header))}.${base64Url(JSON.stringify(payload))}`;
+  const signature = crypto
+    .createSign("RSA-SHA256")
+    .update(unsignedToken)
+    .sign(GOOGLE_PRIVATE_KEY, "base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+
+  const jwt = `${unsignedToken}.${signature}`;
+
+  const response = await axios.post(
+    "https://oauth2.googleapis.com/token",
+    new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion: jwt
+    }).toString(),
+    { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+  );
+
+  return response.data.access_token;
+}
+
+async function getSheetValues(accessToken) {
+  const range = `'${escapeSheetName(SHEET_NAME)}'!A:AP`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`;
+  const response = await axios.get(url, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  return response.data.values || [];
+}
+
+async function updateSheetCell(accessToken, rowNumber, columnIndex0, value) {
+  const columnLetter = columnNumberToLetter(columnIndex0 + 1);
+  const range = `'${escapeSheetName(SHEET_NAME)}'!${columnLetter}${rowNumber}`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
+
+  await axios.put(
+    url,
+    { range, majorDimension: "ROWS", values: [[value]] },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+
+  return `${columnLetter}${rowNumber}`;
+}
+
+function findTodayColumnIndex(values, day) {
+  const header = values[0] || [];
+  for (let col = DATE_START_COLUMN_INDEX; col <= DATE_END_COLUMN_INDEX; col += 1) {
+    const cell = header[col];
+    if (Number(cell) === Number(day)) return col;
+  }
+  return DATE_START_COLUMN_INDEX + day - 1;
+}
+
+function chooseTargetRow(values, topIndex0, todayColumnIndex0) {
+  const topRow = values[topIndex0] || [];
+  const bottomRow = values[topIndex0 + 1] || [];
+  const topToday = topRow[todayColumnIndex0];
+  const bottomToday = bottomRow[todayColumnIndex0];
+
+  // 오늘 칸에 이미 실제 숫자가 있다면 같은 줄에 덮어쓰기
+  if (isActualPaymentCell(topToday) && !isActualPaymentCell(bottomToday)) return topIndex0 + 1;
+  if (isActualPaymentCell(bottomToday) && !isActualPaymentCell(topToday)) return topIndex0 + 2;
+
+  // 현재 날짜 칸 중 한쪽만 비어 있지 않은 경우, 해당 줄을 우선 사용
+  if (!isPlaceholderCell(topToday) && isPlaceholderCell(bottomToday)) return topIndex0 + 1;
+  if (!isPlaceholderCell(bottomToday) && isPlaceholderCell(topToday)) return topIndex0 + 2;
+
+  // 과거 입력 패턴을 보고 상단/하단 중 실제 숫자 입력이 많았던 줄을 선택
+  let topActualCount = 0;
+  let bottomActualCount = 0;
+  for (let col = DATE_START_COLUMN_INDEX; col <= DATE_END_COLUMN_INDEX; col += 1) {
+    if (isActualPaymentCell(topRow[col])) topActualCount += 1;
+    if (isActualPaymentCell(bottomRow[col])) bottomActualCount += 1;
+  }
+
+  if (bottomActualCount > topActualCount) return topIndex0 + 2;
+  return topIndex0 + 1;
+}
+
+async function writeSheetCommand(command) {
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const values = await getSheetValues(accessToken);
+  const today = getKoreaToday();
+  const todayColumnIndex0 = findTodayColumnIndex(values, today.day);
+
+  const matches = [];
+  for (let i = 1; i < values.length; i += 1) {
+    const row = values[i] || [];
+    const status = String(row[2] || "").trim(); // C열 상태
+    const productName = String(row[5] || "").trim(); // F열 상품명
+
+    if (status !== "진행중") continue;
+
+    const codeMatch = productName.match(/([A-Za-z]{2,3}\d{2,3})/);
+    if (!codeMatch) continue;
+
+    if (codeMatch[1].toUpperCase() === command.code) {
+      matches.push({ rowIndex0: i, productName });
+    }
+  }
+
+  if (matches.length === 0) {
+    return `⚠️ ${command.code} 진행중 고객을 찾지 못했습니다.`;
+  }
+
+  if (matches.length > 1) {
+    return `⚠️ ${command.code} 진행중 항목이 ${matches.length}개입니다. 중복 확인이 필요합니다.`;
+  }
+
+  const match = matches[0];
+  const rowNumber = chooseTargetRow(values, match.rowIndex0, todayColumnIndex0);
+  const updatedCell = await updateSheetCell(accessToken, rowNumber, todayColumnIndex0, command.value);
+
+  return `✅ OK\n${command.code} / ${today.month}월 ${today.day}일 / ${command.value}\n${updatedCell} 입력 완료`;
+}
 
 const ignoreKeywords = [
   "110551366954",
@@ -733,6 +941,13 @@ export default async function handler(req, res) {
 
       const text = normalizeText(event.message.text);
       if (!text) continue;
+
+      const sheetCommand = parseSheetCommand(text);
+      if (sheetCommand) {
+        const sheetReply = await writeSheetCommand(sheetCommand);
+        await replyToLine(event.replyToken, sheetReply);
+        continue;
+      }
 
       // ignore repetitive/system/decorative/admin-pattern messages
       if (shouldIgnoreMessage(text)) {
