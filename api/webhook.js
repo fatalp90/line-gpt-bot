@@ -20,18 +20,16 @@ const LINE_CUSTOMER_START_INDEX0 = LINE_CUSTOMER_START_ROW - 1;
 const REPAYMENT_MORNING_MESSAGE = `📌 กรุณาโอนชำระครับ
 
 วันนี้เป็นวันชำระของคุณครับ
-กรุณาโอนก่อนเวลา 20:00 น. ของวันนี้
-
-ขอบคุณครับ`;
+กรุณาโอนก่อนเวลา 20:00 น. ของวันนี้`;
 
 const REPAYMENT_AFTERNOON_MESSAGE = `📌 กรุณาโอนชำระด่วนครับ
 
 ขณะนี้ยังไม่พบรายการชำระของคุณครับ
 
 กรุณารีบดำเนินการโอนโดยเร็วที่สุด
-และส่งสลิปหลังโอนเสร็จครับ
+และส่งสลิปหลังโอนเสร็จครับ`;
 
-ขอบคุณครับ`;
+const PAYMENT_REQUEST_MESSAGE = `📌 กรุณาโอนชำระครับ`;
 
 
 function base64Url(input) {
@@ -306,6 +304,10 @@ async function pushToLine(to, text) {
 
 function parseTodayRepaymentBroadcastCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
+
+  if (clean === "오늘입금요청") {
+    return { type: "payment", message: PAYMENT_REQUEST_MESSAGE };
+  }
 
   if (clean === "오늘상환오전") {
     return { type: "morning", message: REPAYMENT_MORNING_MESSAGE };
