@@ -754,16 +754,33 @@ function chooseTargetRow(values, topIndex0, todayColumnIndex0) {
   return { status: "none" };
 }
 
-async function addNextDayDollarIfBlank(accessToken, values, rowNumber, todayColumnIndex0) {
-  const nextColumnIndex0 = todayColumnIndex0 + 1;
-  if (nextColumnIndex0 > DATE_END_COLUMN_INDEX) return false;
+async function addNextDayDollarIfBlank(accessToken, values, rowNumber, todayColumnIndex0, topRowNumber, todayInfo = null) {
+  const today = todayInfo || getKoreaToday();
+  const lastDayOfMonth = getDaysInMonth(today.year, today.month);
 
-  const row = values[rowNumber - 1] || [];
+  let nextRowNumber = rowNumber;
+  let nextColumnIndex0 = todayColumnIndex0 + 1;
+
+  // 월말(28/29/30/31일)은 다음날이 1일이므로, 날짜 칸은 1일로 돌아가고 상/하 줄을 반대로 바꾼다.
+  // 예: 상 31일 입력 -> 하 1일에 $, 하 31일 입력 -> 상 1일에 $
+  if (today.day >= lastDayOfMonth) {
+    nextColumnIndex0 = findTodayColumnIndex(values, 1);
+
+    if (rowNumber === topRowNumber) {
+      nextRowNumber = topRowNumber + 1;
+    } else if (rowNumber === topRowNumber + 1) {
+      nextRowNumber = topRowNumber;
+    }
+  }
+
+  if (nextColumnIndex0 < DATE_START_COLUMN_INDEX || nextColumnIndex0 > DATE_END_COLUMN_INDEX) return false;
+
+  const row = values[nextRowNumber - 1] || [];
   const nextValue = row[nextColumnIndex0];
 
   if (!isBlankCell(nextValue)) return false;
 
-  await updateSheetCell(accessToken, rowNumber, nextColumnIndex0, "$");
+  await updateSheetCell(accessToken, nextRowNumber, nextColumnIndex0, "$");
   return true;
 }
 
@@ -828,14 +845,14 @@ async function writeSheetCommand(command) {
     const totalText = formatAmountValue(totalAmount);
 
     await updateSheetCell(accessToken, target.rowNumber, todayColumnIndex0, totalText);
-    await addNextDayDollarIfBlank(accessToken, values, target.rowNumber, todayColumnIndex0);
+    await addNextDayDollarIfBlank(accessToken, values, target.rowNumber, todayColumnIndex0, match.rowIndex0 + 1, today);
 
     return `✅ ${command.code} : ${currentText} + ${addText} = ${totalText}`;
   }
 
   const inputText = formatAmountValue(command.value);
   await updateSheetCell(accessToken, target.rowNumber, todayColumnIndex0, inputText);
-  await addNextDayDollarIfBlank(accessToken, values, target.rowNumber, todayColumnIndex0);
+  await addNextDayDollarIfBlank(accessToken, values, target.rowNumber, todayColumnIndex0, match.rowIndex0 + 1, today);
 
   return `✅ ${command.code} : ${inputText} 등록완료`;
 }
