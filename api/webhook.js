@@ -92,6 +92,17 @@ function parseSheetCommand(text) {
   };
 }
 
+function parseRegisterGroupCommand(text) {
+  const clean = normalizeText(text).replace(/\s+/g, "");
+  const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/등록$/i);
+  if (!match) return null;
+
+  return {
+    code: match[1].toUpperCase()
+  };
+}
+
+
 function parseCloseCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
   const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/종료$/i);
@@ -417,6 +428,60 @@ async function getGroupMapValues(accessToken) {
   });
   return response.data.values || [];
 }
+
+async function registerGroupCode(command, event) {
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const groupId = event?.source?.groupId || event?.source?.roomId;
+  if (!groupId) {
+    return "⚠️ 그룹방에서만 등록 가능합니다.";
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const values = await getGroupMapValues(accessToken);
+  const nowText = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(new Date());
+
+  let existingRowNumber = null;
+  for (let i = 1; i < values.length; i += 1) {
+    const code = String(values[i]?.[0] || "").trim().toUpperCase();
+    if (code === command.code) {
+      existingRowNumber = i + 1;
+      break;
+    }
+  }
+
+  if (existingRowNumber) {
+    const range = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A${existingRowNumber}:C${existingRowNumber}`;
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
+    await axios.put(
+      url,
+      { range, majorDimension: "ROWS", values: [[command.code, groupId, nowText]] },
+      { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+    );
+  } else {
+    const range = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A:C`;
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+    await axios.post(
+      url,
+      { range, majorDimension: "ROWS", values: [[command.code, groupId, nowText]] },
+      { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+    );
+  }
+
+  return "✅ 등록완료";
+}
+
 
 async function findMappedGroupId(accessToken, codeToFind) {
   const values = await getGroupMapValues(accessToken);
@@ -1604,6 +1669,18 @@ export default async function handler(req, res) {
       if (parseMyIdCommand(text)) {
         const userId = getLineUserId(event);
         await replyToLine(event.replyToken, userId ? `내아이디\n${userId}` : "⚠️ userId를 확인할 수 없습니다.");
+        continue;
+      }
+
+      const registerGroupCommand = parseRegisterGroupCommand(text);
+      if (registerGroupCommand) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
+        const registerReply = await registerGroupCode(registerGroupCommand, event);
+        await replyToLine(event.replyToken, registerReply);
         continue;
       }
 
