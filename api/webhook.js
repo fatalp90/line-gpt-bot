@@ -83,16 +83,6 @@ function parseSheetCommand(text) {
   };
 }
 
-function parseRegisterGroupCommand(text) {
-  const clean = normalizeText(text).replace(/\s+/g, "");
-  const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/등록$/);
-  if (!match) return null;
-
-  return {
-    code: match[1].toUpperCase()
-  };
-}
-
 
 function parseYearMonthValue(value) {
   const raw = String(value ?? "").trim();
@@ -142,86 +132,6 @@ function parseCutRequiredValue(value) {
     return { error: "⚠️ Cut은 숫자 또는 - 로 입력해주세요. 예: 5 또는 -" };
   }
   return { value: n };
-}
-
-function parseNewCustomerRegisterCommand(text) {
-  const normalized = normalizeText(text);
-  const lines = normalized
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(Boolean);
-
-  if (lines.length === 0) return null;
-  if (lines[0].replace(/\s+/g, "") !== "등록") return null;
-
-  const data = {};
-  for (const line of lines.slice(1)) {
-    const match = line.match(/^([^:：]+)[:：](.*)$/);
-    if (!match) continue;
-    const key = match[1].trim().replace(/\s+/g, "");
-    const value = match[2].trim();
-    data[key] = value;
-  }
-
-  const requiredKeys = ["년/월", "상태", "구분", "관리자명", "상품명", "고객명", "날짜", "금액", "Cut"];
-  const missing = requiredKeys.filter(key => !data[key]);
-  if (missing.length > 0) {
-    return { error: `⚠️ 등록 양식 누락: ${missing.join(", ")}` };
-  }
-
-  const normalizedYearMonth = parseYearMonthValue(data["년/월"]);
-  if (!normalizedYearMonth) {
-    return { error: "⚠️ 년/월은 2606 또는 26/06 형식으로 입력해주세요." };
-  }
-
-  const dateMatch = data["날짜"].match(/^(\d{1,2})\/(\d{1,2})$/);
-  if (!dateMatch) return { error: "⚠️ 날짜는 5/30 형식으로 입력해주세요." };
-
-  const month = Number(dateMatch[1]);
-  const day = Number(dateMatch[2]);
-  if (!Number.isInteger(month) || !Number.isInteger(day) || month < 1 || month > 12 || day < 1 || day > 31) {
-    return { error: "⚠️ 날짜 값이 올바르지 않습니다." };
-  }
-
-  const yearMonthMonth = Number(normalizedYearMonth.slice(2, 4));
-  if (month !== yearMonthMonth) {
-    return { error: `⚠️ 년/월(${normalizedYearMonth})과 날짜(${data["날짜"]})의 월이 다릅니다.` };
-  }
-
-  const fullYear = getFullYearFromYearMonth(normalizedYearMonth);
-  const lastDayOfMonth = getDaysInMonth(fullYear, month);
-  if (day > lastDayOfMonth) {
-    return { error: `⚠️ ${fullYear}년 ${month}월은 ${lastDayOfMonth}일까지 있습니다. 날짜를 다시 확인해주세요.` };
-  }
-
-  const amountMatch = data["상품명"].match(/\(([\d,]+)\)/);
-  if (!amountMatch) return { error: "⚠️ 상품명 괄호 안 상품금액을 찾지 못했습니다. 예: JB22(130,000)" };
-
-  const productAmount = Number(amountMatch[1].replace(/,/g, ""));
-  if (!Number.isFinite(productAmount)) return { error: "⚠️ 상품금액을 숫자로 인식하지 못했습니다." };
-
-  const amountParsed = parseNumericRequiredValue(data["금액"], "금액");
-  if (amountParsed.error) return amountParsed;
-
-  const cutParsed = parseCutRequiredValue(data["Cut"]);
-  if (cutParsed.error) return cutParsed;
-
-  return {
-    yearMonth: normalizedYearMonth,
-    status: data["상태"],
-    type: data["구분"],
-    adminName: data["관리자명"],
-    productName: data["상품명"],
-    customerName: data["고객명"],
-    dateText: data["날짜"],
-    fullYear,
-    month,
-    lastDayOfMonth,
-    startDay: day,
-    amount: amountParsed.value,
-    cut: cutParsed.value,
-    productAmount
-  };
 }
 
 function getRepaymentPlanByProductAmount(productAmount) {
@@ -382,6 +292,45 @@ async function appendSheetRows(accessToken, rows) {
   return response.data;
 }
 
+async function updateSheetRows(accessToken, startRowNumber, rows) {
+  const endRowNumber = startRowNumber + rows.length - 1;
+  const endColumnLetter = columnNumberToLetter(DATE_END_COLUMN_INDEX + 1);
+  const range = `'${escapeSheetName(SHEET_NAME)}'!A${startRowNumber}:${endColumnLetter}${endRowNumber}`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
+
+  const response = await axios.put(
+    url,
+    { range, majorDimension: "ROWS", values: rows },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+
+  return response.data;
+}
+
+function hasCustomerRegisterContent(row) {
+  const cells = row || [];
+  for (let i = 0; i <= DATE_END_COLUMN_INDEX; i += 1) {
+    // J/K열은 빈 양식에도 수식이 있을 수 있어서 신규 입력 위치 판단에서 제외한다.
+    if (i === 9 || i === 10) continue;
+    if (!isBlankCell(cells[i])) return true;
+  }
+  return false;
+}
+
+function findNextCustomerWriteRow(values) {
+  // A:I, L:AP 기준으로 실제 고객 데이터가 있는 마지막 줄 바로 다음 줄을 사용한다.
+  // append API는 빈 양식/공백줄을 건너뛰거나 새 행을 삽입해 위치가 밀릴 수 있어 직접 범위 업데이트한다.
+  let lastContentIndex0 = 0; // 1행은 보통 헤더로 보고 최소 2행부터 입력
+
+  for (let i = 1; i < values.length; i += 1) {
+    if (hasCustomerRegisterContent(values[i])) {
+      lastContentIndex0 = i;
+    }
+  }
+
+  return Math.max(2, lastContentIndex0 + 2);
+}
+
 function getNextCustomerNumber(values) {
   let maxNo = 0;
   for (const row of values.slice(1)) {
@@ -389,49 +338,6 @@ function getNextCustomerNumber(values) {
     if (Number.isFinite(no)) maxNo = Math.max(maxNo, no);
   }
   return maxNo + 1;
-}
-
-async function registerNewCustomer(command) {
-  if (command?.error) return command.error;
-  if (!SHEET_ID) {
-    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
-  }
-
-  const repayment = buildRepaymentCells(command);
-  if (repayment.error) return repayment.error;
-
-  const accessToken = await getGoogleAccessToken();
-  const values = await getSheetValues(accessToken);
-  const nextNo = getNextCustomerNumber(values);
-  const nextRowNumber = values.length + 1;
-
-  const topRow = Array(DATE_END_COLUMN_INDEX + 1).fill("");
-  const bottomRow = Array(DATE_END_COLUMN_INDEX + 1).fill("");
-
-  topRow[0] = nextNo;
-  topRow[1] = command.yearMonth;
-  topRow[2] = command.status;
-  topRow[3] = command.type;
-  topRow[4] = command.adminName;
-  topRow[5] = command.productName;
-  topRow[6] = command.customerName;
-  topRow[7] = command.dateText;
-  topRow[8] = formatAmountValue(command.amount);
-  topRow[9] = `=I${nextRowNumber}+SUM(L${nextRowNumber}:AP${nextRowNumber + 1})`;
-  topRow[10] = `=J${nextRowNumber}*0.7`;
-
-  bottomRow[10] = `=J${nextRowNumber}*0.3`;
-  repayment.cells.forEach((value, index) => {
-    bottomRow[DATE_START_COLUMN_INDEX + index] = value;
-  });
-
-  await appendSheetRows(accessToken, [topRow, bottomRow]);
-
-  const startMessage = repayment.noCut && repayment.plan.intervalDays === 1
-    ? `${command.startDay}일은 -, 다음날부터 매일 ${repayment.plan.repaymentCount}회`
-    : `${command.startDay}일부터 ${repayment.plan.intervalDays}일 간격 ${repayment.plan.repaymentCount}회`;
-
-  return `✅ 신규 고객 등록완료\n${command.productName}\n${command.customerName}\n상환표시: ${startMessage}`;
 }
 
 async function getSpreadsheetSheetTitles(accessToken) {
@@ -481,59 +387,6 @@ async function getGroupMapValues(accessToken) {
     headers: { Authorization: `Bearer ${accessToken}` }
   });
   return response.data.values || [];
-}
-
-async function registerGroupCode(command, event) {
-  if (!SHEET_ID) {
-    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
-  }
-
-  const groupId = event?.source?.groupId || event?.source?.roomId;
-  if (!groupId) {
-    return "⚠️ 그룹방에서만 등록 가능합니다.";
-  }
-
-  const accessToken = await getGoogleAccessToken();
-  const values = await getGroupMapValues(accessToken);
-  const nowText = new Intl.DateTimeFormat("sv-SE", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false
-  }).format(new Date());
-
-  let existingRowNumber = null;
-  for (let i = 1; i < values.length; i += 1) {
-    const code = String(values[i]?.[0] || "").trim().toUpperCase();
-    if (code === command.code) {
-      existingRowNumber = i + 1;
-      break;
-    }
-  }
-
-  if (existingRowNumber) {
-    const range = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A${existingRowNumber}:C${existingRowNumber}`;
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
-    await axios.put(
-      url,
-      { range, majorDimension: "ROWS", values: [[command.code, groupId, nowText]] },
-      { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
-    );
-  } else {
-    const range = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A:C`;
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
-    await axios.post(
-      url,
-      { range, majorDimension: "ROWS", values: [[command.code, groupId, nowText]] },
-      { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
-    );
-  }
-
-  return "✅ 등록완료";
 }
 
 async function findMappedGroupId(accessToken, codeToFind) {
@@ -1627,18 +1480,6 @@ export default async function handler(req, res) {
       const text = normalizeText(event.message.text);
       if (!text) continue;
 
-      const newCustomerRegisterCommand = parseNewCustomerRegisterCommand(text);
-      if (newCustomerRegisterCommand) {
-        if (!isAdmin(event)) {
-          await replyUnauthorized(event);
-          continue;
-        }
-
-        const registerReply = await registerNewCustomer(newCustomerRegisterCommand);
-        await replyToLine(event.replyToken, registerReply);
-        continue;
-      }
-
       if (parseMyIdCommand(text)) {
         const userId = getLineUserId(event);
         await replyToLine(event.replyToken, userId ? `내아이디\n${userId}` : "⚠️ userId를 확인할 수 없습니다.");
@@ -1653,18 +1494,6 @@ export default async function handler(req, res) {
 
         const unregisteredReply = await checkUnregisteredGroups();
         await replyToLine(event.replyToken, unregisteredReply);
-        continue;
-      }
-
-      const registerGroupCommand = parseRegisterGroupCommand(text);
-      if (registerGroupCommand) {
-        if (!isAdmin(event)) {
-          await replyUnauthorized(event);
-          continue;
-        }
-
-        const registerReply = await registerGroupCode(registerGroupCommand, event);
-        await replyToLine(event.replyToken, registerReply);
         continue;
       }
 
