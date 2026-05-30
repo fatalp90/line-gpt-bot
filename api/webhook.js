@@ -13,6 +13,8 @@ const GOOGLE_PRIVATE_KEY = (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g
 const GOOGLE_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
 const DATE_START_COLUMN_INDEX = 11; // L column, 0-based
 const DATE_END_COLUMN_INDEX = 41; // AP column, 0-based
+const CLOSED_BACKGROUND_RGB = { red: 0.8, green: 0.8, blue: 0.8 }; // #CCCCCC
+const CLOSED_TEXT_RGB = { red: 1, green: 0, blue: 0 }; // #FF0000
 const GROUP_MAP_SHEET_NAME = process.env.LINE_GROUP_MAP_SHEET_NAME || "LINE그룹매핑";
 const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "")
   .split(",")
@@ -80,6 +82,16 @@ function parseSheetCommand(text) {
   return {
     code: match[1].toUpperCase(),
     value: match[2]
+  };
+}
+
+function parseCloseCommand(text) {
+  const clean = normalizeText(text).replace(/\s+/g, "");
+  const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/종료$/i);
+  if (!match) return null;
+
+  return {
+    code: match[1].toUpperCase()
   };
 }
 
@@ -347,6 +359,16 @@ async function getSpreadsheetSheetTitles(accessToken) {
   });
 
   return (response.data.sheets || []).map(sheet => sheet.properties?.title).filter(Boolean);
+}
+
+async function getSpreadsheetSheetId(accessToken, sheetName) {
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}?fields=sheets.properties`;
+  const response = await axios.get(url, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+
+  const target = (response.data.sheets || []).find(sheet => sheet.properties?.title === sheetName);
+  return target?.properties?.sheetId ?? null;
 }
 
 async function ensureGroupMapSheet(accessToken) {
@@ -737,6 +759,93 @@ async function writeSheetCommand(command) {
   await addNextDayDollarIfBlank(accessToken, values, target.rowNumber, todayColumnIndex0);
 
   return `✅ ${command.code} : ${inputText} 등록완료`;
+}
+
+async function applyClosedCustomerStyle(accessToken, topRowNumber) {
+  const sheetId = await getSpreadsheetSheetId(accessToken, SHEET_NAME);
+  if (sheetId === null || sheetId === undefined) {
+    throw new Error(`${SHEET_NAME} 시트 ID를 찾지 못했습니다.`);
+  }
+
+  const closedFormat = {
+    backgroundColor: CLOSED_BACKGROUND_RGB,
+    textFormat: { foregroundColor: CLOSED_TEXT_RGB }
+  };
+
+  const requests = [
+    {
+      repeatCell: {
+        range: {
+          sheetId,
+          startRowIndex: topRowNumber - 1,
+          endRowIndex: topRowNumber,
+          startColumnIndex: 0,
+          endColumnIndex: DATE_END_COLUMN_INDEX + 1
+        },
+        cell: { userEnteredFormat: closedFormat },
+        fields: "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat.foregroundColor"
+      }
+    },
+    {
+      repeatCell: {
+        range: {
+          sheetId,
+          startRowIndex: topRowNumber,
+          endRowIndex: topRowNumber + 1,
+          startColumnIndex: 10, // K열부터 하단 상환줄 스타일 적용
+          endColumnIndex: DATE_END_COLUMN_INDEX + 1
+        },
+        cell: { userEnteredFormat: closedFormat },
+        fields: "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat.foregroundColor"
+      }
+    }
+  ];
+
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}:batchUpdate`;
+  await axios.post(
+    url,
+    { requests },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+}
+
+async function closeSheetCustomer(command) {
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const values = await getSheetValues(accessToken);
+  const matches = [];
+
+  for (let i = 1; i < values.length; i += 1) {
+    const row = values[i] || [];
+    const status = String(row[2] || "").trim(); // C열 상태
+    const productName = String(row[5] || "").trim(); // F열 상품명
+
+    if (status !== "진행중") continue;
+
+    const codeMatch = productName.match(/([A-Za-z]{1,3}\d{1,3})/);
+    if (!codeMatch) continue;
+
+    if (codeMatch[1].toUpperCase() === command.code) {
+      matches.push({ rowIndex0: i, productName });
+    }
+  }
+
+  if (matches.length === 0) {
+    return `⚠️ ${command.code} 진행중 고객을 찾지 못했습니다.`;
+  }
+
+  if (matches.length > 1) {
+    return `⚠️ ${command.code} 진행중 항목이 ${matches.length}개입니다. 중복 확인이 필요합니다.`;
+  }
+
+  const topRowNumber = matches[0].rowIndex0 + 1;
+  await updateSheetCell(accessToken, topRowNumber, 2, "종료");
+  await applyClosedCustomerStyle(accessToken, topRowNumber);
+
+  return `✅ ${command.code} 종료 처리완료`;
 }
 
 const ignoreKeywords = [
@@ -1508,6 +1617,18 @@ export default async function handler(req, res) {
         if (broadcastReply) {
           await replyToLine(event.replyToken, broadcastReply);
         }
+        continue;
+      }
+
+      const closeCommand = parseCloseCommand(text);
+      if (closeCommand) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
+        const closeReply = await closeSheetCustomer(closeCommand);
+        await replyToLine(event.replyToken, closeReply);
         continue;
       }
 
