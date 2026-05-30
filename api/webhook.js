@@ -24,19 +24,26 @@ const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "")
 const LINE_CUSTOMER_START_ROW = 1058;
 const LINE_CUSTOMER_START_INDEX0 = LINE_CUSTOMER_START_ROW - 1;
 
-const REPAYMENT_MORNING_MESSAGE = `📌 กรุณาโอนชำระครับ
+const REPAYMENT_MORNING_MESSAGE = `📌 วันนี้เป็นวันชำระ
+โอนภายในเวลา 20:00 น.
 
-วันนี้เป็นวันชำระของคุณครับ
-กรุณาโอนก่อนเวลา 20:00 น. ของวันนี้`;
+👉ธนาคาร SHINHAN BANK
+👉ชื่อบช. 110551366954
+👉ชื่อ  CHAYAPONE`;
 
-const REPAYMENT_AFTERNOON_MESSAGE = `📌 กรุณาโอนชำระด่วนครับ
+const REPAYMENT_AFTERNOON_MESSAGE = `📌 เวลา 20:00 น. แล้ว
+รีบโอนเงินด้วยครับ
 
-ขณะนี้ยังไม่พบรายการชำระของคุณครับ
+👉ธนาคาร SHINHAN BANK
+👉ชื่อบช. 110551366954
+👉ชื่อ  CHAYAPONE`;
 
-กรุณารีบดำเนินการโอนโดยเร็วที่สุด
-และส่งสลิปหลังโอนเสร็จครับ`;
+const PAYMENT_REQUEST_MESSAGE = `📌 ยังไม่พบยอดโอน
+รีบโอนเงินครับ
 
-const PAYMENT_REQUEST_MESSAGE = `📌 กรุณาโอนชำระครับ`;
+👉ธนาคาร SHINHAN BANK
+👉ชื่อบช. 110551366954
+👉ชื่อ  CHAYAPONE`;
 
 
 function base64Url(input) {
@@ -614,14 +621,6 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
   return null; // 전부 성공 시 관리자방에는 답장하지 않음
 }
 
-
-export async function runRepaymentMorningCron() {
-  return await sendTodayRepaymentBroadcast(REPAYMENT_MORNING_MESSAGE);
-}
-
-export async function runRepaymentAfternoonCron() {
-  return await sendTodayRepaymentBroadcast(REPAYMENT_AFTERNOON_MESSAGE);
-}
 
 function findTodayColumnIndex(values, day) {
   const header = values[0] || [];
