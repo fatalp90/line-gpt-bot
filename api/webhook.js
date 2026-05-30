@@ -498,15 +498,16 @@ function hasDollarToday(values, topIndex0, todayColumnIndex0) {
   return topToday === "$" || bottomToday === "$";
 }
 
-function findTodayDollarCodes(values) {
+function findTodayDollarCodes(values, registeredCodes = null) {
   const today = getKoreaToday();
   const todayColumnIndex0 = findTodayColumnIndex(values, today.day);
   const codes = [];
   const seen = new Set();
 
-  // 라인 그룹 고객은 1058행부터 시작하고, 고객 1명당 2행씩 사용함
-  // 1058~1059 = 1명, 1060~1061 = 1명... 구조만 검색
-  for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
+  // 오늘상환 알림은 1058행 기준으로 제한하지 않고 전체 시트에서 검색한다.
+  // 단, 상태가 진행중이고 오늘 날짜 칸에 $가 있으며 LINE그룹매핑에 등록된 코드만 발송 대상으로 사용한다.
+  // 고객 1명은 기본적으로 해당 행 + 바로 아래 행 2줄 구조이므로 hasDollarToday에서 두 줄을 함께 확인한다.
+  for (let i = 1; i < values.length; i += 1) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
     const productName = String(row[5] || "").trim(); // F열 상품명
@@ -515,6 +516,7 @@ function findTodayDollarCodes(values) {
 
     const code = extractCustomerCodeFromProductName(productName);
     if (!code) continue;
+    if (registeredCodes && !registeredCodes.has(code)) continue;
 
     if (!hasDollarToday(values, i, todayColumnIndex0)) continue;
 
@@ -591,7 +593,18 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
 
   const accessToken = await getGoogleAccessToken();
   const values = await getSheetValues(accessToken);
-  const codes = findTodayDollarCodes(values);
+  const groupMapValues = await getGroupMapValues(accessToken);
+  const groupMap = new Map();
+
+  for (let i = 1; i < groupMapValues.length; i += 1) {
+    const code = String(groupMapValues[i]?.[0] || "").trim().toUpperCase();
+    const groupId = String(groupMapValues[i]?.[1] || "").trim();
+    if (code && groupId) {
+      groupMap.set(code, groupId);
+    }
+  }
+
+  const codes = findTodayDollarCodes(values, new Set(groupMap.keys()));
 
   if (!codes.length) {
     return "⚠️ 오늘 발송 대상이 없습니다.";
@@ -600,7 +613,7 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
   const failedCodes = [];
 
   for (const code of codes) {
-    const groupId = await findMappedGroupId(accessToken, code);
+    const groupId = groupMap.get(code);
     if (!groupId) {
       failedCodes.push(code);
       continue;
@@ -615,7 +628,7 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
   }
 
   if (failedCodes.length) {
-    return `❌ 그룹을 찾을 수 없습니다.\n\n${failedCodes.join("\n")}`;
+    return `❌ 발송 실패\n\n${failedCodes.join("\n")}`;
   }
 
   return null; // 전부 성공 시 관리자방에는 답장하지 않음
