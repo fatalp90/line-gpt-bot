@@ -85,12 +85,201 @@ function parseSheetCommand(text) {
 
 function parseRegisterGroupCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
-  const match = clean.match(/^([A-Za-z]{2,3}\d{2,3})\/등록$/);
+  const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/등록$/);
   if (!match) return null;
 
   return {
     code: match[1].toUpperCase()
   };
+}
+
+
+function parseYearMonthValue(value) {
+  const raw = String(value ?? "").trim();
+  const compact = raw.replace(/[.\-_/년월\s]/g, "");
+
+  let yy = null;
+  let mm = null;
+
+  if (/^\d{4}$/.test(compact)) {
+    yy = Number(compact.slice(0, 2));
+    mm = Number(compact.slice(2, 4));
+  } else if (/^\d{6}$/.test(compact) && compact.startsWith("20")) {
+    yy = Number(compact.slice(2, 4));
+    mm = Number(compact.slice(4, 6));
+  }
+
+  if (!Number.isInteger(yy) || !Number.isInteger(mm) || yy < 0 || mm < 1 || mm > 12) {
+    return null;
+  }
+
+  return `${String(yy).padStart(2, "0")}${String(mm).padStart(2, "0")}`;
+}
+
+function getFullYearFromYearMonth(yearMonth) {
+  const yy = Number(String(yearMonth).slice(0, 2));
+  return 2000 + yy;
+}
+
+function getDaysInMonth(year, month) {
+  return new Date(year, month, 0).getDate();
+}
+
+function parseNumericRequiredValue(value, label) {
+  const raw = String(value ?? "").trim();
+  const n = Number(raw.replace(/,/g, ""));
+  if (!Number.isFinite(n)) {
+    return { error: `⚠️ ${label}은 숫자로 입력해주세요. 예: -30 또는 5` };
+  }
+  return { value: n };
+}
+
+function parseCutRequiredValue(value) {
+  const raw = String(value ?? "").trim();
+  if (raw === "-") return { value: "-" };
+  const n = Number(raw.replace(/,/g, ""));
+  if (!Number.isFinite(n)) {
+    return { error: "⚠️ Cut은 숫자 또는 - 로 입력해주세요. 예: 5 또는 -" };
+  }
+  return { value: n };
+}
+
+function parseNewCustomerRegisterCommand(text) {
+  const normalized = normalizeText(text);
+  const lines = normalized
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) return null;
+  if (lines[0].replace(/\s+/g, "") !== "등록") return null;
+
+  const data = {};
+  for (const line of lines.slice(1)) {
+    const match = line.match(/^([^:：]+)[:：](.*)$/);
+    if (!match) continue;
+    const key = match[1].trim().replace(/\s+/g, "");
+    const value = match[2].trim();
+    data[key] = value;
+  }
+
+  const requiredKeys = ["년/월", "상태", "구분", "관리자명", "상품명", "고객명", "날짜", "금액", "Cut"];
+  const missing = requiredKeys.filter(key => !data[key]);
+  if (missing.length > 0) {
+    return { error: `⚠️ 등록 양식 누락: ${missing.join(", ")}` };
+  }
+
+  const normalizedYearMonth = parseYearMonthValue(data["년/월"]);
+  if (!normalizedYearMonth) {
+    return { error: "⚠️ 년/월은 2606 또는 26/06 형식으로 입력해주세요." };
+  }
+
+  const dateMatch = data["날짜"].match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (!dateMatch) return { error: "⚠️ 날짜는 5/30 형식으로 입력해주세요." };
+
+  const month = Number(dateMatch[1]);
+  const day = Number(dateMatch[2]);
+  if (!Number.isInteger(month) || !Number.isInteger(day) || month < 1 || month > 12 || day < 1 || day > 31) {
+    return { error: "⚠️ 날짜 값이 올바르지 않습니다." };
+  }
+
+  const yearMonthMonth = Number(normalizedYearMonth.slice(2, 4));
+  if (month !== yearMonthMonth) {
+    return { error: `⚠️ 년/월(${normalizedYearMonth})과 날짜(${data["날짜"]})의 월이 다릅니다.` };
+  }
+
+  const fullYear = getFullYearFromYearMonth(normalizedYearMonth);
+  const lastDayOfMonth = getDaysInMonth(fullYear, month);
+  if (day > lastDayOfMonth) {
+    return { error: `⚠️ ${fullYear}년 ${month}월은 ${lastDayOfMonth}일까지 있습니다. 날짜를 다시 확인해주세요.` };
+  }
+
+  const amountMatch = data["상품명"].match(/\(([\d,]+)\)/);
+  if (!amountMatch) return { error: "⚠️ 상품명 괄호 안 상품금액을 찾지 못했습니다. 예: JB22(130,000)" };
+
+  const productAmount = Number(amountMatch[1].replace(/,/g, ""));
+  if (!Number.isFinite(productAmount)) return { error: "⚠️ 상품금액을 숫자로 인식하지 못했습니다." };
+
+  const amountParsed = parseNumericRequiredValue(data["금액"], "금액");
+  if (amountParsed.error) return amountParsed;
+
+  const cutParsed = parseCutRequiredValue(data["Cut"]);
+  if (cutParsed.error) return cutParsed;
+
+  return {
+    yearMonth: normalizedYearMonth,
+    status: data["상태"],
+    type: data["구분"],
+    adminName: data["관리자명"],
+    productName: data["상품명"],
+    customerName: data["고객명"],
+    dateText: data["날짜"],
+    fullYear,
+    month,
+    lastDayOfMonth,
+    startDay: day,
+    amount: amountParsed.value,
+    cut: cutParsed.value,
+    productAmount
+  };
+}
+
+function getRepaymentPlanByProductAmount(productAmount) {
+  const plans = {
+    130000: { intervalDays: 7, repaymentCount: 4 },
+    195000: { intervalDays: 7, repaymentCount: 4 },
+    25000: { intervalDays: 1, repaymentCount: 10 },
+    40000: { intervalDays: 1, repaymentCount: 15 },
+    45000: { intervalDays: 1, repaymentCount: 12 },
+    50000: { intervalDays: 1, repaymentCount: 10 },
+    55000: { intervalDays: 1, repaymentCount: 10 }
+  };
+  return plans[productAmount] || null;
+}
+
+function buildRepaymentCells(command) {
+  const plan = getRepaymentPlanByProductAmount(command.productAmount);
+  if (!plan) {
+    return { error: `⚠️ ${command.productAmount.toLocaleString("ko-KR")}원 상품의 상환방식이 등록되어 있지 않습니다.` };
+  }
+
+  const cells = Array(DATE_END_COLUMN_INDEX - DATE_START_COLUMN_INDEX + 1).fill("");
+  const lastDayOfMonth = command.lastDayOfMonth || 31;
+  const startIndex = command.startDay - 1;
+  if (startIndex < 0 || startIndex >= lastDayOfMonth || startIndex >= cells.length) {
+    return { error: `⚠️ 시작 날짜가 해당 월의 날짜 범위를 벗어났습니다. 이 달은 ${lastDayOfMonth}일까지 있습니다.` };
+  }
+
+  cells[startIndex] = formatAmountValue(command.cut);
+
+  const isNoCut = String(command.cut).trim() === "-";
+
+  if (isNoCut && plan.intervalDays === 1) {
+    // Cut이 없는 매일상환 상품은 당일 칸에 '-'만 표시하고,
+    // 다음날부터 실제 상환일자를 repaymentCount회 카운트한다.
+    for (let i = 1; i <= plan.repaymentCount; i += 1) {
+      const dueDay = command.startDay + i;
+      if (dueDay > lastDayOfMonth) continue;
+
+      const dueIndex = dueDay - 1;
+      if (dueIndex >= 0 && dueIndex < cells.length && isBlankCell(cells[dueIndex])) {
+        cells[dueIndex] = "$";
+      }
+    }
+  } else {
+    // 기존 규칙 유지: 당일부터 카운트해서 intervalDays 간격으로 상환표시.
+    for (let i = 1; i <= plan.repaymentCount; i += 1) {
+      const dueDay = command.startDay + plan.intervalDays * i;
+      if (dueDay > lastDayOfMonth) continue;
+
+      const dueIndex = dueDay - 1;
+      if (dueIndex >= 0 && dueIndex < cells.length && isBlankCell(cells[dueIndex])) {
+        cells[dueIndex] = "$";
+      }
+    }
+  }
+
+  return { cells, plan, lastDayOfMonth, noCut: isNoCut };
 }
 
 function isBlankCell(value) {
@@ -177,6 +366,72 @@ async function updateSheetCell(accessToken, rowNumber, columnIndex0, value) {
   );
 
   return `${columnLetter}${rowNumber}`;
+}
+
+
+async function appendSheetRows(accessToken, rows) {
+  const range = `'${escapeSheetName(SHEET_NAME)}'!A:AP`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+
+  const response = await axios.post(
+    url,
+    { range, majorDimension: "ROWS", values: rows },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+
+  return response.data;
+}
+
+function getNextCustomerNumber(values) {
+  let maxNo = 0;
+  for (const row of values.slice(1)) {
+    const no = Number(String(row?.[0] || "").trim());
+    if (Number.isFinite(no)) maxNo = Math.max(maxNo, no);
+  }
+  return maxNo + 1;
+}
+
+async function registerNewCustomer(command) {
+  if (command?.error) return command.error;
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const repayment = buildRepaymentCells(command);
+  if (repayment.error) return repayment.error;
+
+  const accessToken = await getGoogleAccessToken();
+  const values = await getSheetValues(accessToken);
+  const nextNo = getNextCustomerNumber(values);
+  const nextRowNumber = values.length + 1;
+
+  const topRow = Array(DATE_END_COLUMN_INDEX + 1).fill("");
+  const bottomRow = Array(DATE_END_COLUMN_INDEX + 1).fill("");
+
+  topRow[0] = nextNo;
+  topRow[1] = command.yearMonth;
+  topRow[2] = command.status;
+  topRow[3] = command.type;
+  topRow[4] = command.adminName;
+  topRow[5] = command.productName;
+  topRow[6] = command.customerName;
+  topRow[7] = command.dateText;
+  topRow[8] = formatAmountValue(command.amount);
+  topRow[9] = `=I${nextRowNumber}+SUM(L${nextRowNumber}:AP${nextRowNumber + 1})`;
+  topRow[10] = `=J${nextRowNumber}*0.7`;
+
+  bottomRow[10] = `=J${nextRowNumber}*0.3`;
+  repayment.cells.forEach((value, index) => {
+    bottomRow[DATE_START_COLUMN_INDEX + index] = value;
+  });
+
+  await appendSheetRows(accessToken, [topRow, bottomRow]);
+
+  const startMessage = repayment.noCut && repayment.plan.intervalDays === 1
+    ? `${command.startDay}일은 -, 다음날부터 매일 ${repayment.plan.repaymentCount}회`
+    : `${command.startDay}일부터 ${repayment.plan.intervalDays}일 간격 ${repayment.plan.repaymentCount}회`;
+
+  return `✅ 신규 고객 등록완료\n${command.productName}\n${command.customerName}\n상환표시: ${startMessage}`;
 }
 
 async function getSpreadsheetSheetTitles(accessToken) {
@@ -349,7 +604,7 @@ async function replyUnauthorized(event) {
 }
 
 function extractCustomerCodeFromProductName(productName) {
-  const match = String(productName || "").match(/([A-Za-z]{2,3}\d{2,3})/);
+  const match = String(productName || "").match(/([A-Za-z]{1,3}\d{1,3})/);
   return match ? match[1].toUpperCase() : null;
 }
 
@@ -565,7 +820,7 @@ async function writeSheetCommand(command) {
 
     if (status !== "진행중") continue;
 
-    const codeMatch = productName.match(/([A-Za-z]{2,3}\d{2,3})/);
+    const codeMatch = productName.match(/([A-Za-z]{1,3}\d{1,3})/);
     if (!codeMatch) continue;
 
     if (codeMatch[1].toUpperCase() === command.code) {
@@ -867,8 +1122,19 @@ function isAdminPatternMessage(text) {
   return false;
 }
 
+
+function containsNoTranslateAmount(text) {
+  const clean = normalizeText(text);
+  const compactNumberText = clean.replace(/[,\s]/g, "");
+
+  // 2,000,000 또는 2000000 이 포함된 메시지는 번역하지 않음
+  return clean.includes("2,000,000") || compactNumberText.includes("2000000");
+}
+
 function shouldIgnoreMessage(text) {
   const clean = normalizeText(text);
+
+  if (containsNoTranslateAmount(clean)) return true;
 
   for (const keyword of ignoreKeywords) {
     if (clean.includes(keyword)) return true;
@@ -1345,6 +1611,18 @@ export default async function handler(req, res) {
 
       const text = normalizeText(event.message.text);
       if (!text) continue;
+
+      const newCustomerRegisterCommand = parseNewCustomerRegisterCommand(text);
+      if (newCustomerRegisterCommand) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
+        const registerReply = await registerNewCustomer(newCustomerRegisterCommand);
+        await replyToLine(event.replyToken, registerReply);
+        continue;
+      }
 
       if (parseMyIdCommand(text)) {
         const userId = getLineUserId(event);
