@@ -469,17 +469,19 @@ async function registerGroupCode(command, event) {
       { range, majorDimension: "ROWS", values: [[command.code, groupId, nowText]] },
       { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
     );
-  } else {
-    const range = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A:C`;
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
-    await axios.post(
-      url,
-      { range, majorDimension: "ROWS", values: [[command.code, groupId, nowText]] },
-      { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
-    );
+
+    return `✅ ${command.code} 그룹등록 갱신완료`;
   }
 
-  return "✅ 등록완료";
+  const range = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A:C`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+  await axios.post(
+    url,
+    { range, majorDimension: "ROWS", values: [[command.code, groupId, nowText]] },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+
+  return `✅ ${command.code} 그룹등록 완료`;
 }
 
 
