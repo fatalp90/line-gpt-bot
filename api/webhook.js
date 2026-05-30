@@ -800,6 +800,19 @@ function chooseTargetRow(values, topIndex0, todayColumnIndex0) {
   return { status: "none" };
 }
 
+async function addNextDayDollarIfBlank(accessToken, values, rowNumber, todayColumnIndex0) {
+  const nextColumnIndex0 = todayColumnIndex0 + 1;
+  if (nextColumnIndex0 > DATE_END_COLUMN_INDEX) return false;
+
+  const row = values[rowNumber - 1] || [];
+  const nextValue = row[nextColumnIndex0];
+
+  if (!isBlankCell(nextValue)) return false;
+
+  await updateSheetCell(accessToken, rowNumber, nextColumnIndex0, "$");
+  return true;
+}
+
 async function writeSheetCommand(command) {
   if (!SHEET_ID) {
     return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
@@ -861,12 +874,14 @@ async function writeSheetCommand(command) {
     const totalText = formatAmountValue(totalAmount);
 
     await updateSheetCell(accessToken, target.rowNumber, todayColumnIndex0, totalText);
+    await addNextDayDollarIfBlank(accessToken, values, target.rowNumber, todayColumnIndex0);
 
     return `✅ ${command.code} : ${currentText} + ${addText} = ${totalText}`;
   }
 
   const inputText = formatAmountValue(command.value);
   await updateSheetCell(accessToken, target.rowNumber, todayColumnIndex0, inputText);
+  await addNextDayDollarIfBlank(accessToken, values, target.rowNumber, todayColumnIndex0);
 
   return `✅ ${command.code} : ${inputText} 등록완료`;
 }
