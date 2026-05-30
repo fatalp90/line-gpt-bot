@@ -74,7 +74,7 @@ function getKoreaToday() {
 
 function parseSheetCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
-  const match = clean.match(/^([A-Za-z]{2,3}\d{2,3})\/(\d+(?:\.\d+)?)$/);
+  const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/(\d+(?:\.\d+)?)$/);
   if (!match) return null;
 
   return {
