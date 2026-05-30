@@ -440,7 +440,7 @@ async function pushToLine(to, text) {
 function parseTodayRepaymentBroadcastCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
 
-  if (clean === "오늘입금요청") {
+  if (clean === "오늘상환요청") {
     return { type: "payment", message: PAYMENT_REQUEST_MESSAGE };
   }
 
