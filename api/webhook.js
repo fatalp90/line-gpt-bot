@@ -484,6 +484,15 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
   return null; // 전부 성공 시 관리자방에는 답장하지 않음
 }
 
+
+export async function runRepaymentMorningCron() {
+  return await sendTodayRepaymentBroadcast(REPAYMENT_MORNING_MESSAGE);
+}
+
+export async function runRepaymentAfternoonCron() {
+  return await sendTodayRepaymentBroadcast(REPAYMENT_AFTERNOON_MESSAGE);
+}
+
 function findTodayColumnIndex(values, day) {
   const header = values[0] || [];
   for (let col = DATE_START_COLUMN_INDEX; col <= DATE_END_COLUMN_INDEX; col += 1) {
