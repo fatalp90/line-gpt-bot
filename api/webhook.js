@@ -511,6 +511,55 @@ async function pushToLine(to, text) {
   );
 }
 
+const LINE_PUSH_DELAY_MS = Number(process.env.LINE_PUSH_DELAY_MS || 500);
+const LINE_PUSH_RETRY_COUNT = Number(process.env.LINE_PUSH_RETRY_COUNT || 2);
+const LINE_PUSH_RETRY_DELAY_MS = Number(process.env.LINE_PUSH_RETRY_DELAY_MS || 1000);
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getLinePushErrorMessage(err) {
+  const status = err?.response?.status;
+  const message = err?.response?.data?.message || err?.message || "Unknown error";
+  const details = err?.response?.data?.details;
+
+  if (Array.isArray(details) && details.length) {
+    const detailText = details
+      .map(item => item?.message || JSON.stringify(item))
+      .filter(Boolean)
+      .join(" / ");
+    return status ? `${status} ${message} - ${detailText}` : `${message} - ${detailText}`;
+  }
+
+  return status ? `${status} ${message}` : message;
+}
+
+async function pushToLineWithRetry(code, groupId, text) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= LINE_PUSH_RETRY_COUNT + 1; attempt += 1) {
+    try {
+      await pushToLine(groupId, text);
+      return { ok: true, attempt };
+    } catch (err) {
+      lastError = err;
+      const errorMessage = getLinePushErrorMessage(err);
+      console.error(`[LINE PUSH FAIL] code=${code} groupId=${groupId} attempt=${attempt}/${LINE_PUSH_RETRY_COUNT + 1} error=${errorMessage}`);
+
+      if (attempt <= LINE_PUSH_RETRY_COUNT) {
+        await sleep(LINE_PUSH_RETRY_DELAY_MS);
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    attempt: LINE_PUSH_RETRY_COUNT + 1,
+    error: getLinePushErrorMessage(lastError)
+  };
+}
+
 function parseTodayRepaymentBroadcastCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
 
@@ -677,25 +726,32 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
     return "⚠️ 오늘 발송 대상이 없습니다.";
   }
 
-  const failedCodes = [];
+  const failedItems = [];
 
-  for (const code of codes) {
+  for (let i = 0; i < codes.length; i += 1) {
+    const code = codes[i];
     const groupId = groupMap.get(code);
+
     if (!groupId) {
-      failedCodes.push(code);
+      failedItems.push({ code, error: "등록된 그룹ID 없음" });
       continue;
     }
 
-    try {
-      await pushToLine(groupId, broadcastMessage);
-    } catch (err) {
-      console.error(err);
-      failedCodes.push(code);
+    const result = await pushToLineWithRetry(code, groupId, broadcastMessage);
+
+    if (!result.ok) {
+      failedItems.push({ code, error: result.error || "발송 실패" });
+    }
+
+    // LINE Push API에 너무 빠르게 연속 요청하지 않도록 발송 간격을 둔다.
+    if (i < codes.length - 1) {
+      await sleep(LINE_PUSH_DELAY_MS);
     }
   }
 
-  if (failedCodes.length) {
-    return `❌ 발송 실패\n\n${failedCodes.join("\n")}`;
+  if (failedItems.length) {
+    const lines = failedItems.map(item => `${item.code} - ${item.error}`);
+    return `❌ 발송 실패\n\n${lines.join("\n")}`;
   }
 
   return null; // 전부 성공 시 관리자방에는 답장하지 않음
