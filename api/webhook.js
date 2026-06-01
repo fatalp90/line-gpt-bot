@@ -1217,7 +1217,7 @@ function hasRepeatedWrapperEmoji(text) {
   // 20.10ได้มัยค่ะเลิกงานค่ะทำโอที
   // 는 차단하지 않음
 
-  return /[📌✅🔥💸✔️🔔⚠️📍🚨🆘❗‼️⛔]/u.test(clean) || /sos/i.test(clean);
+  return /[📌📣✅🔥💸✔️🔔⚠️📍🚨🆘❗‼️⛔]/u.test(clean) || /sos/i.test(clean);
 }
 
 function hasDateLikePattern(text) {
