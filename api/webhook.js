@@ -21,8 +21,6 @@ const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "")
   .map(v => v.trim())
   .filter(Boolean);
 
-const LINE_CUSTOMER_START_ROW = 1058;
-const LINE_CUSTOMER_START_INDEX0 = LINE_CUSTOMER_START_ROW - 1;
 
 const REPAYMENT_MORNING_MESSAGE = `📌 วันนี้เป็นวันชำระ
 โอนภายในเวลา 20:00 น.
@@ -649,8 +647,8 @@ function findActiveLineCustomerCodes(values) {
   const codes = [];
   const seen = new Set();
 
-  // 미등록확인은 라인 그룹 고객 구간인 1058행부터, 고객 1명당 2행씩 검색
-  for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
+  // 전체 시트를 검색하되, 고객 1명당 2행 구조이므로 상단행만 검사
+  for (let i = 1; i < values.length; i += 2) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
     const productName = String(row[5] || "").trim(); // F열 상품명
