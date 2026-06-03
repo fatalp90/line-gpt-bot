@@ -83,12 +83,19 @@ function getKoreaToday() {
 
 function parseSheetCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
-  const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/(\d+(?:\.\d+)?)$/);
+  const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/(\d+(?:\.\d+)?)(?:\/카운트(\d+))?$/i);
   if (!match) return null;
+
+  const count = match[3] ? Number(match[3]) : null;
+
+  if (count !== null && (!Number.isInteger(count) || count < 1)) {
+    return null;
+  }
 
   return {
     code: match[1].toUpperCase(),
-    value: match[2]
+    value: match[2],
+    count
   };
 }
 
@@ -840,6 +847,80 @@ async function addNextDayDollarIfBlank(accessToken, values, rowNumber, todayColu
   return true;
 }
 
+function getNextCountCursor(values, cursor, topRowNumber) {
+  const nextDate = new Date(cursor.year, cursor.month - 1, cursor.day + 1);
+  const nextYear = nextDate.getFullYear();
+  const nextMonth = nextDate.getMonth() + 1;
+  const nextDay = nextDate.getDate();
+
+  let nextRowNumber = cursor.rowNumber;
+
+  // 다음 날짜가 1일이면 월이 바뀐 것이므로 상/하 행을 서로 전환한다.
+  // 상에서 시작하면 하 1일로, 하에서 시작하면 상 1일로 넘어간다.
+  if (nextDay === 1) {
+    if (cursor.rowNumber === topRowNumber) {
+      nextRowNumber = topRowNumber + 1;
+    } else if (cursor.rowNumber === topRowNumber + 1) {
+      nextRowNumber = topRowNumber;
+    }
+  }
+
+  return {
+    year: nextYear,
+    month: nextMonth,
+    day: nextDay,
+    rowNumber: nextRowNumber,
+    columnIndex0: findTodayColumnIndex(values, nextDay)
+  };
+}
+
+async function addCountPatternIfBlank(accessToken, values, rowNumber, todayColumnIndex0, topRowNumber, count, todayInfo = null) {
+  const totalCount = Number(count);
+  if (!Number.isInteger(totalCount) || totalCount < 1) {
+    return { filled: 0, requested: count, ok: false };
+  }
+
+  const today = todayInfo || getKoreaToday();
+  let cursor = {
+    year: today.year,
+    month: today.month,
+    day: today.day,
+    rowNumber,
+    columnIndex0: todayColumnIndex0
+  };
+
+  let filled = 0;
+  let searchedDays = 0;
+  const maxSearchDays = 370;
+
+  while (filled < totalCount && searchedDays < maxSearchDays) {
+    cursor = getNextCountCursor(values, cursor, topRowNumber);
+    searchedDays += 1;
+
+    if (cursor.columnIndex0 < DATE_START_COLUMN_INDEX || cursor.columnIndex0 > DATE_END_COLUMN_INDEX) {
+      continue;
+    }
+
+    const row = values[cursor.rowNumber - 1] || [];
+    const currentValue = row[cursor.columnIndex0];
+
+    // 기존 값은 덮어쓰지 않고 공백칸만 카운트 대상으로 사용한다.
+    if (!isBlankCell(currentValue)) {
+      continue;
+    }
+
+    filled += 1;
+    const mark = filled === totalCount ? "$" : "-";
+    await updateSheetCell(accessToken, cursor.rowNumber, cursor.columnIndex0, mark);
+
+    // 같은 명령 안에서 뒤쪽 날짜를 이어서 판단할 수 있도록 로컬 values도 갱신한다.
+    if (!values[cursor.rowNumber - 1]) values[cursor.rowNumber - 1] = [];
+    values[cursor.rowNumber - 1][cursor.columnIndex0] = mark;
+  }
+
+  return { filled, requested: totalCount, ok: filled === totalCount };
+}
+
 async function writeSheetCommand(command) {
   if (!SHEET_ID) {
     return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
@@ -901,6 +982,15 @@ async function writeSheetCommand(command) {
     const totalText = formatAmountValue(totalAmount);
 
     await updateSheetCell(accessToken, target.rowNumber, todayColumnIndex0, totalText);
+
+    if (command.count) {
+      const countResult = await addCountPatternIfBlank(accessToken, values, target.rowNumber, todayColumnIndex0, match.rowIndex0 + 1, command.count, today);
+      if (!countResult.ok) {
+        return `✅ ${command.code} : ${currentText} + ${addText} = ${totalText}\n⚠️ 카운트${command.count} 중 ${countResult.filled}/${countResult.requested}개만 입력되었습니다.`;
+      }
+      return `✅ ${command.code} : ${currentText} + ${addText} = ${totalText}\n✅ 카운트${command.count} 반영완료`;
+    }
+
     await addNextDayDollarIfBlank(accessToken, values, target.rowNumber, todayColumnIndex0, match.rowIndex0 + 1, today);
 
     return `✅ ${command.code} : ${currentText} + ${addText} = ${totalText}`;
@@ -908,6 +998,15 @@ async function writeSheetCommand(command) {
 
   const inputText = formatAmountValue(command.value);
   await updateSheetCell(accessToken, target.rowNumber, todayColumnIndex0, inputText);
+
+  if (command.count) {
+    const countResult = await addCountPatternIfBlank(accessToken, values, target.rowNumber, todayColumnIndex0, match.rowIndex0 + 1, command.count, today);
+    if (!countResult.ok) {
+      return `✅ ${command.code} : ${inputText} 등록완료\n⚠️ 카운트${command.count} 중 ${countResult.filled}/${countResult.requested}개만 입력되었습니다.`;
+    }
+    return `✅ ${command.code} : ${inputText} 등록완료\n✅ 카운트${command.count} 반영완료`;
+  }
+
   await addNextDayDollarIfBlank(accessToken, values, target.rowNumber, todayColumnIndex0, match.rowIndex0 + 1, today);
 
   return `✅ ${command.code} : ${inputText} 등록완료`;
