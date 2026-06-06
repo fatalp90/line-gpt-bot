@@ -795,29 +795,44 @@ function chooseTargetRow(values, topIndex0, todayColumnIndex0) {
   const topToday = topRow[todayColumnIndex0];
   const bottomToday = bottomRow[todayColumnIndex0];
 
-  const newInputCandidates = [];
+  const dollarCandidates = [];
+  const dashCandidates = [];
   const sumCandidates = [];
 
-  // 1순위: 하이픈(-) 또는 달러($) 칸은 신규 입력 가능
-  // 2순위: 숫자 칸은 추가 입금 시 기존값 + 신규값으로 합산 가능
+  // 입력 우선순위
+  // 1순위: $ 칸에 신규 금액 입력
+  // 2순위: $가 없을 때 - 칸에 신규 금액 입력
+  // 3순위: $/-가 없고 숫자 칸이 정확히 1개일 때 기존값 + 신규값 합산
   // 공백, X, 기타 문자는 자동 입력 대상에서 제외
-  if (isInputCandidateCell(topToday)) {
-    newInputCandidates.push({ rowNumber: topIndex0 + 1, currentValue: topToday });
+  if (String(topToday ?? "").trim() === "$") {
+    dollarCandidates.push({ rowNumber: topIndex0 + 1, currentValue: topToday });
+  } else if (String(topToday ?? "").trim() === "-") {
+    dashCandidates.push({ rowNumber: topIndex0 + 1, currentValue: topToday });
   } else if (isActualPaymentCell(topToday)) {
     sumCandidates.push({ rowNumber: topIndex0 + 1, currentValue: topToday });
   }
 
-  if (isInputCandidateCell(bottomToday)) {
-    newInputCandidates.push({ rowNumber: topIndex0 + 2, currentValue: bottomToday });
+  if (String(bottomToday ?? "").trim() === "$") {
+    dollarCandidates.push({ rowNumber: topIndex0 + 2, currentValue: bottomToday });
+  } else if (String(bottomToday ?? "").trim() === "-") {
+    dashCandidates.push({ rowNumber: topIndex0 + 2, currentValue: bottomToday });
   } else if (isActualPaymentCell(bottomToday)) {
     sumCandidates.push({ rowNumber: topIndex0 + 2, currentValue: bottomToday });
   }
 
-  if (newInputCandidates.length === 1) {
-    return { status: "ok", mode: "new", ...newInputCandidates[0] };
+  if (dollarCandidates.length === 1) {
+    return { status: "ok", mode: "new", ...dollarCandidates[0] };
   }
 
-  if (newInputCandidates.length >= 2) {
+  if (dollarCandidates.length >= 2) {
+    return { status: "multiple" };
+  }
+
+  if (dashCandidates.length === 1) {
+    return { status: "ok", mode: "new", ...dashCandidates[0] };
+  }
+
+  if (dashCandidates.length >= 2) {
     return { status: "multiple" };
   }
 
