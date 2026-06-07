@@ -21,6 +21,45 @@ const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "")
   .map(v => v.trim())
   .filter(Boolean);
 
+// LINE webhook retry / duplicate guard
+// 같은 날 같은 명령어를 여러 번 직접 보내는 것은 허용한다.
+// 단, LINE이 같은 message.id를 재전송하거나 서버가 같은 요청을 중복 처리하는 경우만 짧게 차단한다.
+const PROCESSED_MESSAGE_TTL_MS = Number(process.env.PROCESSED_MESSAGE_TTL_MS || 10 * 60 * 1000);
+const processedMessageCache = globalThis.__lineProcessedMessageCache || new Map();
+globalThis.__lineProcessedMessageCache = processedMessageCache;
+
+function cleanupProcessedMessageCache(now = Date.now()) {
+  for (const [key, expiresAt] of processedMessageCache.entries()) {
+    if (expiresAt <= now) {
+      processedMessageCache.delete(key);
+    }
+  }
+}
+
+function getEventDedupKey(event) {
+  const messageId = event?.message?.id;
+  if (!messageId) return null;
+
+  const sourceType = event?.source?.type || "unknown";
+  const sourceId = event?.source?.groupId || event?.source?.roomId || event?.source?.userId || "unknown";
+  return `${sourceType}:${sourceId}:${messageId}`;
+}
+
+function markMessageProcessing(event) {
+  const key = getEventDedupKey(event);
+  if (!key) return true;
+
+  const now = Date.now();
+  cleanupProcessedMessageCache(now);
+
+  if (processedMessageCache.has(key)) {
+    return false;
+  }
+
+  processedMessageCache.set(key, now + PROCESSED_MESSAGE_TTL_MS);
+  return true;
+}
+
 const LINE_CUSTOMER_START_ROW = 1058;
 const LINE_CUSTOMER_START_INDEX0 = LINE_CUSTOMER_START_ROW - 1;
 
@@ -495,19 +534,24 @@ async function findMappedGroupId(accessToken, codeToFind) {
   return null;
 }
 
-async function pushToLine(to, text) {
+async function pushToLine(to, text, retryKey = null) {
+  const headers = {
+    Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
+    "Content-Type": "application/json"
+  };
+
+  // 같은 push 요청이 네트워크 타임아웃 등으로 재시도될 때 LINE 쪽 중복 발송을 줄인다.
+  if (retryKey) {
+    headers["X-Line-Retry-Key"] = retryKey;
+  }
+
   return axios.post(
     "https://api.line.me/v2/bot/message/push",
     {
       to,
       messages: [{ type: "text", text }]
     },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
-      }
-    }
+    { headers }
   );
 }
 
@@ -542,10 +586,13 @@ function getLinePushErrorMessage(err) {
 
 async function pushToLineWithRetry(code, groupId, text) {
   let lastError = null;
+  const retryKey = typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : crypto.createHash("sha256").update(`${Date.now()}:${code}:${groupId}:${text}`).digest("hex").slice(0, 36);
 
   for (let attempt = 1; attempt <= LINE_PUSH_RETRY_COUNT + 1; attempt += 1) {
     try {
-      await pushToLine(groupId, text);
+      await pushToLine(groupId, text, retryKey);
       return { ok: true, attempt };
     } catch (err) {
       lastError = err;
@@ -1778,6 +1825,18 @@ export default async function handler(req, res) {
     try {
       if (event.type !== "message") continue;
       if (event.message.type !== "text") continue;
+
+      // LINE이 webhook 응답 지연/오류로 같은 이벤트를 다시 보낸 경우는 처리하지 않는다.
+      // 사용자가 같은 명령어를 새로 다시 보내면 message.id가 달라서 정상 실행된다.
+      if (event.deliveryContext?.isRedelivery) {
+        console.log(`[LINE WEBHOOK SKIP] redelivery messageId=${event.message?.id || "unknown"}`);
+        continue;
+      }
+
+      if (!markMessageProcessing(event)) {
+        console.log(`[LINE WEBHOOK SKIP] duplicate messageId=${event.message?.id || "unknown"}`);
+        continue;
+      }
 
       const text = normalizeText(event.message.text);
       if (!text) continue;
