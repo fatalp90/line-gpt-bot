@@ -131,6 +131,20 @@ function parseSheetCommand(text) {
   };
 }
 
+function parseCountCommand(text) {
+  const clean = normalizeText(text).replace(/\s+/g, "");
+  const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/카운트(\d+)$/i);
+  if (!match) return null;
+
+  const count = Number(match[2]);
+  if (!Number.isInteger(count) || count < 1) return null;
+
+  return {
+    code: match[1].toUpperCase(),
+    count
+  };
+}
+
 function parseRegisterGroupCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
   const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/등록$/i);
@@ -922,6 +936,129 @@ async function addNextDayDollarIfBlank(accessToken, values, rowNumber, todayColu
 
   await updateSheetCell(accessToken, nextRowNumber, nextColumnIndex0, "$");
   return true;
+}
+
+
+function getNextDayPosition(values, rowNumber, columnIndex0, topRowNumber, todayInfo = null) {
+  const today = todayInfo || getKoreaToday();
+  const lastDayOfMonth = getDaysInMonth(today.year, today.month);
+  const dayNumber = columnIndex0 - DATE_START_COLUMN_INDEX + 1;
+
+  if (dayNumber >= lastDayOfMonth) {
+    return {
+      rowNumber: rowNumber === topRowNumber ? topRowNumber + 1 : topRowNumber,
+      columnIndex0: findTodayColumnIndex(values, 1)
+    };
+  }
+
+  return { rowNumber, columnIndex0: columnIndex0 + 1 };
+}
+
+function chooseCountStartPosition(values, topRowNumber, todayColumnIndex0, todayInfo = null) {
+  const topRow = values[topRowNumber - 1] || [];
+  const bottomRow = values[topRowNumber] || [];
+  const topToday = String(topRow[todayColumnIndex0] ?? "").trim();
+  const bottomToday = String(bottomRow[todayColumnIndex0] ?? "").trim();
+
+  let rowNumber = topRowNumber;
+
+  if (topToday === "$" || topToday === "-" || isActualPaymentCell(topToday)) {
+    rowNumber = topRowNumber;
+  } else if (bottomToday === "$" || bottomToday === "-" || isActualPaymentCell(bottomToday)) {
+    rowNumber = topRowNumber + 1;
+  } else if (isBlankCell(topToday)) {
+    rowNumber = topRowNumber;
+  } else if (isBlankCell(bottomToday)) {
+    rowNumber = topRowNumber + 1;
+  }
+
+  // 오늘 칸이 이미 사용 중이면 다음 날짜부터 공백칸을 찾는다.
+  const currentRow = values[rowNumber - 1] || [];
+  const todayValue = currentRow[todayColumnIndex0];
+  if (isBlankCell(todayValue)) {
+    return { rowNumber, columnIndex0: todayColumnIndex0 };
+  }
+
+  return getNextDayPosition(values, rowNumber, todayColumnIndex0, topRowNumber, todayInfo);
+}
+
+async function applyCountPatternIfBlank(accessToken, values, topRowNumber, todayColumnIndex0, count, todayInfo = null) {
+  const today = todayInfo || getKoreaToday();
+  const updates = [];
+  let position = chooseCountStartPosition(values, topRowNumber, todayColumnIndex0, today);
+  const maxScan = (DATE_END_COLUMN_INDEX - DATE_START_COLUMN_INDEX + 1) * 2;
+
+  for (let scanned = 0; scanned < maxScan && updates.length < count; scanned += 1) {
+    if (position.columnIndex0 < DATE_START_COLUMN_INDEX || position.columnIndex0 > DATE_END_COLUMN_INDEX) {
+      break;
+    }
+
+    const row = values[position.rowNumber - 1] || [];
+    const cellValue = row[position.columnIndex0];
+
+    if (isBlankCell(cellValue)) {
+      const value = updates.length === count - 1 ? "$" : "-";
+      updates.push({ rowNumber: position.rowNumber, columnIndex0: position.columnIndex0, value });
+      row[position.columnIndex0] = value;
+      values[position.rowNumber - 1] = row;
+    }
+
+    position = getNextDayPosition(values, position.rowNumber, position.columnIndex0, topRowNumber, today);
+  }
+
+  for (const item of updates) {
+    await updateSheetCell(accessToken, item.rowNumber, item.columnIndex0, item.value);
+  }
+
+  return updates.length;
+}
+
+async function writeCountCommand(command) {
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const values = await getSheetValues(accessToken);
+  const today = getKoreaToday();
+  const todayColumnIndex0 = findTodayColumnIndex(values, today.day);
+
+  const matches = [];
+  for (let i = 1; i < values.length; i += 1) {
+    const row = values[i] || [];
+    const status = String(row[2] || "").trim();
+    const productName = String(row[5] || "").trim();
+
+    if (status !== "진행중") continue;
+
+    const codeMatch = productName.match(/([A-Za-z]{1,3}\d{1,3})/);
+    if (!codeMatch) continue;
+
+    if (codeMatch[1].toUpperCase() === command.code) {
+      matches.push({ rowIndex0: i, productName });
+    }
+  }
+
+  if (matches.length === 0) {
+    return `⚠️ ${command.code} 진행중 고객을 찾지 못했습니다.`;
+  }
+
+  if (matches.length > 1) {
+    return `⚠️ ${command.code} 진행중 항목이 ${matches.length}개입니다. 중복 확인이 필요합니다.`;
+  }
+
+  const topRowNumber = matches[0].rowIndex0 + 1;
+  const appliedCount = await applyCountPatternIfBlank(accessToken, values, topRowNumber, todayColumnIndex0, command.count, today);
+
+  if (appliedCount === 0) {
+    return `⚠️ ${command.code} 카운트${command.count} 입력 가능한 공백칸이 없습니다.`;
+  }
+
+  if (appliedCount < command.count) {
+    return `⚠️ ${command.code} 카운트${command.count} 중 ${appliedCount}개만 입력되었습니다.`;
+  }
+
+  return `✅ ${command.code} 카운트${command.count} 반영완료`;
 }
 
 async function writeSheetCommand(command) {
@@ -1893,6 +2030,18 @@ export default async function handler(req, res) {
 
         const closeReply = await closeSheetCustomer(closeCommand);
         await replyToLine(event.replyToken, closeReply);
+        continue;
+      }
+
+      const countCommand = parseCountCommand(text);
+      if (countCommand) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
+        const countReply = await writeCountCommand(countCommand);
+        await replyToLine(event.replyToken, countReply);
         continue;
       }
 
