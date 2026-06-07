@@ -954,35 +954,42 @@ function getNextDayPosition(values, rowNumber, columnIndex0, topRowNumber, today
   return { rowNumber, columnIndex0: columnIndex0 + 1 };
 }
 
-function chooseCountStartPosition(values, topRowNumber, todayColumnIndex0, todayInfo = null) {
+function chooseCountBaseRow(values, topRowNumber, todayColumnIndex0) {
   const topRow = values[topRowNumber - 1] || [];
   const bottomRow = values[topRowNumber] || [];
   const topToday = String(topRow[todayColumnIndex0] ?? "").trim();
   const bottomToday = String(bottomRow[todayColumnIndex0] ?? "").trim();
 
-  let rowNumber = topRowNumber;
-
+  // 오늘 날짜 기준으로 어느 줄의 다음 날짜부터 카운트를 이어갈지 판단한다.
+  // 오늘 칸에 실제 금액/$/-가 있는 줄을 우선 사용한다.
   if (topToday === "$" || topToday === "-" || isActualPaymentCell(topToday)) {
-    rowNumber = topRowNumber;
-  } else if (bottomToday === "$" || bottomToday === "-" || isActualPaymentCell(bottomToday)) {
-    rowNumber = topRowNumber + 1;
-  } else if (isBlankCell(topToday)) {
-    rowNumber = topRowNumber;
-  } else if (isBlankCell(bottomToday)) {
-    rowNumber = topRowNumber + 1;
+    return topRowNumber;
   }
 
-  // 오늘 칸이 이미 사용 중이면 다음 날짜부터 공백칸을 찾는다.
-  const currentRow = values[rowNumber - 1] || [];
-  const todayValue = currentRow[todayColumnIndex0];
-  if (isBlankCell(todayValue)) {
-    return { rowNumber, columnIndex0: todayColumnIndex0 };
+  if (bottomToday === "$" || bottomToday === "-" || isActualPaymentCell(bottomToday)) {
+    return topRowNumber + 1;
   }
 
+  // 오늘 칸이 둘 다 비어 있으면 기존 기준처럼 상단 줄의 다음 날짜부터 시작한다.
+  return topRowNumber;
+}
+
+function chooseCountStartPosition(values, topRowNumber, todayColumnIndex0, todayInfo = null) {
+  const rowNumber = chooseCountBaseRow(values, topRowNumber, todayColumnIndex0);
+
+  // 카운트 명령어는 오늘 칸을 건드리지 않고, 항상 오늘 날짜 기준 다음 칸부터 시작한다.
   return getNextDayPosition(values, rowNumber, todayColumnIndex0, topRowNumber, todayInfo);
 }
 
-async function applyCountPatternIfBlank(accessToken, values, topRowNumber, todayColumnIndex0, count, todayInfo = null) {
+function isCountOverwriteCandidate(value) {
+  const v = String(value ?? "").trim();
+
+  // 카운트 명령은 공백, -, $만 덮어쓴다.
+  // 숫자 실제 상환값, X, 기타 메모는 건드리지 않고 다음 날짜로 넘어간다.
+  return isBlankCell(value) || v === "-" || v === "$";
+}
+
+async function applyCountPattern(accessToken, values, topRowNumber, todayColumnIndex0, count, todayInfo = null) {
   const today = todayInfo || getKoreaToday();
   const updates = [];
   let position = chooseCountStartPosition(values, topRowNumber, todayColumnIndex0, today);
@@ -996,7 +1003,7 @@ async function applyCountPatternIfBlank(accessToken, values, topRowNumber, today
     const row = values[position.rowNumber - 1] || [];
     const cellValue = row[position.columnIndex0];
 
-    if (isBlankCell(cellValue)) {
+    if (isCountOverwriteCandidate(cellValue)) {
       const value = updates.length === count - 1 ? "$" : "-";
       updates.push({ rowNumber: position.rowNumber, columnIndex0: position.columnIndex0, value });
       row[position.columnIndex0] = value;
@@ -1048,10 +1055,10 @@ async function writeCountCommand(command) {
   }
 
   const topRowNumber = matches[0].rowIndex0 + 1;
-  const appliedCount = await applyCountPatternIfBlank(accessToken, values, topRowNumber, todayColumnIndex0, command.count, today);
+  const appliedCount = await applyCountPattern(accessToken, values, topRowNumber, todayColumnIndex0, command.count, today);
 
   if (appliedCount === 0) {
-    return `⚠️ ${command.code} 카운트${command.count} 입력 가능한 공백칸이 없습니다.`;
+    return `⚠️ ${command.code} 카운트${command.count} 입력 가능한 칸이 없습니다.`;
   }
 
   if (appliedCount < command.count) {
