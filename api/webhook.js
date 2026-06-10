@@ -506,32 +506,28 @@ async function registerGroupCode(command, event) {
   }).format(new Date());
 
   let existingRowNumber = null;
+  const rowsToClear = [];
   const clearedCodes = [];
 
-  // 등록 기준 변경:
-  // 1) 같은 코드가 있으면 해당 행을 갱신한다.
-  // 2) 같은 그룹방(groupId)에 연결되어 있던 다른 기존 코드는 자동 해제한다.
-  //    예: KN72 -> groupA 상태에서 KN76/등록을 하면 KN72 매핑은 비우고 KN76만 남긴다.
+  // 먼저 새 코드 등록/갱신에 필요한 행을 찾고,
+  // 같은 그룹방에 남아 있는 이전 코드들은 등록 완료 후 별도로 정리한다.
+  // 정리 실패가 생겨도 등록 답신은 반드시 나가도록 아래에서 try/catch로 분리한다.
   for (let i = 1; i < values.length; i += 1) {
     const code = String(values[i]?.[0] || "").trim().toUpperCase();
     const mappedGroupId = String(values[i]?.[1] || "").trim();
 
-    if (code === command.code) {
+    if (code === command.code && existingRowNumber === null) {
       existingRowNumber = i + 1;
       continue;
     }
 
-    if (mappedGroupId === groupId && code) {
-      const clearRange = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A${i + 1}:C${i + 1}`;
-      const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(clearRange)}?valueInputOption=USER_ENTERED`;
-      await axios.put(
-        clearUrl,
-        { range: clearRange, majorDimension: "ROWS", values: [["", "", ""]] },
-        { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
-      );
+    if (mappedGroupId === groupId && code && code !== command.code) {
+      rowsToClear.push(i + 1);
       clearedCodes.push(code);
     }
   }
+
+  let replyText = "";
 
   if (existingRowNumber) {
     const range = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A${existingRowNumber}:C${existingRowNumber}`;
@@ -542,24 +538,38 @@ async function registerGroupCode(command, event) {
       { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
     );
 
-    const clearedText = clearedCodes.length ? `
-🧹 기존 매핑 해제: ${clearedCodes.join(", ")}` : "";
-    return `✅ ${command.code} 그룹등록 갱신완료${clearedText}`;
+    replyText = `✅ ${command.code} 그룹등록 갱신완료`;
+  } else {
+    const range = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A:C`;
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+    await axios.post(
+      url,
+      { range, majorDimension: "ROWS", values: [[command.code, groupId, nowText]] },
+      { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+    );
+
+    replyText = `✅ ${command.code} 그룹등록 완료`;
   }
 
-  const range = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A:C`;
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
-  await axios.post(
-    url,
-    { range, majorDimension: "ROWS", values: [[command.code, groupId, nowText]] },
-    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
-  );
+  if (rowsToClear.length) {
+    try {
+      const ranges = rowsToClear.map(rowNumber => `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A${rowNumber}:C${rowNumber}`);
+      const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values:batchClear`;
+      await axios.post(
+        clearUrl,
+        { ranges },
+        { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+      );
 
-  const clearedText = clearedCodes.length ? `
-🧹 기존 매핑 해제: ${clearedCodes.join(", ")}` : "";
-  return `✅ ${command.code} 그룹등록 완료${clearedText}`;
+      replyText += `\n🧹 기존 매핑 해제: ${clearedCodes.join(", ")}`;
+    } catch (err) {
+      console.error(`[GROUP MAP CLEAR FAIL] code=${command.code} groupId=${groupId}`, err?.response?.data || err?.message || err);
+      replyText += `\n⚠️ 등록은 완료됐지만 기존 매핑 자동 해제는 실패했습니다. LINE그룹매핑 시트에서 ${clearedCodes.join(", ")} 행을 확인해주세요.`;
+    }
+  }
+
+  return replyText;
 }
-
 
 async function findMappedGroupId(accessToken, codeToFind) {
   const values = await getGroupMapValues(accessToken);
@@ -802,8 +812,8 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
   const groupMap = new Map();
   const latestCodeByGroupId = new Map();
 
-  // 같은 그룹ID가 여러 코드에 남아 있는 경우, 시트에서 더 아래쪽(나중에 등록된 것으로 보는) 코드를 유효 코드로 사용한다.
-  // 등록 로직에서 기존 매핑을 비우지만, 과거 중복 데이터가 남아 있어도 오늘상환 발송이 중복되지 않게 하는 안전장치다.
+  // 같은 그룹ID가 여러 코드에 남아 있어도, 같은 그룹으로는 1회만 발송한다.
+  // 시트 아래쪽 행을 나중 등록된 값으로 보고 우선 사용한다.
   for (let i = 1; i < groupMapValues.length; i += 1) {
     const code = String(groupMapValues[i]?.[0] || "").trim().toUpperCase();
     const groupId = String(groupMapValues[i]?.[1] || "").trim();
@@ -874,18 +884,10 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
 
   if (failedItems.length) {
     const lines = failedItems.map(item => `${item.code} - ${item.error}`);
-    return `❌ 발송 일부 실패
-
-✅ 성공: ${successCount}건
-❌ 실패: ${failedItems.length}건
-
-${lines.join("
-")}`;
+    return `❌ 발송 일부 실패\n\n✅ 성공: ${successCount}건\n❌ 실패: ${failedItems.length}건\n\n${lines.join("\n")}`;
   }
 
-  return `✅ 발송 완료
-
-총 ${successCount}건 전송완료`;
+  return `✅ 발송 완료\n\n총 ${successCount}건 전송완료`;
 }
 
 
