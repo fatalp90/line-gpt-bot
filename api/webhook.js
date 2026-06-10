@@ -506,11 +506,30 @@ async function registerGroupCode(command, event) {
   }).format(new Date());
 
   let existingRowNumber = null;
+  const clearedCodes = [];
+
+  // 등록 기준 변경:
+  // 1) 같은 코드가 있으면 해당 행을 갱신한다.
+  // 2) 같은 그룹방(groupId)에 연결되어 있던 다른 기존 코드는 자동 해제한다.
+  //    예: KN72 -> groupA 상태에서 KN76/등록을 하면 KN72 매핑은 비우고 KN76만 남긴다.
   for (let i = 1; i < values.length; i += 1) {
     const code = String(values[i]?.[0] || "").trim().toUpperCase();
+    const mappedGroupId = String(values[i]?.[1] || "").trim();
+
     if (code === command.code) {
       existingRowNumber = i + 1;
-      break;
+      continue;
+    }
+
+    if (mappedGroupId === groupId && code) {
+      const clearRange = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A${i + 1}:C${i + 1}`;
+      const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(clearRange)}?valueInputOption=USER_ENTERED`;
+      await axios.put(
+        clearUrl,
+        { range: clearRange, majorDimension: "ROWS", values: [["", "", ""]] },
+        { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+      );
+      clearedCodes.push(code);
     }
   }
 
@@ -523,7 +542,9 @@ async function registerGroupCode(command, event) {
       { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
     );
 
-    return `✅ ${command.code} 그룹등록 갱신완료`;
+    const clearedText = clearedCodes.length ? `
+🧹 기존 매핑 해제: ${clearedCodes.join(", ")}` : "";
+    return `✅ ${command.code} 그룹등록 갱신완료${clearedText}`;
   }
 
   const range = `'${escapeSheetName(GROUP_MAP_SHEET_NAME)}'!A:C`;
@@ -534,7 +555,9 @@ async function registerGroupCode(command, event) {
     { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
   );
 
-  return `✅ ${command.code} 그룹등록 완료`;
+  const clearedText = clearedCodes.length ? `
+🧹 기존 매핑 해제: ${clearedCodes.join(", ")}` : "";
+  return `✅ ${command.code} 그룹등록 완료${clearedText}`;
 }
 
 
@@ -680,18 +703,15 @@ function hasDollarToday(values, topIndex0, todayColumnIndex0) {
   return topToday === "$" || bottomToday === "$";
 }
 
-function findTodayRepaymentTargets(values, groupMap) {
+function findTodayDollarCodes(values, registeredCodes = null) {
   const today = getKoreaToday();
   const todayColumnIndex0 = findTodayColumnIndex(values, today.day);
-  const targets = [];
+  const codes = [];
   const seen = new Set();
 
-  // 오늘상환 발송은 "발송 전에" 대상자를 먼저 확정한다.
-  // 아래 3가지 조건을 모두 만족하는 경우에만 targets에 추가되고,
-  // sendTodayRepaymentBroadcast는 targets에 들어간 항목만 pushToLineWithRetry를 호출한다.
-  // 1) C열 상태가 진행중
-  // 2) 오늘 날짜 칸에 $ 존재. 고객 1명 2행 구조이므로 해당 행 + 바로 아래 행을 함께 확인
-  // 3) LINE그룹매핑 시트에 코드와 groupId가 등록되어 있음
+  // 오늘상환 알림은 1058행 기준으로 제한하지 않고 전체 시트에서 검색한다.
+  // 단, 상태가 진행중이고 오늘 날짜 칸에 $가 있으며 LINE그룹매핑에 등록된 코드만 발송 대상으로 사용한다.
+  // 고객 1명은 기본적으로 해당 행 + 바로 아래 행 2줄 구조이므로 hasDollarToday에서 두 줄을 함께 확인한다.
   for (let i = 1; i < values.length; i += 1) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
@@ -701,29 +721,17 @@ function findTodayRepaymentTargets(values, groupMap) {
 
     const code = extractCustomerCodeFromProductName(productName);
     if (!code) continue;
-
-    const groupId = groupMap.get(code);
-    if (!groupId) continue;
+    if (registeredCodes && !registeredCodes.has(code)) continue;
 
     if (!hasDollarToday(values, i, todayColumnIndex0)) continue;
 
     if (!seen.has(code)) {
       seen.add(code);
-      targets.push({ code, groupId, rowNumber: i + 1 });
+      codes.push(code);
     }
   }
 
-  return targets;
-}
-
-function findTodayDollarCodes(values, registeredCodes = null) {
-  const groupMap = new Map();
-  if (registeredCodes) {
-    for (const code of registeredCodes) {
-      groupMap.set(code, "registered");
-    }
-  }
-  return findTodayRepaymentTargets(values, groupMap).map(target => target.code);
+  return codes;
 }
 
 function findActiveLineCustomerCodes(values) {
@@ -792,57 +800,65 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
   const values = await getSheetValues(accessToken);
   const groupMapValues = await getGroupMapValues(accessToken);
   const groupMap = new Map();
+  const latestCodeByGroupId = new Map();
 
+  // 같은 그룹ID가 여러 코드에 남아 있는 경우, 시트에서 더 아래쪽(나중에 등록된 것으로 보는) 코드를 유효 코드로 사용한다.
+  // 등록 로직에서 기존 매핑을 비우지만, 과거 중복 데이터가 남아 있어도 오늘상환 발송이 중복되지 않게 하는 안전장치다.
   for (let i = 1; i < groupMapValues.length; i += 1) {
     const code = String(groupMapValues[i]?.[0] || "").trim().toUpperCase();
     const groupId = String(groupMapValues[i]?.[1] || "").trim();
     if (code && groupId) {
-      groupMap.set(code, groupId);
+      latestCodeByGroupId.set(groupId, code);
     }
   }
 
-  const targets = findTodayRepaymentTargets(values, groupMap);
-  const targetCodes = targets.map(target => target.code);
+  for (const [groupId, code] of latestCodeByGroupId.entries()) {
+    groupMap.set(code, groupId);
+  }
 
-  // 실제 LINE Push API를 호출하기 전에 최종 대상자를 로그로 남긴다.
-  // 이 로그의 count가 실제 발송 루프 대상 수이며, 이 대상 외에는 push 호출이 발생하지 않는다.
-  console.log(`[LINE BROADCAST TARGETS] targetCount=${targets.length} codes=${targetCodes.join(",")}`);
+  const rawCodes = findTodayDollarCodes(values, new Set(groupMap.keys()));
+  const codes = [];
+  const seenGroupIds = new Set();
 
-  if (!targets.length) {
+  for (const code of rawCodes) {
+    const groupId = groupMap.get(code);
+    if (!groupId) continue;
+    if (seenGroupIds.has(groupId)) continue;
+    seenGroupIds.add(groupId);
+    codes.push(code);
+  }
+
+  if (!codes.length) {
     return "⚠️ 오늘 발송 대상이 없습니다.";
   }
 
   const failedItems = [];
   let successCount = 0;
-  let pushTargetCallCount = 0;
-  let pushApiAttemptCount = 0;
 
-  // targets 배열에 들어간 항목만 실제 LINE Push API를 호출한다.
-  // 즉, 진행중 + 오늘 $ + 그룹등록이 모두 확인되지 않은 항목은 크레딧을 소모하는 push 호출 자체가 발생하지 않는다.
-  for (let start = 0; start < targets.length; start += LINE_PUSH_CONCURRENCY) {
-    const chunk = targets.slice(start, start + LINE_PUSH_CONCURRENCY);
-    const chunkCodes = chunk.map(target => target.code);
-
-    console.log(`[LINE BROADCAST CHUNK START] start=${start} size=${chunk.length} codes=${chunkCodes.join(",")}`);
+  // 기존 순차 발송 방식은 대상이 많을수록 1건씩 기다려서 느렸기 때문에
+  // LINE_PUSH_CONCURRENCY 개수만큼 묶어서 병렬 발송한다.
+  for (let start = 0; start < codes.length; start += LINE_PUSH_CONCURRENCY) {
+    const chunk = codes.slice(start, start + LINE_PUSH_CONCURRENCY);
 
     const results = await Promise.all(
-      chunk.map(async (target) => {
-        const { code, groupId } = target;
-        pushTargetCallCount += 1;
+      chunk.map(async (code) => {
+        const groupId = groupMap.get(code);
+
+        if (!groupId) {
+          return { code, ok: false, error: "등록된 그룹ID 없음" };
+        }
 
         const result = await pushToLineWithRetry(code, groupId, broadcastMessage);
 
         if (!result.ok) {
-          return { code, ok: false, attempt: result.attempt || 0, error: result.error || "발송 실패" };
+          return { code, ok: false, error: result.error || "발송 실패" };
         }
 
-        return { code, ok: true, attempt: result.attempt || 1 };
+        return { code, ok: true };
       })
     );
 
     for (const item of results) {
-      pushApiAttemptCount += item.attempt || 0;
-
       if (item.ok) {
         successCount += 1;
       } else {
@@ -850,22 +866,26 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
       }
     }
 
-    console.log(`[LINE BROADCAST CHUNK END] start=${start} success=${results.filter(item => item.ok).length} fail=${results.filter(item => !item.ok).length} apiAttempts=${results.reduce((sum, item) => sum + (item.attempt || 0), 0)}`);
-
     // 동시 발송 묶음 사이에만 선택적으로 짧은 대기시간을 둘 수 있다.
-    if (LINE_PUSH_DELAY_MS > 0 && start + LINE_PUSH_CONCURRENCY < targets.length) {
+    if (LINE_PUSH_DELAY_MS > 0 && start + LINE_PUSH_CONCURRENCY < codes.length) {
       await sleep(LINE_PUSH_DELAY_MS);
     }
   }
 
-  console.log(`[LINE BROADCAST SUMMARY] targetCount=${targets.length} pushTargetCalls=${pushTargetCallCount} pushApiAttempts=${pushApiAttemptCount} success=${successCount} fail=${failedItems.length}`);
-
   if (failedItems.length) {
     const lines = failedItems.map(item => `${item.code} - ${item.error}`);
-    return `❌ 발송 일부 실패\n\n🎯 최종 대상: ${targets.length}건\n📤 Push 호출 대상: ${pushTargetCallCount}건\n🔁 Push API 시도: ${pushApiAttemptCount}회\n✅ 성공: ${successCount}건\n❌ 실패: ${failedItems.length}건\n\n${lines.join("\n")}`;
+    return `❌ 발송 일부 실패
+
+✅ 성공: ${successCount}건
+❌ 실패: ${failedItems.length}건
+
+${lines.join("
+")}`;
   }
 
-  return `✅ 발송 완료\n\n🎯 최종 대상: ${targets.length}건\n📤 Push 호출 대상: ${pushTargetCallCount}건\n🔁 Push API 시도: ${pushApiAttemptCount}회\n✅ 성공: ${successCount}건`;
+  return `✅ 발송 완료
+
+총 ${successCount}건 전송완료`;
 }
 
 
