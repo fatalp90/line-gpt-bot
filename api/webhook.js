@@ -742,30 +742,39 @@ function dateInfoToNumber(dateInfo) {
   return dateInfo.year * 10000 + dateInfo.month * 100 + dateInfo.day;
 }
 
-function parseCustomerStartDateFromRow(row) {
+function parseCustomerYearMonthFromRow(row) {
   const yearMonth = parseYearMonthValue(row?.[1]); // B열 년/월
-  const dayRaw = String(row?.[7] ?? "").trim(); // H열 날짜
-
-  if (!yearMonth || !dayRaw) return null;
+  if (!yearMonth) return null;
 
   const year = getFullYearFromYearMonth(yearMonth);
   const month = Number(String(yearMonth).slice(2, 4));
-  const day = Number(dayRaw.replace(/[^0-9]/g, ""));
 
-  if (!Number.isInteger(day) || day < 1 || day > 31) return null;
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return null;
+  }
 
-  return { year, month, day };
+  return { year, month };
+}
+
+function yearMonthInfoToNumber(dateInfo) {
+  return dateInfo.year * 100 + dateInfo.month;
 }
 
 function isBroadcastTargetDateRow(row, todayInfo = null) {
   const today = todayInfo || getKoreaToday();
   const startDate = parseBroadcastStartDate(today);
-  const rowDate = parseCustomerStartDateFromRow(row);
+  const rowYearMonth = parseCustomerYearMonthFromRow(row);
 
-  if (!rowDate) return false;
+  if (!rowYearMonth) return false;
 
-  const rowNumber = dateInfoToNumber(rowDate);
-  return rowNumber >= dateInfoToNumber(startDate) && rowNumber <= dateInfoToNumber(today);
+  const rowNumber = yearMonthInfoToNumber(rowYearMonth);
+  const startNumber = yearMonthInfoToNumber(startDate);
+  const todayNumber = yearMonthInfoToNumber(today);
+
+  // B열 년/월 기준으로만 판단한다.
+  // 예: B열이 2026/04, 2026.04, 2604, 202604이면 2026년 4월 이후 전체 발송대상 후보에 포함.
+  // H열 날짜가 비어 있거나 형식이 달라도 제외하지 않는다.
+  return rowNumber >= startNumber && rowNumber <= todayNumber;
 }
 
 function findTodayDollarCodes(values, registeredCodes = null) {
@@ -774,9 +783,9 @@ function findTodayDollarCodes(values, registeredCodes = null) {
   const codes = [];
   const seen = new Set();
 
-  // 오늘상환 알림은 4월 1일부터 현재까지의 실제 고객 행만 검색한다.
-  // 조건: B열 년/월 + H열 날짜가 유효하고, 상태가 진행중이며, 오늘 날짜 칸에 $가 있고, LINE그룹매핑에 등록된 코드.
-  // 목차/구분행/이전 데이터가 후보에 섞여 크레딧이 과다 소모되는 것을 막기 위해 날짜 범위를 먼저 제한한다.
+  // 오늘상환 알림은 B열 년/월이 2026/04 이후~현재 월인 실제 고객 행만 검색한다.
+  // 조건: B열 년/월이 유효하고, 상태가 진행중이며, 오늘 날짜 칸에 $가 있고, LINE그룹매핑에 등록된 코드.
+  // H열 날짜는 고객 시작일 입력 형식 차이로 누락될 수 있어 발송대상 판단에서 제외한다.
   for (let i = 1; i < values.length; i += 1) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
