@@ -62,27 +62,35 @@ function markMessageProcessing(event) {
 
 const LINE_CUSTOMER_START_ROW = 1058;
 const LINE_CUSTOMER_START_INDEX0 = LINE_CUSTOMER_START_ROW - 1;
+const LINE_BROADCAST_START_DATE = process.env.LINE_BROADCAST_START_DATE || "2026-04-01";
+const REPAYMENT_IGNORE_NOTICE = "(หากชำระเรียบร้อยแล้ว สามารถละเว้นข้อความนี้ได้ครับ)";
 
 const REPAYMENT_MORNING_MESSAGE = `📌 วันนี้เป็นวันชำระ
 โอนภายในเวลา 20:00 น.
 
 👉ธนาคาร SHINHAN BANK
 👉ชื่อบช. 110551366954
-👉ชื่อ  CHAYAPONE`;
+👉ชื่อ  CHAYAPONE
+
+${REPAYMENT_IGNORE_NOTICE}`;
 
 const REPAYMENT_AFTERNOON_MESSAGE = `📌 เวลา 20:00 น. แล้ว
 รีบโอนเงินด้วยครับ
 
 👉ธนาคาร SHINHAN BANK
 👉ชื่อบช. 110551366954
-👉ชื่อ  CHAYAPONE`;
+👉ชื่อ  CHAYAPONE
+
+${REPAYMENT_IGNORE_NOTICE}`;
 
 const PAYMENT_REQUEST_MESSAGE = `📌 ยังไม่พบยอดโอน
 รีบโอนเงินครับ
 
 👉ธนาคาร SHINHAN BANK
 👉ชื่อบช. 110551366954
-👉ชื่อ  CHAYAPONE`;
+👉ชื่อ  CHAYAPONE
+
+${REPAYMENT_IGNORE_NOTICE}`;
 
 
 function base64Url(input) {
@@ -713,20 +721,68 @@ function hasDollarToday(values, topIndex0, todayColumnIndex0) {
   return topToday === "$" || bottomToday === "$";
 }
 
+function parseBroadcastStartDate(todayInfo = null) {
+  const today = todayInfo || getKoreaToday();
+  const raw = String(LINE_BROADCAST_START_DATE || "").trim();
+  const match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+
+  if (match) {
+    return {
+      year: Number(match[1]),
+      month: Number(match[2]),
+      day: Number(match[3])
+    };
+  }
+
+  // 환경변수 형식이 잘못된 경우 현재 연도 4월 1일로 제한한다.
+  return { year: today.year, month: 4, day: 1 };
+}
+
+function dateInfoToNumber(dateInfo) {
+  return dateInfo.year * 10000 + dateInfo.month * 100 + dateInfo.day;
+}
+
+function parseCustomerStartDateFromRow(row) {
+  const yearMonth = parseYearMonthValue(row?.[1]); // B열 년/월
+  const dayRaw = String(row?.[7] ?? "").trim(); // H열 날짜
+
+  if (!yearMonth || !dayRaw) return null;
+
+  const year = getFullYearFromYearMonth(yearMonth);
+  const month = Number(String(yearMonth).slice(2, 4));
+  const day = Number(dayRaw.replace(/[^0-9]/g, ""));
+
+  if (!Number.isInteger(day) || day < 1 || day > 31) return null;
+
+  return { year, month, day };
+}
+
+function isBroadcastTargetDateRow(row, todayInfo = null) {
+  const today = todayInfo || getKoreaToday();
+  const startDate = parseBroadcastStartDate(today);
+  const rowDate = parseCustomerStartDateFromRow(row);
+
+  if (!rowDate) return false;
+
+  const rowNumber = dateInfoToNumber(rowDate);
+  return rowNumber >= dateInfoToNumber(startDate) && rowNumber <= dateInfoToNumber(today);
+}
+
 function findTodayDollarCodes(values, registeredCodes = null) {
   const today = getKoreaToday();
   const todayColumnIndex0 = findTodayColumnIndex(values, today.day);
   const codes = [];
   const seen = new Set();
 
-  // 오늘상환 알림은 1058행 기준으로 제한하지 않고 전체 시트에서 검색한다.
-  // 단, 상태가 진행중이고 오늘 날짜 칸에 $가 있으며 LINE그룹매핑에 등록된 코드만 발송 대상으로 사용한다.
-  // 고객 1명은 기본적으로 해당 행 + 바로 아래 행 2줄 구조이므로 hasDollarToday에서 두 줄을 함께 확인한다.
+  // 오늘상환 알림은 4월 1일부터 현재까지의 실제 고객 행만 검색한다.
+  // 조건: B열 년/월 + H열 날짜가 유효하고, 상태가 진행중이며, 오늘 날짜 칸에 $가 있고, LINE그룹매핑에 등록된 코드.
+  // 목차/구분행/이전 데이터가 후보에 섞여 크레딧이 과다 소모되는 것을 막기 위해 날짜 범위를 먼저 제한한다.
   for (let i = 1; i < values.length; i += 1) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
     const productName = String(row[5] || "").trim(); // F열 상품명
 
+    if (!isBroadcastTargetDateRow(row, today)) continue;
     if (status !== "진행중") continue;
 
     const code = extractCustomerCodeFromProductName(productName);
