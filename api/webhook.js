@@ -166,7 +166,7 @@ function parseRegisterGroupCommand(text) {
 
 function parseCloseCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
-  const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/종료$/i);
+  const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/(종료|종결)$/i);
   if (!match) return null;
 
   return {
@@ -1753,10 +1753,13 @@ async function closeSheetCustomer(command) {
   }
 
   const topRowNumber = matches[0].rowIndex0 + 1;
+  const managerProfit = parseCreditNumber((values[topRowNumber] || [])[10]); // K열 하단: 관리자수익
+  const managerProfitText = managerProfit === null ? "확인불가" : formatAmountValue(managerProfit);
+
   await updateSheetCell(accessToken, topRowNumber, 2, "종료");
   await applyClosedCustomerStyle(accessToken, topRowNumber);
 
-  return `✅ ${command.code} 종료 처리완료`;
+  return `✅ ${command.code} 종결 처리완료\n${managerProfitText}`;
 }
 
 const ignoreKeywords = [
