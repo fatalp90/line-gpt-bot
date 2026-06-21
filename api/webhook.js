@@ -1015,40 +1015,53 @@ function findCreditRecords(values, command) {
   return matches.sort((a, b) => (a.loanDateValue || 0) - (b.loanDateValue || 0));
 }
 
+function clampScore(value, min, max) {
+  const n = Math.max(0, Math.min(100, Math.round(value)));
+  return Math.max(min, Math.min(max, n));
+}
+
 function calculateCreditScore(records) {
   const hasBlack = records.some(r => r.status === "블랙");
   const holdCount = records.filter(r => r.status === "보류").length;
+  const closedCount = records.filter(r => r.status === "종료").length;
   const totalX = records.reduce((sum, r) => sum + r.xCount, 0);
-  const lossCount = records.filter(r => typeof r.totalProfit === "number" && r.totalProfit < 0).length;
 
-  // 신용평가는 100점에서 감점하는 방식으로 단순화한다.
-  // $는 아직 상환도래 전 표시이므로 감점하지 않는다.
+  // 평가 기준
+  // - 신규/진행중만 있고 종료 이력이 없으며 X가 없으면 N등급(평가대기)
+  // - 블랙 존재: E등급 고정
+  // - 보류 존재 또는 X 7회 이상: D등급
+  // - X 4~6회: C등급
+  // - 종료 3건 이상 + X 0~1회: A등급
+  // - 종료 이력 있음 + X 0~3회: B등급
+  // $는 아직 상환도래 전 표시이므로 점수/등급에 반영하지 않는다.
   // 진행중 건수도 감점하지 않는다.
-  // 핵심 감점 요소는 X, 손실 거래, 보류, 블랙이다.
-  let score = 100;
-  score -= totalX * 5;
-  score -= lossCount * 10;
-  score -= holdCount * 20;
+  const baseScore = 100 - totalX * 5 - holdCount * 20;
 
   if (hasBlack) {
-    score = Math.min(score, 39);
+    return { score: clampScore(baseScore, 0, 39), grade: "E", decision: "대출 불가" };
   }
 
-  score = Math.max(0, Math.min(100, Math.round(score)));
+  if (closedCount === 0 && totalX === 0) {
+    return { score: null, grade: "N", decision: "평가 데이터 부족" };
+  }
 
-  let grade = "E";
-  if (score >= 90) grade = "A";
-  else if (score >= 75) grade = "B";
-  else if (score >= 60) grade = "C";
-  else if (score >= 40) grade = "D";
+  if (holdCount > 0 || totalX >= 7) {
+    return { score: clampScore(baseScore, 40, 59), grade: "D", decision: "주의 필요 / 한도 축소 권장" };
+  }
 
-  let decision = "대출 불가";
-  if (grade === "A") decision = "재대출 가능";
-  else if (grade === "B") decision = "재대출 가능 / 한도 유지 권장";
-  else if (grade === "C") decision = "소액 가능 / 확인 후 진행";
-  else if (grade === "D") decision = "주의 필요 / 한도 축소 권장";
+  if (totalX >= 4) {
+    return { score: clampScore(baseScore, 60, 74), grade: "C", decision: "소액 가능 / 확인 후 진행" };
+  }
 
-  return { score, grade, decision };
+  if (closedCount >= 3 && totalX <= 1) {
+    return { score: clampScore(baseScore, 90, 100), grade: "A", decision: "재대출 가능" };
+  }
+
+  if (closedCount >= 1 && totalX <= 3) {
+    return { score: clampScore(baseScore, 75, 89), grade: "B", decision: "재대출 가능 / 한도 유지 권장" };
+  }
+
+  return { score: clampScore(baseScore, 60, 74), grade: "C", decision: "소액 가능 / 확인 후 진행" };
 }
 
 function formatCreditProfitStatus(value) {
@@ -1077,7 +1090,7 @@ function buildCreditReply(command, records) {
   return `[고객 신용평가]\n\n` +
     `고객명: ${displayName}\n` +
     `등급: ${result.grade}\n` +
-    `점수: ${result.score}점\n` +
+    `점수: ${result.score === null ? "-" : `${result.score}점`}\n` +
     `판정: ${result.decision}\n\n` +
     `현재 대출상태: ${activeCount > 0 ? "진행중" : "없음"}\n` +
     `진행중 건수: ${activeCount}건\n\n` +
