@@ -174,6 +174,23 @@ function parseCloseCommand(text) {
   };
 }
 
+function parseCreditCheckCommand(text) {
+  const clean = normalizeText(text);
+  const match = clean.match(/^(.+?)\/조회$/i);
+  if (!match) return null;
+
+  const rawKeyword = normalizeText(match[1]);
+  if (!rawKeyword) return null;
+
+  const compactKeyword = rawKeyword.replace(/\s+/g, "");
+  const codeMatch = compactKeyword.match(/^([A-Za-z]{1,3}\d{1,3})$/);
+  if (codeMatch) {
+    return { type: "code", keyword: codeMatch[1].toUpperCase() };
+  }
+
+  return { type: "name", keyword: rawKeyword };
+}
+
 
 function parseYearMonthValue(value) {
   const raw = String(value ?? "").trim();
@@ -713,6 +730,301 @@ function extractCustomerCodeFromProductName(productName) {
   return match ? match[1].toUpperCase() : null;
 }
 
+function normalizeCustomerNameCompact(name) {
+  return normalizeText(name)
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+}
+
+function getCustomerNameSearchVariants(name) {
+  const clean = normalizeText(name).toLowerCase();
+  const tokens = clean.split(/\s+/).filter(Boolean);
+  const variants = new Set();
+
+  const compact = normalizeCustomerNameCompact(clean);
+  if (compact) variants.add(compact);
+
+  // 성/이름 또는 이름/성이 뒤바뀐 경우도 같은 고객으로 검색한다.
+  if (tokens.length >= 2) {
+    const reversedCompact = tokens.slice().reverse().join("").replace(/\s+/g, "");
+    if (reversedCompact) variants.add(reversedCompact);
+  }
+
+  return variants;
+}
+
+function customerNameMatches(sheetName, inputName) {
+  const sheetVariants = getCustomerNameSearchVariants(sheetName);
+  const inputVariants = getCustomerNameSearchVariants(inputName);
+
+  for (const variant of inputVariants) {
+    if (sheetVariants.has(variant)) return true;
+  }
+
+  return false;
+}
+
+function parseCreditNumber(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw || raw === "$" || raw === "-" || /^x$/i.test(raw)) return null;
+
+  const cleaned = raw.replace(/,/g, "").replace(/[^0-9.\-]/g, "");
+  if (!cleaned || cleaned === "-" || cleaned === ".") return null;
+
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatCreditDate(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "-";
+
+  const date = new Date(raw);
+  if (!Number.isNaN(date.getTime())) {
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const dd = String(date.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  return raw;
+}
+
+function getCreditRecordFromRows(values, topIndex0) {
+  const topRow = values[topIndex0] || [];
+  const bottomRow = values[topIndex0 + 1] || [];
+  const status = String(topRow[2] || "").trim(); // C열
+  const customerType = String(topRow[3] || "").trim(); // D열
+  const productName = String(topRow[5] || "").trim(); // F열
+  const customerName = String(topRow[6] || "").trim(); // G열
+  const loanDate = formatCreditDate(topRow[7]); // H열 날짜
+  const principal = parseCreditNumber(topRow[8]); // I열
+  const totalProfit = parseCreditNumber(topRow[9]); // J열 비고 좌측: 총 수익
+  const bossProfit = parseCreditNumber(topRow[10]); // K열 상단: 보스 수익
+  const managerProfit = parseCreditNumber(bottomRow[10]); // K열 하단: 관리자 수익
+  const currentBalance = totalProfit; // 기존 로직 호환용
+  const code = extractCustomerCodeFromProductName(productName);
+
+  let xCount = 0;
+  let dollarCount = 0;
+  let dashCount = 0;
+  let paymentCount = 0;
+  let paymentSum = 0;
+
+  for (const row of [topRow, bottomRow]) {
+    for (let c = DATE_START_COLUMN_INDEX; c <= DATE_END_COLUMN_INDEX; c += 1) {
+      const raw = String(row[c] ?? "").trim();
+      if (!raw) continue;
+      if (/^x$/i.test(raw)) {
+        xCount += 1;
+        continue;
+      }
+      if (raw === "$") {
+        dollarCount += 1;
+        continue;
+      }
+      if (raw === "-") {
+        dashCount += 1;
+        continue;
+      }
+      const amount = parseCreditNumber(raw);
+      if (amount !== null) {
+        paymentCount += 1;
+        paymentSum += amount;
+      }
+    }
+  }
+
+  return {
+    rowNumber: topIndex0 + 1,
+    status,
+    customerType,
+    productName,
+    customerName,
+    loanDate,
+    principal,
+    totalProfit,
+    bossProfit,
+    managerProfit,
+    currentBalance,
+    code,
+    xCount,
+    dollarCount,
+    dashCount,
+    paymentCount,
+    paymentSum
+  };
+}
+
+function isPossibleCustomerTopRow(row) {
+  const status = String(row?.[2] || "").trim();
+  const productName = String(row?.[5] || "").trim();
+  const customerName = String(row?.[6] || "").trim();
+  return Boolean(customerName || extractCustomerCodeFromProductName(productName) || ["진행중", "종료", "블랙", "보류", "그룹"].includes(status));
+}
+
+function findCreditRecords(values, command) {
+  const matches = [];
+  const seenRows = new Set();
+
+  for (let i = 1; i < values.length; i += 1) {
+    const row = values[i] || [];
+    if (!isPossibleCustomerTopRow(row)) continue;
+
+    const record = getCreditRecordFromRows(values, i);
+    if (!record.customerName && !record.code) continue;
+
+    let matched = false;
+    if (command.type === "code") {
+      matched = record.code === command.keyword;
+    } else {
+      matched = customerNameMatches(record.customerName, command.keyword);
+    }
+
+    if (matched && !seenRows.has(record.rowNumber)) {
+      seenRows.add(record.rowNumber);
+      matches.push(record);
+    }
+  }
+
+  return matches;
+}
+
+function calculateCreditScore(records) {
+  const hasBlack = records.some(r => r.status === "블랙");
+  const hasHold = records.some(r => r.status === "보류");
+  const closedCount = records.filter(r => r.status === "종료").length;
+  const activeCount = records.filter(r => r.status === "진행중").length;
+  const existingCount = records.filter(r => r.customerType === "기존").length;
+  const totalX = records.reduce((sum, r) => sum + r.xCount, 0);
+  const totalDollar = records.reduce((sum, r) => sum + r.dollarCount, 0);
+  const totalPaymentCount = records.reduce((sum, r) => sum + r.paymentCount, 0);
+  const totalPrincipal = records.reduce((sum, r) => sum + (r.principal || 0), 0);
+  const totalPaymentSum = records.reduce((sum, r) => sum + (r.paymentSum || 0), 0);
+  const totalProfit = records.reduce((sum, r) => sum + (typeof r.totalProfit === "number" ? r.totalProfit : 0), 0);
+  const profitableCount = records.filter(r => typeof r.totalProfit === "number" && r.totalProfit > 0).length;
+  const lossCount = records.filter(r => typeof r.totalProfit === "number" && r.totalProfit < 0).length;
+
+  let score = 50;
+  score += Math.min(closedCount * 8, 32);
+  score += Math.min(existingCount * 3, 9);
+  if (records.length >= 3) score += 8;
+  if (records.length >= 5) score += 5;
+  if (totalPrincipal > 0 && totalPaymentSum >= totalPrincipal) score += 10;
+  if (totalPaymentCount >= 5) score += 5;
+  score += Math.min(profitableCount * 3, 12);
+  if (totalProfit >= 50) score += 6;
+  if (totalProfit >= 100) score += 6;
+  score -= Math.min(totalX * 2, 30);
+  score -= Math.min(totalDollar, 15);
+  score -= lossCount * 10;
+  if (activeCount >= 2) score -= 5;
+  if (hasHold) score = Math.min(score, 54);
+  if (hasBlack) score = Math.min(score, 39);
+
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
+  let grade = "E";
+  if (score >= 85) grade = "A";
+  else if (score >= 70) grade = "B";
+  else if (score >= 55) grade = "C";
+  else if (score >= 40) grade = "D";
+
+  let decision = "대출 불가";
+  if (grade === "A") decision = "재대출 가능";
+  else if (grade === "B") decision = "재대출 가능 / 한도 유지 권장";
+  else if (grade === "C") decision = "소액 가능 / 확인 후 진행";
+  else if (grade === "D") decision = "주의 필요 / 한도 축소 권장";
+
+  return { score, grade, decision };
+}
+
+function formatCreditAmount(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "-";
+  return formatAmountValue(value);
+}
+
+function buildCreditReply(command, records) {
+  if (!records.length) {
+    return `⚠️ ${command.keyword} 조회 결과가 없습니다.\n\n이름은 공백/성·이름 순서를 자동 보정하지만, 철자 자체가 다르면 검색되지 않습니다.`;
+  }
+
+  const result = calculateCreditScore(records);
+  const displayName = command.type === "name" ? command.keyword : (records[0].customerName || command.keyword);
+  const codes = [...new Set(records.map(r => r.code).filter(Boolean))];
+  const closedCount = records.filter(r => r.status === "종료").length;
+  const activeCount = records.filter(r => r.status === "진행중").length;
+  const blackCount = records.filter(r => r.status === "블랙").length;
+  const holdCount = records.filter(r => r.status === "보류").length;
+  const groupCount = records.filter(r => r.status === "그룹").length;
+  const statusSummary = [...new Set(records.map(r => r.status).filter(Boolean))].join(" / ") || "-";
+  const existingCount = records.filter(r => r.customerType === "기존").length;
+  const totalX = records.reduce((sum, r) => sum + r.xCount, 0);
+  const totalDollar = records.reduce((sum, r) => sum + r.dollarCount, 0);
+  const totalPaymentCount = records.reduce((sum, r) => sum + r.paymentCount, 0);
+  const totalPaymentSum = records.reduce((sum, r) => sum + (r.paymentSum || 0), 0);
+  const totalPrincipal = records.reduce((sum, r) => sum + (r.principal || 0), 0);
+  const totalProfit = records.reduce((sum, r) => sum + (typeof r.totalProfit === "number" ? r.totalProfit : 0), 0);
+  const bossProfit = records.reduce((sum, r) => sum + (typeof r.bossProfit === "number" ? r.bossProfit : 0), 0);
+  const managerProfit = records.reduce((sum, r) => sum + (typeof r.managerProfit === "number" ? r.managerProfit : 0), 0);
+  const loanDates = records.map(r => r.loanDate).filter(v => v && v !== "-").sort();
+  const firstLoanDate = loanDates[0] || "-";
+  const lastLoanDate = loanDates[loanDates.length - 1] || "-";
+
+  const activeRecords = records
+    .filter(r => r.status === "진행중")
+    .sort((a, b) => String(b.loanDate || "").localeCompare(String(a.loanDate || "")));
+
+  const activeLoanLines = activeRecords.length
+    ? activeRecords
+        .slice(0, 5)
+        .map(r => `${r.loanDate || "날짜없음"} / ${r.code || "코드없음"} / 원금 ${formatCreditAmount(r.principal)} / 수익 ${formatCreditAmount(r.totalProfit)}`)
+        .join("\n")
+    : "없음";
+
+  const recentRecords = records
+    .slice(-5)
+    .map(r => `${r.loanDate || "날짜없음"} / ${r.code || "코드없음"} / ${r.status || "상태없음"} / 수익 ${formatCreditAmount(r.totalProfit)}`)
+    .join("\n");
+
+  return `[고객 신용평가]\n\n` +
+    `고객명: ${displayName}\n` +
+    `등급: ${result.grade}\n` +
+    `점수: ${result.score}점\n` +
+    `판정: ${result.decision}\n\n` +
+    `현재 대출상태: ${activeCount > 0 ? "실행중" : "없음"}\n` +
+    `실행중 건수: ${activeCount}건\n\n` +
+    `거래건수: ${records.length}건\n` +
+    `최초대출일: ${firstLoanDate}\n` +
+    `최근대출일: ${lastLoanDate}\n` +
+    `코드: ${codes.length ? codes.join(", ") : "-"}\n` +
+    `진행상태: ${statusSummary}\n` +
+    `상태건수: 진행중 ${activeCount} / 종료 ${closedCount} / 보류 ${holdCount} / 그룹 ${groupCount} / 블랙 ${blackCount}\n` +
+    `기존고객 이력: ${existingCount}건\n` +
+    `X표시: ${totalX}회\n` +
+    `$표시: ${totalDollar}회\n` +
+    `입금기록: ${totalPaymentCount}회\n` +
+    `원금합계: ${formatCreditAmount(totalPrincipal)}\n` +
+    `입금합계: ${formatCreditAmount(totalPaymentSum)}\n` +
+    `총수익합계: ${formatCreditAmount(totalProfit)}\n` +
+    `보스수익합계: ${formatCreditAmount(bossProfit)}\n` +
+    `관리자수익합계: ${formatCreditAmount(managerProfit)}\n\n` +
+    `최근 실행중 대출건\n${activeLoanLines}\n\n` +
+    `최근/관련 코드\n${recentRecords}`;
+}
+
+async function buildCustomerCreditReport(command) {
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const values = await getSheetValues(accessToken);
+  const records = findCreditRecords(values, command);
+  return buildCreditReply(command, records);
+}
+
 function hasDollarToday(values, topIndex0, todayColumnIndex0) {
   const topRow = values[topIndex0] || [];
   const bottomRow = values[topIndex0 + 1] || [];
@@ -742,39 +1054,30 @@ function dateInfoToNumber(dateInfo) {
   return dateInfo.year * 10000 + dateInfo.month * 100 + dateInfo.day;
 }
 
-function parseCustomerYearMonthFromRow(row) {
+function parseCustomerStartDateFromRow(row) {
   const yearMonth = parseYearMonthValue(row?.[1]); // B열 년/월
-  if (!yearMonth) return null;
+  const dayRaw = String(row?.[7] ?? "").trim(); // H열 날짜
+
+  if (!yearMonth || !dayRaw) return null;
 
   const year = getFullYearFromYearMonth(yearMonth);
   const month = Number(String(yearMonth).slice(2, 4));
+  const day = Number(dayRaw.replace(/[^0-9]/g, ""));
 
-  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
-    return null;
-  }
+  if (!Number.isInteger(day) || day < 1 || day > 31) return null;
 
-  return { year, month };
-}
-
-function yearMonthInfoToNumber(dateInfo) {
-  return dateInfo.year * 100 + dateInfo.month;
+  return { year, month, day };
 }
 
 function isBroadcastTargetDateRow(row, todayInfo = null) {
   const today = todayInfo || getKoreaToday();
   const startDate = parseBroadcastStartDate(today);
-  const rowYearMonth = parseCustomerYearMonthFromRow(row);
+  const rowDate = parseCustomerStartDateFromRow(row);
 
-  if (!rowYearMonth) return false;
+  if (!rowDate) return false;
 
-  const rowNumber = yearMonthInfoToNumber(rowYearMonth);
-  const startNumber = yearMonthInfoToNumber(startDate);
-  const todayNumber = yearMonthInfoToNumber(today);
-
-  // B열 년/월 기준으로만 판단한다.
-  // 예: B열이 2026/04, 2026.04, 2604, 202604이면 2026년 4월 이후 전체 발송대상 후보에 포함.
-  // H열 날짜가 비어 있거나 형식이 달라도 제외하지 않는다.
-  return rowNumber >= startNumber && rowNumber <= todayNumber;
+  const rowNumber = dateInfoToNumber(rowDate);
+  return rowNumber >= dateInfoToNumber(startDate) && rowNumber <= dateInfoToNumber(today);
 }
 
 function findTodayDollarCodes(values, registeredCodes = null) {
@@ -783,9 +1086,9 @@ function findTodayDollarCodes(values, registeredCodes = null) {
   const codes = [];
   const seen = new Set();
 
-  // 오늘상환 알림은 B열 년/월이 2026/04 이후~현재 월인 실제 고객 행만 검색한다.
-  // 조건: B열 년/월이 유효하고, 상태가 진행중이며, 오늘 날짜 칸에 $가 있고, LINE그룹매핑에 등록된 코드.
-  // H열 날짜는 고객 시작일 입력 형식 차이로 누락될 수 있어 발송대상 판단에서 제외한다.
+  // 오늘상환 알림은 4월 1일부터 현재까지의 실제 고객 행만 검색한다.
+  // 조건: B열 년/월 + H열 날짜가 유효하고, 상태가 진행중이며, 오늘 날짜 칸에 $가 있고, LINE그룹매핑에 등록된 코드.
+  // 목차/구분행/이전 데이터가 후보에 섞여 크레딧이 과다 소모되는 것을 막기 위해 날짜 범위를 먼저 제한한다.
   for (let i = 1; i < values.length; i += 1) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
@@ -2140,6 +2443,18 @@ export default async function handler(req, res) {
         if (broadcastReply) {
           await replyToLine(event.replyToken, broadcastReply);
         }
+        continue;
+      }
+
+      const creditCommand = parseCreditCheckCommand(text);
+      if (creditCommand) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
+        const creditReply = await buildCustomerCreditReport(creditCommand);
+        await replyToLine(event.replyToken, creditReply);
         continue;
       }
 
