@@ -1116,8 +1116,7 @@ function buildCreditReply(command, records) {
     `등급: ${result.grade}\n` +
     `점수: ${result.score === null ? "-" : `${result.score}점`}\n` +
     `판정: ${result.decision}\n\n` +
-    `현재 대출상태: ${activeCount > 0 ? "진행중" : "없음"}\n` +
-    `진행중 건수: ${activeCount}건\n\n` +
+        `진행중 건수: ${activeCount}건\n\n` +
     `거래건수: ${records.length}건\n\n` +
     `최근/관련 코드\n${recentRecords}`;
 }
