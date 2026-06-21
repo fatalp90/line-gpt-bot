@@ -633,7 +633,7 @@ async function pushToLine(to, text, retryKey = null) {
 // 필요 시 환경변수 LINE_PUSH_CONCURRENCY로 동시 발송 개수를 조절 가능.
 const LINE_PUSH_CONCURRENCY = Math.max(1, Number(process.env.LINE_PUSH_CONCURRENCY || 10));
 const LINE_PUSH_DELAY_MS = Number(process.env.LINE_PUSH_DELAY_MS || 0);
-const LINE_PUSH_RETRY_COUNT = Number(process.env.LINE_PUSH_RETRY_COUNT || 0);
+const LINE_PUSH_RETRY_COUNT = Number(process.env.LINE_PUSH_RETRY_COUNT || 1);
 const LINE_PUSH_RETRY_DELAY_MS = Number(process.env.LINE_PUSH_RETRY_DELAY_MS || 500);
 
 function sleep(ms) {
@@ -1199,15 +1199,14 @@ function findTodayDollarCodes(values, registeredCodes = null) {
   const codes = [];
   const seen = new Set();
 
-  // 오늘상환 알림은 4월 1일부터 현재까지의 실제 고객 행만 검색한다.
-  // 조건: B열 년/월 + H열 날짜가 유효하고, 상태가 진행중이며, 오늘 날짜 칸에 $가 있고, LINE그룹매핑에 등록된 코드.
-  // 목차/구분행/이전 데이터가 후보에 섞여 크레딧이 과다 소모되는 것을 막기 위해 날짜 범위를 먼저 제한한다.
+  // 오늘상환 알림은 이전 사용 방식처럼 전체 시트에서 검색한다.
+  // 조건: 상태가 진행중이고, 오늘 날짜 칸에 $가 있으며, LINE그룹매핑에 등록된 코드.
+  // B열 년월/H열 날짜 형식이 비어 있거나 깨져 있어도 오늘 $가 있으면 발송 대상에 포함한다.
   for (let i = 1; i < values.length; i += 1) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
     const productName = String(row[5] || "").trim(); // F열 상품명
 
-    if (!isBroadcastTargetDateRow(row, today)) continue;
     if (status !== "진행중") continue;
 
     const code = extractCustomerCodeFromProductName(productName);
@@ -1291,20 +1290,16 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
   const values = await getSheetValues(accessToken);
   const groupMapValues = await getGroupMapValues(accessToken);
   const groupMap = new Map();
-  const latestCodeByGroupId = new Map();
 
-  // 같은 그룹ID가 여러 코드에 남아 있어도, 같은 그룹으로는 1회만 발송한다.
-  // 시트 아래쪽 행을 나중 등록된 값으로 보고 우선 사용한다.
+  // 코드별 그룹ID를 그대로 보존한다.
+  // 같은 그룹ID가 여러 코드에 있어도 오늘 $가 있는 실제 코드가 제외되지 않게 한다.
+  // 발송 직전 seenGroupIds로 같은 그룹방 중복 발송만 막는다.
   for (let i = 1; i < groupMapValues.length; i += 1) {
     const code = String(groupMapValues[i]?.[0] || "").trim().toUpperCase();
     const groupId = String(groupMapValues[i]?.[1] || "").trim();
     if (code && groupId) {
-      latestCodeByGroupId.set(groupId, code);
+      groupMap.set(code, groupId);
     }
-  }
-
-  for (const [groupId, code] of latestCodeByGroupId.entries()) {
-    groupMap.set(code, groupId);
   }
 
   const rawCodes = findTodayDollarCodes(values, new Set(groupMap.keys()));
