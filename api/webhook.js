@@ -776,16 +776,71 @@ function parseCreditNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
-function formatCreditDate(value) {
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function normalizeTwoDigitYear(year) {
+  const n = Number(year);
+  if (!Number.isFinite(n)) return null;
+  if (n < 100) return n >= 70 ? 1900 + n : 2000 + n;
+  return n;
+}
+
+function parseYearMonthFromCreditMonth(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return { year: value.getFullYear(), month: value.getMonth() + 1 };
+  }
+
   const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  const directDate = new Date(raw);
+  if (!Number.isNaN(directDate.getTime()) && /\d{4}/.test(raw)) {
+    return { year: directDate.getFullYear(), month: directDate.getMonth() + 1 };
+  }
+
+  const nums = raw.match(/\d+/g) || [];
+  if (nums.length >= 2) {
+    const year = normalizeTwoDigitYear(nums[0]);
+    const month = Number(nums[1]);
+    if (year && month >= 1 && month <= 12) return { year, month };
+  }
+
+  return null;
+}
+
+function parseDayFromCreditDate(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.getDate();
+  }
+
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  const nums = raw.match(/\d+/g) || [];
+  if (!nums.length) return null;
+
+  // H열이 '6/21', '2026-06-21', '21일' 등으로 표시되어도 마지막 숫자를 일자로 사용한다.
+  const day = Number(nums[nums.length - 1]);
+  return day >= 1 && day <= 31 ? day : null;
+}
+
+function formatCreditLoanDate(monthValue, dateValue) {
+  const yearMonth = parseYearMonthFromCreditMonth(monthValue);
+  const day = parseDayFromCreditDate(dateValue);
+
+  if (yearMonth && day) {
+    return `${yearMonth.year}-${pad2(yearMonth.month)}-${pad2(day)}`;
+  }
+
+  // B열 또는 H열 중 일부가 비어있는 예외 행은 기존 방식으로 최대한 표시한다.
+  const raw = String(dateValue ?? "").trim();
   if (!raw) return "-";
 
   const date = new Date(raw);
-  if (!Number.isNaN(date.getTime())) {
-    const yyyy = date.getFullYear();
-    const mm = String(date.getMonth() + 1).padStart(2, "0");
-    const dd = String(date.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
+  if (!Number.isNaN(date.getTime()) && /\d{4}/.test(raw)) {
+    return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
   }
 
   return raw;
@@ -798,7 +853,7 @@ function getCreditRecordFromRows(values, topIndex0) {
   const customerType = String(topRow[3] || "").trim(); // D열
   const productName = String(topRow[5] || "").trim(); // F열
   const customerName = String(topRow[6] || "").trim(); // G열
-  const loanDate = formatCreditDate(topRow[7]); // H열 날짜
+  const loanDate = formatCreditLoanDate(topRow[1], topRow[7]); // B열 년/월 + H열 날짜
   const principal = parseCreditNumber(topRow[8]); // I열
   const totalProfit = parseCreditNumber(topRow[9]); // J열 비고 좌측: 총 수익
   const bossProfit = parseCreditNumber(topRow[10]); // K열 상단: 보스 수익
