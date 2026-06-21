@@ -1017,35 +1017,29 @@ function findCreditRecords(values, command) {
 
 function calculateCreditScore(records) {
   const hasBlack = records.some(r => r.status === "블랙");
-  const hasHold = records.some(r => r.status === "보류");
-  const closedCount = records.filter(r => r.status === "종료").length;
-  const existingCount = records.filter(r => r.customerType === "기존").length;
+  const holdCount = records.filter(r => r.status === "보류").length;
   const totalX = records.reduce((sum, r) => sum + r.xCount, 0);
-  const totalProfit = records.reduce((sum, r) => sum + (typeof r.totalProfit === "number" ? r.totalProfit : 0), 0);
-  const profitableCount = records.filter(r => typeof r.totalProfit === "number" && r.totalProfit > 0).length;
   const lossCount = records.filter(r => typeof r.totalProfit === "number" && r.totalProfit < 0).length;
 
-  let score = 50;
-  score += Math.min(closedCount * 8, 32);
-  score += Math.min(existingCount * 3, 9);
-  if (records.length >= 3) score += 8;
-  if (records.length >= 5) score += 5;
-  score += Math.min(profitableCount * 3, 12);
-  if (totalProfit >= 50) score += 6;
-  if (totalProfit >= 100) score += 6;
-
-  // $는 아직 상환도래 전 표시이므로 감점하지 않는다. 진행중 건수도 감점하지 않는다.
-  score -= Math.min(totalX * 2, 30);
+  // 신용평가는 100점에서 감점하는 방식으로 단순화한다.
+  // $는 아직 상환도래 전 표시이므로 감점하지 않는다.
+  // 진행중 건수도 감점하지 않는다.
+  // 핵심 감점 요소는 X, 손실 거래, 보류, 블랙이다.
+  let score = 100;
+  score -= totalX * 5;
   score -= lossCount * 10;
-  if (hasHold) score = Math.min(score, 54);
-  if (hasBlack) score = Math.min(score, 39);
+  score -= holdCount * 20;
+
+  if (hasBlack) {
+    score = Math.min(score, 39);
+  }
 
   score = Math.max(0, Math.min(100, Math.round(score)));
 
   let grade = "E";
-  if (score >= 85) grade = "A";
-  else if (score >= 70) grade = "B";
-  else if (score >= 55) grade = "C";
+  if (score >= 90) grade = "A";
+  else if (score >= 75) grade = "B";
+  else if (score >= 60) grade = "C";
   else if (score >= 40) grade = "D";
 
   let decision = "대출 불가";
@@ -1056,7 +1050,6 @@ function calculateCreditScore(records) {
 
   return { score, grade, decision };
 }
-
 
 function formatCreditProfitStatus(value) {
   if (typeof value !== "number" || !Number.isFinite(value)) return "수익 -";
