@@ -1073,22 +1073,11 @@ function buildCreditReply(command, records) {
 
   const result = calculateCreditScore(records);
   const displayName = command.type === "name" ? command.keyword : (records[records.length - 1].customerName || command.keyword);
-  const closedCount = records.filter(r => r.status === "종료").length;
   const activeCount = records.filter(r => r.status === "진행중").length;
-  const blackCount = records.filter(r => r.status === "블랙").length;
-  const holdCount = records.filter(r => r.status === "보류").length;
-  const groupCount = records.filter(r => r.status === "그룹").length;
-  const statusSummary = [...new Set(records.map(r => r.status).filter(Boolean))].join(" / ") || "-";
-  const existingCount = records.filter(r => r.customerType === "기존").length;
-  const totalX = records.reduce((sum, r) => sum + r.xCount, 0);
-  const loanDates = records.filter(r => r.loanDateValue).map(r => r.loanDate);
-  const firstLoanDate = loanDates[0] || "-";
-  const lastLoanDate = loanDates[loanDates.length - 1] || "-";
 
   const recentRecords = records
     .slice()
     .sort((a, b) => (b.loanDateValue || 0) - (a.loanDateValue || 0))
-    .slice(0, 5)
     .map(r => `${r.loanDate || "날짜없음"} / ${r.code || "코드없음"} / ${r.status || "상태없음"} / X ${r.xCount || 0}회 / ${formatCreditProfitStatus(r.totalProfit)}`)
     .join("\n");
 
@@ -1097,15 +1086,9 @@ function buildCreditReply(command, records) {
     `등급: ${result.grade}\n` +
     `점수: ${result.score}점\n` +
     `판정: ${result.decision}\n\n` +
-    `현재 대출상태: ${activeCount > 0 ? "실행중" : "없음"}\n` +
-    `실행중 건수: ${activeCount}건\n\n` +
-    `거래건수: ${records.length}건\n` +
-    `최초대출일: ${firstLoanDate}\n` +
-    `최근대출일: ${lastLoanDate}\n` +
-    `진행상태: ${statusSummary}\n` +
-    `상태건수: 진행중 ${activeCount} / 종료 ${closedCount} / 보류 ${holdCount} / 그룹 ${groupCount} / 블랙 ${blackCount}\n` +
-    `기존고객 이력: ${existingCount}건\n` +
-    `X표시: ${totalX}회\n\n` +
+    `현재 대출상태: ${activeCount > 0 ? "진행중" : "없음"}\n` +
+    `진행중 건수: ${activeCount}건\n\n` +
+    `거래건수: ${records.length}건\n\n` +
     `최근/관련 코드\n${recentRecords}`;
 }
 
