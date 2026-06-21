@@ -1024,44 +1024,68 @@ function calculateCreditScore(records) {
   const hasBlack = records.some(r => r.status === "블랙");
   const holdCount = records.filter(r => r.status === "보류").length;
   const closedCount = records.filter(r => r.status === "종료").length;
+  const activeCount = records.filter(r => r.status === "진행중").length;
   const totalX = records.reduce((sum, r) => sum + r.xCount, 0);
+  const avgX = records.length ? totalX / records.length : 0;
+  const profitableClosedCount = records.filter(r =>
+    r.status === "종료" && typeof r.totalProfit === "number" && r.totalProfit > 0
+  ).length;
 
-  // 평가 기준
-  // - 신규/진행중만 있고 종료 이력이 없으며 X가 없으면 N등급(평가대기)
-  // - 블랙 존재: E등급 고정
-  // - 보류 존재 또는 X 7회 이상: D등급
-  // - X 4~6회: C등급
-  // - 종료 3건 이상 + X 0~1회: A등급
-  // - 종료 이력 있음 + X 0~3회: B등급
-  // $는 아직 상환도래 전 표시이므로 점수/등급에 반영하지 않는다.
-  // 진행중 건수도 감점하지 않는다.
-  const baseScore = 100 - totalX * 5 - holdCount * 20;
-
-  if (hasBlack) {
-    return { score: clampScore(baseScore, 0, 39), grade: "E", decision: "대출 불가" };
-  }
-
-  if (closedCount === 0 && totalX === 0) {
+  // 최종 신용평가 기준
+  // - 종료 이력이 없고 진행중만 있으며 X/보류/블랙이 없으면 N등급(평가대기)
+  // - 정상종료 건수를 가장 강하게 반영한다.
+  // - X는 총합이 아니라 거래당 평균 X로 감점한다.
+  // - $는 아직 상환도래 전 표시이므로 점수/등급에 반영하지 않는다.
+  // - 진행중 건수 자체는 감점하지 않는다.
+  // - 보류가 있으면 최대 D등급, 블랙이 있으면 E등급 고정한다.
+  if (!hasBlack && holdCount === 0 && closedCount === 0 && activeCount > 0 && totalX === 0) {
     return { score: null, grade: "N", decision: "평가 데이터 부족" };
   }
 
-  if (holdCount > 0 || totalX >= 7) {
-    return { score: clampScore(baseScore, 40, 59), grade: "D", decision: "주의 필요 / 한도 축소 권장" };
+  let score = 60;
+
+  // 정상종료 이력: 가장 중요한 가점 요소
+  score += Math.min(closedCount * 8, 32);
+
+  // 재거래 이력 보정
+  if (records.length >= 3) score += 5;
+  if (records.length >= 5) score += 5;
+
+  // 종료된 거래 중 실제 수익이 난 건만 보조 가점
+  score += Math.min(profitableClosedCount * 2, 10);
+
+  // X는 오래 거래한 고객이 불리하지 않도록 거래당 평균으로 감점
+  if (avgX > 10) score -= 40;
+  else if (avgX > 6) score -= 25;
+  else if (avgX > 3) score -= 12;
+  else if (avgX > 1) score -= 5;
+
+  if (holdCount > 0) score -= 20;
+
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
+  if (hasBlack) {
+    return { score: Math.min(score, 39), grade: "E", decision: "대출 불가" };
   }
 
-  if (totalX >= 4) {
-    return { score: clampScore(baseScore, 60, 74), grade: "C", decision: "소액 가능 / 확인 후 진행" };
+  // 보류 고객은 점수가 높아도 최대 D등급으로 제한
+  if (holdCount > 0) {
+    return { score: Math.min(score, 59), grade: "D", decision: "주의 필요 / 한도 축소 권장" };
   }
 
-  if (closedCount >= 3 && totalX <= 1) {
-    return { score: clampScore(baseScore, 90, 100), grade: "A", decision: "재대출 가능" };
-  }
+  let grade = "E";
+  if (score >= 90) grade = "A";
+  else if (score >= 75) grade = "B";
+  else if (score >= 60) grade = "C";
+  else if (score >= 40) grade = "D";
 
-  if (closedCount >= 1 && totalX <= 3) {
-    return { score: clampScore(baseScore, 75, 89), grade: "B", decision: "재대출 가능 / 한도 유지 권장" };
-  }
+  let decision = "대출 불가";
+  if (grade === "A") decision = "재대출 가능";
+  else if (grade === "B") decision = "재대출 가능 / 한도 유지 권장";
+  else if (grade === "C") decision = "확인 후 진행";
+  else if (grade === "D") decision = "주의 필요 / 한도 축소 권장";
 
-  return { score: clampScore(baseScore, 60, 74), grade: "C", decision: "소액 가능 / 확인 후 진행" };
+  return { score, grade, decision };
 }
 
 function formatCreditProfitStatus(value) {
