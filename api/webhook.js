@@ -765,6 +765,124 @@ function customerNameMatches(sheetName, inputName) {
   return false;
 }
 
+function levenshteinDistance(a, b) {
+  const left = String(a || "");
+  const right = String(b || "");
+
+  if (left === right) return 0;
+  if (!left.length) return right.length;
+  if (!right.length) return left.length;
+
+  const previous = Array(right.length + 1).fill(0).map((_, i) => i);
+  const current = Array(right.length + 1).fill(0);
+
+  for (let i = 1; i <= left.length; i += 1) {
+    current[0] = i;
+
+    for (let j = 1; j <= right.length; j += 1) {
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + cost
+      );
+    }
+
+    for (let j = 0; j <= right.length; j += 1) {
+      previous[j] = current[j];
+    }
+  }
+
+  return previous[right.length];
+}
+
+function getCustomerNameSimilarity(sheetName, inputName) {
+  const sheetVariants = [...getCustomerNameSearchVariants(sheetName)];
+  const inputVariants = [...getCustomerNameSearchVariants(inputName)];
+
+  let best = 0;
+  let bestDistance = Infinity;
+
+  for (const sheetVariant of sheetVariants) {
+    for (const inputVariant of inputVariants) {
+      if (!sheetVariant || !inputVariant) continue;
+
+      const distance = levenshteinDistance(sheetVariant, inputVariant);
+      const maxLength = Math.max(sheetVariant.length, inputVariant.length, 1);
+      const similarity = 1 - distance / maxLength;
+
+      if (similarity > best || (similarity === best && distance < bestDistance)) {
+        best = similarity;
+        bestDistance = distance;
+      }
+    }
+  }
+
+  return { similarity: best, distance: bestDistance };
+}
+
+function findSimilarCustomerCandidates(values, inputName, limit = 5) {
+  const candidateMap = new Map();
+
+  for (let i = 1; i < values.length; i += 1) {
+    const row = values[i] || [];
+    if (!isPossibleCustomerTopRow(row)) continue;
+
+    const record = getCreditRecordFromRows(values, i);
+    if (!record.customerName) continue;
+
+    const key = normalizeCustomerNameCompact(record.customerName);
+    if (!key) continue;
+
+    const scoreInfo = getCustomerNameSimilarity(record.customerName, inputName);
+    const code = record.code || null;
+
+    const previous = candidateMap.get(key);
+    if (!previous) {
+      candidateMap.set(key, {
+        name: record.customerName,
+        similarity: scoreInfo.similarity,
+        distance: scoreInfo.distance,
+        codes: code ? new Set([code]) : new Set(),
+        count: 1
+      });
+      continue;
+    }
+
+    previous.similarity = Math.max(previous.similarity, scoreInfo.similarity);
+    previous.distance = Math.min(previous.distance, scoreInfo.distance);
+    previous.count += 1;
+    if (code) previous.codes.add(code);
+  }
+
+  return [...candidateMap.values()]
+    .filter(item => item.similarity >= 0.85 || item.distance <= 2)
+    .sort((a, b) => {
+      if (b.similarity !== a.similarity) return b.similarity - a.similarity;
+      if (a.distance !== b.distance) return a.distance - b.distance;
+      return b.count - a.count;
+    })
+    .slice(0, limit)
+    .map(item => ({
+      ...item,
+      similarityPercent: Math.round(item.similarity * 100),
+      codes: [...item.codes]
+    }));
+}
+
+function buildSimilarCustomerReply(keyword, candidates) {
+  if (!candidates.length) {
+    return `⚠️ ${keyword} 조회 결과가 없습니다.\n\n이름은 공백/성·이름 순서를 자동 보정하지만, 철자 차이가 큰 경우 검색되지 않을 수 있습니다.`;
+  }
+
+  const lines = candidates.map((item, index) => {
+    const codes = item.codes.length ? ` / 코드 ${item.codes.slice(0, 5).join(", ")}` : "";
+    return `${index + 1}. ${item.name} (${item.similarityPercent}% 유사${codes})`;
+  });
+
+  return `⚠️ 정확히 일치하는 고객이 없습니다.\n\n의심 고객 후보\n${lines.join("\n")}\n\n후보가 맞다면 시트의 정확한 고객명 또는 코드로 다시 조회해주세요.`;
+}
+
 function parseCreditNumber(value) {
   const raw = String(value ?? "").trim();
   if (!raw || raw === "$" || raw === "-" || /^x$/i.test(raw)) return null;
@@ -939,6 +1057,15 @@ function calculateCreditScore(records) {
   return { score, grade, decision };
 }
 
+
+function formatCreditProfitStatus(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "수익 -";
+  const amount = formatAmountValue(value);
+  if (value > 0) return `수익 +${amount}`;
+  if (value < 0) return `손실 ${amount}`;
+  return "수익 0";
+}
+
 function buildCreditReply(command, records) {
   if (!records.length) {
     return `⚠️ ${command.keyword} 조회 결과가 없습니다.\n\n이름은 공백/성·이름 순서를 자동 보정하지만, 철자 자체가 다르면 검색되지 않습니다.`;
@@ -962,7 +1089,7 @@ function buildCreditReply(command, records) {
     .slice()
     .sort((a, b) => (b.loanDateValue || 0) - (a.loanDateValue || 0))
     .slice(0, 5)
-    .map(r => `${r.loanDate || "날짜없음"} / ${r.code || "코드없음"} / ${r.status || "상태없음"}`)
+    .map(r => `${r.loanDate || "날짜없음"} / ${r.code || "코드없음"} / ${r.status || "상태없음"} / X ${r.xCount || 0}회 / ${formatCreditProfitStatus(r.totalProfit)}`)
     .join("\n");
 
   return `[고객 신용평가]\n\n` +
@@ -990,7 +1117,13 @@ async function buildCustomerCreditReport(command) {
   const accessToken = await getGoogleAccessToken();
   const values = await getSheetValues(accessToken);
   const records = findCreditRecords(values, command);
-  return buildCreditReply(command, records);
+
+  if (records.length || command.type === "code") {
+    return buildCreditReply(command, records);
+  }
+
+  const candidates = findSimilarCustomerCandidates(values, command.keyword);
+  return buildSimilarCustomerReply(command.keyword, candidates);
 }
 
 function hasDollarToday(values, topIndex0, todayColumnIndex0) {
