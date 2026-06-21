@@ -780,70 +780,26 @@ function pad2(value) {
   return String(value).padStart(2, "0");
 }
 
-function normalizeTwoDigitYear(year) {
-  const n = Number(year);
-  if (!Number.isFinite(n)) return null;
-  if (n < 100) return n >= 70 ? 1900 + n : 2000 + n;
-  return n;
+function parseCreditLoanDateInfo(monthValue, dayValue) {
+  const yearMonth = parseYearMonthValue(monthValue); // B열 년/월
+  const rawDay = String(dayValue ?? "").trim(); // H열 날짜
+  if (!yearMonth || !rawDay) return null;
+
+  const dayNums = rawDay.match(/\d+/g) || [];
+  if (!dayNums.length) return null;
+
+  const year = getFullYearFromYearMonth(yearMonth);
+  const month = Number(String(yearMonth).slice(2, 4));
+  const day = Number(dayNums[dayNums.length - 1]);
+
+  if (!Number.isInteger(day) || day < 1 || day > 31) return null;
+  return { year, month, day, value: year * 10000 + month * 100 + day };
 }
 
-function parseYearMonthFromCreditMonth(value) {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return { year: value.getFullYear(), month: value.getMonth() + 1 };
-  }
-
-  const raw = String(value ?? "").trim();
-  if (!raw) return null;
-
-  const directDate = new Date(raw);
-  if (!Number.isNaN(directDate.getTime()) && /\d{4}/.test(raw)) {
-    return { year: directDate.getFullYear(), month: directDate.getMonth() + 1 };
-  }
-
-  const nums = raw.match(/\d+/g) || [];
-  if (nums.length >= 2) {
-    const year = normalizeTwoDigitYear(nums[0]);
-    const month = Number(nums[1]);
-    if (year && month >= 1 && month <= 12) return { year, month };
-  }
-
-  return null;
-}
-
-function parseDayFromCreditDate(value) {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return value.getDate();
-  }
-
-  const raw = String(value ?? "").trim();
-  if (!raw) return null;
-
-  const nums = raw.match(/\d+/g) || [];
-  if (!nums.length) return null;
-
-  // H열이 '6/21', '2026-06-21', '21일' 등으로 표시되어도 마지막 숫자를 일자로 사용한다.
-  const day = Number(nums[nums.length - 1]);
-  return day >= 1 && day <= 31 ? day : null;
-}
-
-function formatCreditLoanDate(monthValue, dateValue) {
-  const yearMonth = parseYearMonthFromCreditMonth(monthValue);
-  const day = parseDayFromCreditDate(dateValue);
-
-  if (yearMonth && day) {
-    return `${yearMonth.year}-${pad2(yearMonth.month)}-${pad2(day)}`;
-  }
-
-  // B열 또는 H열 중 일부가 비어있는 예외 행은 기존 방식으로 최대한 표시한다.
-  const raw = String(dateValue ?? "").trim();
-  if (!raw) return "-";
-
-  const date = new Date(raw);
-  if (!Number.isNaN(date.getTime()) && /\d{4}/.test(raw)) {
-    return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
-  }
-
-  return raw;
+function formatCreditLoanDate(monthValue, dayValue) {
+  const info = parseCreditLoanDateInfo(monthValue, dayValue);
+  if (!info) return "-";
+  return `${info.year}-${pad2(info.month)}-${pad2(info.day)}`;
 }
 
 function getCreditRecordFromRows(values, topIndex0) {
@@ -853,17 +809,16 @@ function getCreditRecordFromRows(values, topIndex0) {
   const customerType = String(topRow[3] || "").trim(); // D열
   const productName = String(topRow[5] || "").trim(); // F열
   const customerName = String(topRow[6] || "").trim(); // G열
-  const loanDate = formatCreditLoanDate(topRow[1], topRow[7]); // B열 년/월 + H열 날짜
+  const loanDateInfo = parseCreditLoanDateInfo(topRow[1], topRow[7]); // B열 년/월 + H열 날짜
+  const loanDate = loanDateInfo ? `${loanDateInfo.year}-${pad2(loanDateInfo.month)}-${pad2(loanDateInfo.day)}` : "-";
   const principal = parseCreditNumber(topRow[8]); // I열
-  const totalProfit = parseCreditNumber(topRow[9]); // J열 비고 좌측: 총 수익
-  const bossProfit = parseCreditNumber(topRow[10]); // K열 상단: 보스 수익
-  const managerProfit = parseCreditNumber(bottomRow[10]); // K열 하단: 관리자 수익
-  const currentBalance = totalProfit; // 기존 로직 호환용
+  const totalProfit = parseCreditNumber(topRow[9]); // J열: 총수익
+  const bossProfit = parseCreditNumber(topRow[10]); // K열 상단: 보스수익
+  const managerProfit = parseCreditNumber(bottomRow[10]); // K열 하단: 관리자수익
   const code = extractCustomerCodeFromProductName(productName);
 
   let xCount = 0;
   let dollarCount = 0;
-  let dashCount = 0;
   let paymentCount = 0;
   let paymentSum = 0;
 
@@ -877,10 +832,6 @@ function getCreditRecordFromRows(values, topIndex0) {
       }
       if (raw === "$") {
         dollarCount += 1;
-        continue;
-      }
-      if (raw === "-") {
-        dashCount += 1;
         continue;
       }
       const amount = parseCreditNumber(raw);
@@ -898,15 +849,14 @@ function getCreditRecordFromRows(values, topIndex0) {
     productName,
     customerName,
     loanDate,
+    loanDateValue: loanDateInfo?.value || 0,
     principal,
     totalProfit,
     bossProfit,
     managerProfit,
-    currentBalance,
     code,
     xCount,
     dollarCount,
-    dashCount,
     paymentCount,
     paymentSum
   };
@@ -923,6 +873,7 @@ function findCreditRecords(values, command) {
   const matches = [];
   const seenRows = new Set();
 
+  // 고객 데이터는 2행 구조지만, 기존 양식 보존을 위해 모든 행을 확인한다.
   for (let i = 1; i < values.length; i += 1) {
     const row = values[i] || [];
     if (!isPossibleCustomerTopRow(row)) continue;
@@ -943,20 +894,15 @@ function findCreditRecords(values, command) {
     }
   }
 
-  return matches;
+  return matches.sort((a, b) => (a.loanDateValue || 0) - (b.loanDateValue || 0));
 }
 
 function calculateCreditScore(records) {
   const hasBlack = records.some(r => r.status === "블랙");
   const hasHold = records.some(r => r.status === "보류");
   const closedCount = records.filter(r => r.status === "종료").length;
-  const activeCount = records.filter(r => r.status === "진행중").length;
   const existingCount = records.filter(r => r.customerType === "기존").length;
   const totalX = records.reduce((sum, r) => sum + r.xCount, 0);
-  const totalDollar = records.reduce((sum, r) => sum + r.dollarCount, 0);
-  const totalPaymentCount = records.reduce((sum, r) => sum + r.paymentCount, 0);
-  const totalPrincipal = records.reduce((sum, r) => sum + (r.principal || 0), 0);
-  const totalPaymentSum = records.reduce((sum, r) => sum + (r.paymentSum || 0), 0);
   const totalProfit = records.reduce((sum, r) => sum + (typeof r.totalProfit === "number" ? r.totalProfit : 0), 0);
   const profitableCount = records.filter(r => typeof r.totalProfit === "number" && r.totalProfit > 0).length;
   const lossCount = records.filter(r => typeof r.totalProfit === "number" && r.totalProfit < 0).length;
@@ -966,15 +912,13 @@ function calculateCreditScore(records) {
   score += Math.min(existingCount * 3, 9);
   if (records.length >= 3) score += 8;
   if (records.length >= 5) score += 5;
-  if (totalPrincipal > 0 && totalPaymentSum >= totalPrincipal) score += 10;
-  if (totalPaymentCount >= 5) score += 5;
   score += Math.min(profitableCount * 3, 12);
   if (totalProfit >= 50) score += 6;
   if (totalProfit >= 100) score += 6;
+
+  // $는 아직 상환도래 전 표시이므로 감점하지 않는다. 진행중 건수도 감점하지 않는다.
   score -= Math.min(totalX * 2, 30);
-  score -= Math.min(totalDollar, 15);
   score -= lossCount * 10;
-  if (activeCount >= 2) score -= 5;
   if (hasHold) score = Math.min(score, 54);
   if (hasBlack) score = Math.min(score, 39);
 
@@ -995,19 +939,13 @@ function calculateCreditScore(records) {
   return { score, grade, decision };
 }
 
-function formatCreditAmount(value) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "-";
-  return formatAmountValue(value);
-}
-
 function buildCreditReply(command, records) {
   if (!records.length) {
     return `⚠️ ${command.keyword} 조회 결과가 없습니다.\n\n이름은 공백/성·이름 순서를 자동 보정하지만, 철자 자체가 다르면 검색되지 않습니다.`;
   }
 
   const result = calculateCreditScore(records);
-  const displayName = command.type === "name" ? command.keyword : (records[0].customerName || command.keyword);
-  const codes = [...new Set(records.map(r => r.code).filter(Boolean))];
+  const displayName = command.type === "name" ? command.keyword : (records[records.length - 1].customerName || command.keyword);
   const closedCount = records.filter(r => r.status === "종료").length;
   const activeCount = records.filter(r => r.status === "진행중").length;
   const blackCount = records.filter(r => r.status === "블랙").length;
@@ -1016,31 +954,15 @@ function buildCreditReply(command, records) {
   const statusSummary = [...new Set(records.map(r => r.status).filter(Boolean))].join(" / ") || "-";
   const existingCount = records.filter(r => r.customerType === "기존").length;
   const totalX = records.reduce((sum, r) => sum + r.xCount, 0);
-  const totalDollar = records.reduce((sum, r) => sum + r.dollarCount, 0);
-  const totalPaymentCount = records.reduce((sum, r) => sum + r.paymentCount, 0);
-  const totalPaymentSum = records.reduce((sum, r) => sum + (r.paymentSum || 0), 0);
-  const totalPrincipal = records.reduce((sum, r) => sum + (r.principal || 0), 0);
-  const totalProfit = records.reduce((sum, r) => sum + (typeof r.totalProfit === "number" ? r.totalProfit : 0), 0);
-  const bossProfit = records.reduce((sum, r) => sum + (typeof r.bossProfit === "number" ? r.bossProfit : 0), 0);
-  const managerProfit = records.reduce((sum, r) => sum + (typeof r.managerProfit === "number" ? r.managerProfit : 0), 0);
-  const loanDates = records.map(r => r.loanDate).filter(v => v && v !== "-").sort();
+  const loanDates = records.filter(r => r.loanDateValue).map(r => r.loanDate);
   const firstLoanDate = loanDates[0] || "-";
   const lastLoanDate = loanDates[loanDates.length - 1] || "-";
 
-  const activeRecords = records
-    .filter(r => r.status === "진행중")
-    .sort((a, b) => String(b.loanDate || "").localeCompare(String(a.loanDate || "")));
-
-  const activeLoanLines = activeRecords.length
-    ? activeRecords
-        .slice(0, 5)
-        .map(r => `${r.loanDate || "날짜없음"} / ${r.code || "코드없음"} / 원금 ${formatCreditAmount(r.principal)} / 수익 ${formatCreditAmount(r.totalProfit)}`)
-        .join("\n")
-    : "없음";
-
   const recentRecords = records
-    .slice(-5)
-    .map(r => `${r.loanDate || "날짜없음"} / ${r.code || "코드없음"} / ${r.status || "상태없음"} / 수익 ${formatCreditAmount(r.totalProfit)}`)
+    .slice()
+    .sort((a, b) => (b.loanDateValue || 0) - (a.loanDateValue || 0))
+    .slice(0, 5)
+    .map(r => `${r.loanDate || "날짜없음"} / ${r.code || "코드없음"} / ${r.status || "상태없음"}`)
     .join("\n");
 
   return `[고객 신용평가]\n\n` +
@@ -1053,19 +975,10 @@ function buildCreditReply(command, records) {
     `거래건수: ${records.length}건\n` +
     `최초대출일: ${firstLoanDate}\n` +
     `최근대출일: ${lastLoanDate}\n` +
-    `코드: ${codes.length ? codes.join(", ") : "-"}\n` +
     `진행상태: ${statusSummary}\n` +
     `상태건수: 진행중 ${activeCount} / 종료 ${closedCount} / 보류 ${holdCount} / 그룹 ${groupCount} / 블랙 ${blackCount}\n` +
     `기존고객 이력: ${existingCount}건\n` +
-    `X표시: ${totalX}회\n` +
-    `$표시: ${totalDollar}회\n` +
-    `입금기록: ${totalPaymentCount}회\n` +
-    `원금합계: ${formatCreditAmount(totalPrincipal)}\n` +
-    `입금합계: ${formatCreditAmount(totalPaymentSum)}\n` +
-    `총수익합계: ${formatCreditAmount(totalProfit)}\n` +
-    `보스수익합계: ${formatCreditAmount(bossProfit)}\n` +
-    `관리자수익합계: ${formatCreditAmount(managerProfit)}\n\n` +
-    `최근 실행중 대출건\n${activeLoanLines}\n\n` +
+    `X표시: ${totalX}회\n\n` +
     `최근/관련 코드\n${recentRecords}`;
 }
 
@@ -2501,14 +2414,14 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const creditCommand = parseCreditCheckCommand(text);
-      if (creditCommand) {
+      const creditCheckCommand = parseCreditCheckCommand(text);
+      if (creditCheckCommand) {
         if (!isAdmin(event)) {
           await replyUnauthorized(event);
           continue;
         }
 
-        const creditReply = await buildCustomerCreditReport(creditCommand);
+        const creditReply = await buildCustomerCreditReport(creditCheckCommand);
         await replyToLine(event.replyToken, creditReply);
         continue;
       }
