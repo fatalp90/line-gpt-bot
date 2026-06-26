@@ -26,6 +26,8 @@ const RECEIPT_MIN_CONFIDENCE = Number(process.env.RECEIPT_MIN_CONFIDENCE || 0.85
 const RECEIPT_MIN_RECEIPT_SCORE = Number(process.env.RECEIPT_MIN_RECEIPT_SCORE || 80);
 const RECEIPT_EXPECTED_SENDER_NAME = process.env.RECEIPT_EXPECTED_SENDER_NAME || "CHAYAPONE";
 const RECEIPT_EXPECTED_ACCOUNT_NUMBER = process.env.RECEIPT_EXPECTED_ACCOUNT_NUMBER || "110551366954";
+// true면 입금자명/받는분명/예금주명이 기대값과 다를 때 이체 캡처여도 조용히 무시한다.
+const RECEIPT_REQUIRE_EXPECTED_SENDER = String(process.env.RECEIPT_REQUIRE_EXPECTED_SENDER || "true").toLowerCase() !== "false";
 const RECEIPT_APPROVER_USER_IDS = (process.env.RECEIPT_APPROVER_USER_IDS || "")
   .split(",")
   .map(v => v.trim())
@@ -756,13 +758,20 @@ function buildReceiptMatchText({ senderName, accountNumber }) {
   const actualAccount = normalizeAccountNumber(accountNumber);
 
   const nameStatus = actualName
-    ? (expectedName && actualName.toUpperCase() === expectedName.toUpperCase() ? "일치" : "확인 필요")
-    : "미표기";
+    ? (expectedName && actualName.toUpperCase() === expectedName.toUpperCase() ? "✅ 일치" : "❌ 불일치")
+    : "❌ 확인 불가";
   const accountStatus = actualAccount
-    ? (expectedAccount && actualAccount === expectedAccount ? "일치" : "확인 필요")
-    : "미표기";
+    ? (expectedAccount && actualAccount === expectedAccount ? "✅ 일치" : "❌ 불일치")
+    : "❌ 확인 불가";
 
   return `입금자명 확인 : ${nameStatus}\n계좌번호 확인 : ${accountStatus}`;
+}
+
+function isExpectedReceiptSender(senderName) {
+  const expectedName = normalizeSenderName(RECEIPT_EXPECTED_SENDER_NAME);
+  const actualName = normalizeSenderName(senderName);
+  if (!expectedName || !actualName) return true;
+  return actualName.toUpperCase() === expectedName.toUpperCase();
 }
 
 function normalizeTransferDate(value) {
@@ -843,14 +852,14 @@ async function analyzeReceiptImageAmount(messageId) {
       messages: [
         {
           role: "system",
-          content: "너는 한국 은행/간편송금 이체 캡처 이미지 판별 및 OCR 분석기다. 가장 먼저 이미지가 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 매우 엄격하게 판별한다. 금액 숫자가 있어도 안내 포스터, 광고 이미지, 이벤트 배너, 연체/벌금/납부 안내 이미지, 채팅 캡처, 일반 스크린샷, 인물/풍경/상품/문서 사진이면 반드시 is_transfer_receipt=false, receipt_score는 낮게 둔다. 실제 금융앱 거래 완료/확인 화면이라는 증거가 강할 때만 is_transfer_receipt=true로 둔다. 이체 캡처라면 실제 이체/송금/입금 금액, 이체 날짜/시간, 입금자명/받는분명/예금주명, 계좌번호를 각각 독립적으로 추출한다. 계좌번호에 하이픈이나 공백이 있어도 숫자만 기준으로 읽는다. 잔액, 수수료, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 흐리거나 화면에 없는 값은 null로 둔다. 반드시 JSON만 출력한다."
+          content: "너는 한국 은행/간편송금 이체 캡처 이미지 판별 및 OCR 분석기다. 가장 먼저 이미지가 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 매우 엄격하게 판별한다. 금액 숫자가 있어도 안내 포스터, 광고 이미지, 이벤트 배너, 연체/벌금/납부 안내 이미지, 채팅 캡처, 일반 스크린샷, 인물/풍경/상품/문서 사진이면 반드시 is_transfer_receipt=false, receipt_score는 낮게 둔다. 실제 금융앱 거래 완료/확인 화면이라는 증거가 강할 때만 is_transfer_receipt=true로 둔다. 이체 캡처라면 실제 이체/송금/입금 금액, 이체 날짜/시간, 화면에 표시된 상대방 이름(입금자명/받는분명/수취인명/예금주명), 계좌번호를 각각 독립적으로 추출한다. 계좌번호에 하이픈이나 공백이 있어도 숫자만 기준으로 읽는다. 잔액, 수수료, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 흐리거나 화면에 없는 값은 null로 둔다. 반드시 JSON만 출력한다."
         },
         {
           role: "user",
           content: [
             {
               type: "text",
-              text: "이 이미지가 은행/간편송금 이체 캡처인지 먼저 판별하고, 맞을 때만 4가지를 분석해줘. 1) 실제 이체/송금/입금 금액 amount_won, 2) 이체 날짜/시간 transfer_date, 3) 입금자명/받는분명/예금주명 sender_name, 4) 계좌번호 account_number. 계좌번호는 하이픈이 있어도 숫자만 account_number에 넣어줘. 날짜는 가능하면 YYYY-MM-DD HH:mm 형식으로 넣어줘. 확실하지 않거나 화면에 없으면 null. 일반 사진이나 이체와 관련 없는 이미지면 is_transfer_receipt=false, amount_won/transfer_date/sender_name/account_number=null로 반환해줘. JSON 형식: {\"is_transfer_receipt\":true,\"amount_won\":60000,\"transfer_date\":\"2026-06-26 18:30\",\"sender_name\":\"CHAYAPONE\",\"account_number\":\"110551366954\",\"confidence\":0.95,\"reason\":\"짧은 근거\"}"
+              text: "이 이미지가 은행/간편송금 이체 캡처인지 먼저 판별하고, 맞을 때만 4가지를 분석해줘. 1) 실제 이체/송금/입금 금액 amount_won, 2) 이체 날짜/시간 transfer_date, 3) 화면에 표시된 상대방 이름(입금자명/받는분명/수취인명/예금주명) sender_name, 4) 계좌번호 account_number. 계좌번호는 하이픈이 있어도 숫자만 account_number에 넣어줘. 날짜는 가능하면 YYYY-MM-DD HH:mm 형식으로 넣어줘. 확실하지 않거나 화면에 없으면 null. 일반 사진이나 이체와 관련 없는 이미지면 is_transfer_receipt=false, amount_won/transfer_date/sender_name/account_number=null로 반환해줘. JSON 형식: {\"is_transfer_receipt\":true,\"amount_won\":60000,\"transfer_date\":\"2026-06-26 18:30\",\"sender_name\":\"CHAYAPONE\",\"account_number\":\"110551366954\",\"confidence\":0.95,\"reason\":\"짧은 근거\"}"
             },
             {
               type: "image_url",
@@ -885,6 +894,11 @@ async function analyzeReceiptImageAmount(messageId) {
   if (!isTransferReceipt || !Number.isFinite(receiptScore) || receiptScore < RECEIPT_MIN_RECEIPT_SCORE) {
     // 일반 사진/공지/광고/연체 안내/이체와 무관한 이미지는 그룹방에 아무 안내도 하지 않는다.
     return { ok: false, ignored: true };
+  }
+
+  if (RECEIPT_REQUIRE_EXPECTED_SENDER && senderName && !isExpectedReceiptSender(senderName)) {
+    // 예: 내가 고객에게 보낸 송금 완료 캡처처럼 상대방 이름이 기대 입금자명과 다르면 반응하지 않는다.
+    return { ok: false, ignored: true, reason: "unexpected_sender" };
   }
 
   if (!amountWon || !Number.isFinite(confidence) || confidence < RECEIPT_MIN_CONFIDENCE) {
@@ -1071,7 +1085,7 @@ ${receipt.code} / ${formatWon(receipt.won)} / 입력값 ${receipt.value}
   }
 
   setReceiptStatus("confirmed");
-  await replyToLine(event.replyToken, `${receipt.code}/${receipt.value}
+  await replyToLine(event.replyToken, `✅ ${receipt.code}/${receipt.value}
 등록 완료되었습니다.
 
 (${getKoreaDateTimeText()})`);
@@ -2231,7 +2245,7 @@ async function closeSheetCustomer(command) {
 
   const topRowNumber = matches[0].rowIndex0 + 1;
   const managerProfit = parseCreditNumber((values[topRowNumber] || [])[10]); // K열 하단: 관리자수익
-  const managerProfitText = managerProfit === null ? "확인불가" : formatAmountValue(managerProfit);
+  const managerProfitText = managerProfit === null ? "△ 확인불가" : formatAmountValue(managerProfit);
 
   await updateSheetCell(accessToken, topRowNumber, 2, "종료");
   await applyClosedCustomerStyle(accessToken, topRowNumber);
