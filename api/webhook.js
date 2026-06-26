@@ -226,7 +226,7 @@ function parseCustomerRegisterCommand(text) {
   if (/^[A-Za-z]{1,3}\d{1,3}$/i.test(adminName.replace(/\s+/g, ""))) return null;
   if (!/[A-Za-z]{1,3}\d{1,3}/i.test(productName) || !/\(/.test(productName)) return null;
 
-  const loanParsed = parseNumericRequiredValue(loanToken, "대출금");
+  const loanParsed = parseLoanRequiredValue(loanToken);
   if (loanParsed.error) return { error: loanParsed.error };
 
   const cutParsed = parseCutRequiredValue(cutToken);
@@ -365,6 +365,24 @@ function parseNumericRequiredValue(value, label) {
   return { value: n };
 }
 
+function getCustomerRegisterFormatGuide() {
+  return "형식\n관리자명/코드(상품명)/대출금액/공제금액\n\n예시\n태태/PP01(130,000)/-30/5";
+}
+
+function parseLoanRequiredValue(value) {
+  const raw = String(value ?? "").trim();
+
+  // 고객등록 명령어의 대출금액은 반드시 -30, -40, -50만 허용한다.
+  // 30, 40, 50, -03, -300000 같은 값은 오등록 방지를 위해 거절한다.
+  if (!["-30", "-40", "-50"].includes(raw)) {
+    return {
+      error: `❌ 대출금액은 -30, -40, -50만 사용할 수 있습니다.\n\n${getCustomerRegisterFormatGuide()}`
+    };
+  }
+
+  return { value: Number(raw) };
+}
+
 function parseCutRequiredValue(value) {
   const raw = String(value ?? "").trim();
   if (raw === "-") return { value: "-" };
@@ -380,9 +398,9 @@ function getLoanPrincipalUnit(loanAmount) {
   if (!Number.isFinite(amount)) return null;
 
   // 명령어 대출금은 -30 / -40 / -50 처럼 만원 단위로 입력한다.
-  if (amount === 30 || amount === 300000) return 30;
-  if (amount === 40 || amount === 400000) return 40;
-  if (amount === 50 || amount === 500000) return 50;
+  if (amount === 30) return 30;
+  if (amount === 40) return 40;
+  if (amount === 50) return 50;
 
   return null;
 }
@@ -2405,8 +2423,7 @@ async function writeCustomerRegistration(command) {
   await updateSheetRange(accessToken, rowNumber, DATE_START_COLUMN_INDEX, [repaymentRows.topCells]);
   await updateSheetRange(accessToken, rowNumber + 1, DATE_START_COLUMN_INDEX, [repaymentRows.bottomCells]);
 
-  const cutText = String(command.cut).trim() === "-" ? "공제없음" : `공제 ${formatAmountValue(command.cut)}`;
-  return `✅ ${command.productCode} 고객등록 완료\n${customerType} / ${command.adminName} / ${cutText}\n입력행: ${rowNumber}-${rowNumber + 1}`;
+  return `✅ ${command.productCode}(${command.productAmount.toLocaleString("ko-KR")}) 고객등록 완료`;
 }
 
 async function writeCountCommand(command) {
