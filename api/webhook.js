@@ -166,6 +166,21 @@ function getKoreaToday() {
   return { year, month, day };
 }
 
+function getKoreaDateTimeText(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+
+  const get = type => parts.find(part => part.type === type)?.value || "";
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`;
+}
+
 function parseSheetCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
   const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/(\d+(?:\.\d+)?)$/);
@@ -862,7 +877,10 @@ async function analyzeReceiptImageAmount(messageId) {
   const accountNumber = normalizeAccountNumber(parsed?.account_number);
   const transferDate = normalizeTransferDate(parsed?.transfer_date);
   const confidence = Number(parsed?.confidence ?? 0);
-  const receiptScore = Number(parsed?.receipt_score ?? 0);
+  const rawReceiptScore = Number(parsed?.receipt_score ?? NaN);
+  const receiptScore = Number.isFinite(rawReceiptScore)
+    ? rawReceiptScore
+    : (Number.isFinite(confidence) ? confidence * 100 : 0);
 
   if (!isTransferReceipt || !Number.isFinite(receiptScore) || receiptScore < RECEIPT_MIN_RECEIPT_SCORE) {
     // 일반 사진/공지/광고/연체 안내/이체와 무관한 이미지는 그룹방에 아무 안내도 하지 않는다.
@@ -1023,15 +1041,22 @@ async function handleReceiptPostback(event, receipt) {
     return;
   }
 
-  const status = receipt.action === "cancel" ? "cancelled" : "confirmed";
-  if (cached) {
-    receiptCacheSet(cached.imageKey, { ...cached, status });
-    receiptCacheSet(cached.infoKey, { ...cached, status });
-  } else if (receipt.receiptKey) {
-    receiptCacheSet(receipt.receiptKey, { status, code: receipt.code, amountWon: receipt.won, sheetValue: receipt.value });
-  }
+  const setReceiptStatus = status => {
+    if (cached) {
+      receiptCacheSet(cached.imageKey, { ...cached, status });
+      receiptCacheSet(cached.infoKey, { ...cached, status });
+    } else if (receipt.receiptKey) {
+      receiptCacheSet(receipt.receiptKey, {
+        status,
+        code: receipt.code,
+        amountWon: receipt.won,
+        sheetValue: receipt.value
+      });
+    }
+  };
 
   if (receipt.action === "cancel") {
+    setReceiptStatus("cancelled");
     await replyToLine(event.replyToken, `취소되었습니다.
 ${receipt.code} / ${formatWon(receipt.won)} / 입력값 ${receipt.value}
 입금자명 : ${formatOptionalReceiptField(receipt.senderName)}
@@ -1040,7 +1065,16 @@ ${receipt.code} / ${formatWon(receipt.won)} / 입력값 ${receipt.value}
   }
 
   const replyText = await writeSheetCommand({ code: receipt.code, value: receipt.value });
-  await replyToLine(event.replyToken, replyText);
+  if (!String(replyText || "").startsWith("✅")) {
+    await replyToLine(event.replyToken, replyText);
+    return;
+  }
+
+  setReceiptStatus("confirmed");
+  await replyToLine(event.replyToken, `${receipt.code}/${receipt.value}
+등록 완료되었습니다.
+
+(${getKoreaDateTimeText()})`);
 }
 
 async function pushToLine(to, text, retryKey = null) {
