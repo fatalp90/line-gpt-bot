@@ -653,6 +653,26 @@ async function updateSheetCell(accessToken, rowNumber, columnIndex0, value) {
   return `${columnLetter}${rowNumber}`;
 }
 
+async function updateSheetRange(accessToken, startRowNumber, startColumnIndex0, values) {
+  const rowCount = values.length;
+  const columnCount = values.reduce((max, row) => Math.max(max, row.length), 0);
+  if (rowCount < 1 || columnCount < 1) return null;
+
+  const startColumnLetter = columnNumberToLetter(startColumnIndex0 + 1);
+  const endColumnLetter = columnNumberToLetter(startColumnIndex0 + columnCount);
+  const endRowNumber = startRowNumber + rowCount - 1;
+  const range = `'${escapeSheetName(SHEET_NAME)}'!${startColumnLetter}${startRowNumber}:${endColumnLetter}${endRowNumber}`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
+
+  const response = await axios.put(
+    url,
+    { range, majorDimension: "ROWS", values },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+
+  return response.data;
+}
+
 
 async function appendSheetRows(accessToken, rows) {
   const range = `'${escapeSheetName(SHEET_NAME)}'!A:AP`;
@@ -2365,33 +2385,25 @@ async function writeCustomerRegistration(command) {
   const rowNumber = findNextCustomerWriteRow(values, nextNo);
   const dateText = formatKoreaDateValue(today);
   const monthDropdownText = formatKoreaYearMonthDropdownValue(today);
-  const width = DATE_END_COLUMN_INDEX + 1;
-  const topRow = makeWritableRow(values[rowNumber - 1], width);
-  const bottomRow = makeWritableRow(values[rowNumber], width);
+  // J/K열에는 기존 시트 수식이 있으므로 행 전체(A:AP)를 덮어쓰지 않는다.
+  // 고객정보 영역(A:I)과 카운트 영역(L:AP)만 분리해서 업데이트한다.
+  const topInfoValues = [[
+    nextNo,
+    monthDropdownText, // B열은 YY/MM 형식의 드롭다운 값을 사용한다. 예: 26/06
+    "진행중",
+    customerType,
+    command.adminName,
+    command.productName,
+    resolvedCustomerName,
+    dateText,
+    formatAmountValue(command.loanAmount)
+  ]];
+  const bottomInfoValues = [["", "", "", "", "", "", "", "", ""]];
 
-  // 기존 양식의 J/K 수식 또는 값은 보존하고, 고객 입력 영역만 새 등록값으로 갱신한다.
-  for (let i = 0; i <= 8; i += 1) {
-    topRow[i] = "";
-    bottomRow[i] = "";
-  }
-
-  topRow[0] = nextNo;
-  // B열은 YY/MM 형식의 드롭다운 값을 사용한다. 예: 26/06
-  topRow[1] = monthDropdownText;
-  topRow[2] = "진행중";
-  topRow[3] = customerType;
-  topRow[4] = command.adminName;
-  topRow[5] = command.productName;
-  topRow[6] = resolvedCustomerName;
-  topRow[7] = dateText;
-  topRow[8] = formatAmountValue(command.loanAmount);
-
-  for (let i = 0; i < repaymentRows.topCells.length; i += 1) {
-    topRow[DATE_START_COLUMN_INDEX + i] = repaymentRows.topCells[i];
-    bottomRow[DATE_START_COLUMN_INDEX + i] = repaymentRows.bottomCells[i];
-  }
-
-  await updateSheetRows(accessToken, rowNumber, [topRow, bottomRow]);
+  await updateSheetRange(accessToken, rowNumber, 0, topInfoValues);
+  await updateSheetRange(accessToken, rowNumber + 1, 0, bottomInfoValues);
+  await updateSheetRange(accessToken, rowNumber, DATE_START_COLUMN_INDEX, [repaymentRows.topCells]);
+  await updateSheetRange(accessToken, rowNumber + 1, DATE_START_COLUMN_INDEX, [repaymentRows.bottomCells]);
 
   const cutText = String(command.cut).trim() === "-" ? "공제없음" : `공제 ${formatAmountValue(command.cut)}`;
   return `✅ ${command.productCode} 고객등록 완료\n${customerType} / ${command.adminName} / ${cutText}\n입력행: ${rowNumber}-${rowNumber + 1}`;
