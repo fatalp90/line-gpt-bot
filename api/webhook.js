@@ -21,6 +21,16 @@ const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "")
   .map(v => v.trim())
   .filter(Boolean);
 
+const RECEIPT_OCR_MODEL = process.env.RECEIPT_OCR_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-4.1-mini";
+const RECEIPT_MIN_CONFIDENCE = Number(process.env.RECEIPT_MIN_CONFIDENCE || 0.6);
+const RECEIPT_EXPECTED_SENDER_NAME = process.env.RECEIPT_EXPECTED_SENDER_NAME || "CHAYAPONE";
+const RECEIPT_EXPECTED_ACCOUNT_NUMBER = process.env.RECEIPT_EXPECTED_ACCOUNT_NUMBER || "110551366954";
+const RECEIPT_APPROVER_USER_IDS = (process.env.RECEIPT_APPROVER_USER_IDS || "")
+  .split(",")
+  .map(v => v.trim())
+  .filter(Boolean);
+
+
 // LINE webhook retry / duplicate guard
 // 같은 날 같은 명령어를 여러 번 직접 보내는 것은 허용한다.
 // 단, LINE이 같은 message.id를 재전송하거나 서버가 같은 요청을 중복 처리하는 경우만 짧게 차단한다.
@@ -606,6 +616,319 @@ async function findMappedGroupId(accessToken, codeToFind) {
   return null;
 }
 
+async function findMappedCodeByGroupId(accessToken, sourceGroupId) {
+  const groupId = String(sourceGroupId || "").trim();
+  if (!groupId) return null;
+
+  const values = await getGroupMapValues(accessToken);
+  // 같은 그룹이 여러 번 매핑되어 있으면 시트 아래쪽(최근 등록)을 우선 사용한다.
+  for (let i = values.length - 1; i >= 1; i -= 1) {
+    const code = String(values[i]?.[0] || "").trim().toUpperCase();
+    const mappedGroupId = String(values[i]?.[1] || "").trim();
+    if (code && mappedGroupId === groupId) return code;
+  }
+  return null;
+}
+
+function getLineSourceGroupId(event) {
+  return event?.source?.groupId || event?.source?.roomId || "";
+}
+
+async function downloadLineMessageContent(messageId) {
+  const response = await axios.get(`https://api-data.line.me/v2/bot/message/${messageId}/content`, {
+    responseType: "arraybuffer",
+    headers: { Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}` }
+  });
+
+  const contentType = response.headers?.["content-type"] || "image/jpeg";
+  const base64 = Buffer.from(response.data).toString("base64");
+  return { contentType, base64 };
+}
+
+function parseJsonObjectLoose(text) {
+  const raw = String(text || "").trim();
+  try {
+    return JSON.parse(raw);
+  } catch (_) {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+function normalizeWonAmount(value) {
+  if (value === null || value === undefined) return null;
+  const n = Number(String(value).replace(/[^0-9.-]/g, ""));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n);
+}
+
+function convertWonToSheetInputValue(wonAmount) {
+  const n = normalizeWonAmount(wonAmount);
+  if (!n) return null;
+  const value = n / 10000;
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2))).replace(/\.0+$/, "");
+}
+
+function formatWon(amount) {
+  const n = normalizeWonAmount(amount);
+  return n ? `${n.toLocaleString("ko-KR")}원` : "금액 확인 불가";
+}
+
+function normalizeAccountNumber(value) {
+  const digits = String(value ?? "").replace(/[^0-9]/g, "");
+  return digits || null;
+}
+
+function normalizeSenderName(value) {
+  const clean = String(value ?? "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/[^A-Za-z0-9가-힣ㄱ-ㅎㅏ-ㅣ ._-]/g, "");
+  return clean || null;
+}
+
+function formatOptionalReceiptField(value, fallback = "확인 불가") {
+  const clean = String(value ?? "").trim();
+  return clean || fallback;
+}
+
+function maskAccountNumber(value) {
+  const digits = normalizeAccountNumber(value);
+  if (!digits) return "확인 불가";
+  if (digits.length <= 6) return digits;
+  return `${digits.slice(0, 3)}-${digits.slice(3, -3)}-${digits.slice(-3)}`;
+}
+
+function buildReceiptMatchText({ senderName, accountNumber }) {
+  const expectedName = normalizeSenderName(RECEIPT_EXPECTED_SENDER_NAME);
+  const expectedAccount = normalizeAccountNumber(RECEIPT_EXPECTED_ACCOUNT_NUMBER);
+  const actualName = normalizeSenderName(senderName);
+  const actualAccount = normalizeAccountNumber(accountNumber);
+
+  const nameStatus = actualName
+    ? (expectedName && actualName.toUpperCase() === expectedName.toUpperCase() ? "일치" : "확인 필요")
+    : "미표기";
+  const accountStatus = actualAccount
+    ? (expectedAccount && actualAccount === expectedAccount ? "일치" : "확인 필요")
+    : "미표기";
+
+  return `입금자명 확인 : ${nameStatus}\n계좌번호 확인 : ${accountStatus}`;
+}
+
+function normalizeTransferDate(value) {
+  if (value == null) return "";
+  let text = String(value).trim();
+  if (!text || /^null$/i.test(text) || /확인\s*불가|미표기|없음/i.test(text)) return "";
+  text = text.replace(/년|\//g, ".").replace(/월/g, ".").replace(/일/g, "").replace(/\s+/g, " ").trim();
+  const m = text.match(/(20\d{2}|\d{2})[.\-]\s*(\d{1,2})[.\-]\s*(\d{1,2})(?:\s+(\d{1,2})[:시]\s*(\d{1,2})?)?/);
+  if (!m) return text.slice(0, 40);
+  let year = m[1];
+  if (year.length === 2) year = `20${year}`;
+  const month = String(Number(m[2])).padStart(2, "0");
+  const day = String(Number(m[3])).padStart(2, "0");
+  const hour = m[4] != null ? String(Number(m[4])).padStart(2, "0") : "";
+  const minute = m[5] != null ? String(Number(m[5])).padStart(2, "0") : "";
+  return hour ? `${year}-${month}-${day} ${hour}:${minute || "00"}` : `${year}-${month}-${day}`;
+}
+
+function formatTransferDate(value) {
+  const normalized = normalizeTransferDate(value);
+  return normalized || "확인 불가";
+}
+
+function buildReceiptAnalysisText({ code, amountWon, sheetValue, senderName, accountNumber, transferDate }) {
+  const matchText = buildReceiptMatchText({ senderName, accountNumber });
+  return `📷 이체사진 분석완료\n\n고객코드 : ${code}\n이체날짜 : ${formatTransferDate(transferDate)}\n입금금액 : ${formatWon(amountWon)}\n입력값 : ${sheetValue}\n입금자명 : ${formatOptionalReceiptField(senderName)}\n계좌번호 : ${maskAccountNumber(accountNumber)}\n\n${matchText}\n\n등록하시겠습니까?`;
+}
+
+function buildTextMessage(text, quickReply) {
+  return {
+    type: "text",
+    text,
+    ...(quickReply ? { quickReply } : {})
+  };
+}
+
+async function analyzeReceiptImageAmount(messageId) {
+  if (!process.env.OPENAI_API_KEY) {
+    return { ok: false, error: "⚠️ OPENAI_API_KEY 환경변수가 설정되지 않았습니다." };
+  }
+
+  const image = await downloadLineMessageContent(messageId);
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: RECEIPT_OCR_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: "너는 한국 은행/간편송금 이체 캡처 이미지 OCR 분석기다. 먼저 이미지가 실제 이체/송금/입금 완료 또는 확인 화면 캡처인지 판별한다. 일반 사진, 인물/풍경/상품 사진, 채팅 캡처, 광고 이미지, 문서 사진처럼 이체 캡처가 아니면 is_transfer_receipt=false로 둔다. 이체 캡처라면 실제 이체/송금/입금 금액, 이체 날짜/시간, 입금자명/받는분명/예금주명, 계좌번호를 각각 독립적으로 추출한다. 계좌번호에 하이픈이나 공백이 있어도 숫자만 기준으로 읽는다. 잔액, 수수료, 한도, 날짜 숫자는 금액으로 선택하지 마라. 흐리거나 화면에 없는 값은 null로 둔다. 반드시 JSON만 출력한다."
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "이 이미지가 은행/간편송금 이체 캡처인지 먼저 판별하고, 맞을 때만 4가지를 분석해줘. 1) 실제 이체/송금/입금 금액 amount_won, 2) 이체 날짜/시간 transfer_date, 3) 입금자명/받는분명/예금주명 sender_name, 4) 계좌번호 account_number. 계좌번호는 하이픈이 있어도 숫자만 account_number에 넣어줘. 날짜는 가능하면 YYYY-MM-DD HH:mm 형식으로 넣어줘. 확실하지 않거나 화면에 없으면 null. 일반 사진이나 이체와 관련 없는 이미지면 is_transfer_receipt=false, amount_won/transfer_date/sender_name/account_number=null로 반환해줘. JSON 형식: {\"is_transfer_receipt\":true,\"amount_won\":60000,\"transfer_date\":\"2026-06-26 18:30\",\"sender_name\":\"CHAYAPONE\",\"account_number\":\"110551366954\",\"confidence\":0.95,\"reason\":\"짧은 근거\"}"
+            },
+            {
+              type: "image_url",
+              image_url: { url: `data:${image.contentType};base64,${image.base64}` }
+            }
+          ]
+        }
+      ],
+      max_completion_tokens: 300
+    })
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    console.error("[RECEIPT OCR OPENAI FAIL]", data);
+    return { ok: false, error: "⚠️ 이체사진 분석 중 오류가 발생했습니다." };
+  }
+
+  const content = data?.choices?.[0]?.message?.content || "";
+  const parsed = parseJsonObjectLoose(content);
+  const isTransferReceipt = parsed?.is_transfer_receipt === true || parsed?.is_transfer_receipt === "true";
+  const amountWon = normalizeWonAmount(parsed?.amount_won);
+  const senderName = normalizeSenderName(parsed?.sender_name);
+  const accountNumber = normalizeAccountNumber(parsed?.account_number);
+  const transferDate = normalizeTransferDate(parsed?.transfer_date);
+  const confidence = Number(parsed?.confidence ?? 0);
+
+  if (!isTransferReceipt) {
+    // 일반 사진/이체와 무관한 이미지는 그룹방에 아무 안내도 하지 않는다.
+    return { ok: false, ignored: true };
+  }
+
+  if (!amountWon || !Number.isFinite(confidence) || confidence < RECEIPT_MIN_CONFIDENCE) {
+    return { ok: false, error: "⚠️ 이체금액을 확실하게 확인하지 못했습니다. 직접 코드/금액으로 등록해주세요." };
+  }
+
+  const sheetValue = convertWonToSheetInputValue(amountWon);
+  if (!sheetValue) {
+    return { ok: false, error: "⚠️ 이체금액 변환에 실패했습니다. 직접 코드/금액으로 등록해주세요." };
+  }
+
+  return {
+    ok: true,
+    amountWon,
+    sheetValue,
+    senderName,
+    accountNumber,
+    transferDate,
+    confidence,
+    reason: String(parsed?.reason || "").slice(0, 80)
+  };
+}
+
+function buildReceiptConfirmMessage({ code, amountWon, sheetValue, senderName, accountNumber, transferDate }) {
+  const dataBase = `receipt=1&code=${encodeURIComponent(code)}&value=${encodeURIComponent(sheetValue)}&won=${encodeURIComponent(amountWon)}&sender=${encodeURIComponent(senderName || "")}&account=${encodeURIComponent(accountNumber || "")}&date=${encodeURIComponent(transferDate || "")}`;
+  const quickReply = {
+    items: [
+      {
+        type: "action",
+        action: {
+          type: "postback",
+          label: "등록",
+          data: `${dataBase}&action=confirm`,
+          displayText: "등록"
+        }
+      },
+      {
+        type: "action",
+        action: {
+          type: "postback",
+          label: "취소",
+          data: `${dataBase}&action=cancel`,
+          displayText: "취소"
+        }
+      }
+    ]
+  };
+
+  return buildTextMessage(
+    buildReceiptAnalysisText({ code, amountWon, sheetValue, senderName, accountNumber, transferDate }),
+    quickReply
+  );
+}
+
+function parseReceiptPostback(event) {
+  const data = String(event?.postback?.data || "");
+  const params = new URLSearchParams(data);
+  if (params.get("receipt") !== "1") return null;
+
+  const code = String(params.get("code") || "").trim().toUpperCase();
+  const value = String(params.get("value") || "").trim();
+  const won = normalizeWonAmount(params.get("won"));
+  const senderName = normalizeSenderName(params.get("sender"));
+  const accountNumber = normalizeAccountNumber(params.get("account"));
+  const transferDate = normalizeTransferDate(params.get("date"));
+  const action = String(params.get("action") || "").trim();
+
+  if (!code || !value || !won || !["confirm", "cancel"].includes(action)) return null;
+  return { action, code, value, won, senderName, accountNumber, transferDate };
+}
+
+async function handleReceiptImageMessage(event) {
+  const sourceGroupId = getLineSourceGroupId(event);
+  if (!sourceGroupId) return;
+  if (!SHEET_ID) {
+    await replyToLine(event.replyToken, "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.");
+    return;
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const code = await findMappedCodeByGroupId(accessToken, sourceGroupId);
+  if (!code) {
+    // 코드/등록이 되지 않은 그룹방에서는 아무 반응하지 않는다.
+    return;
+  }
+
+  const result = await analyzeReceiptImageAmount(event.message.id);
+  if (!result.ok) {
+    if (result.ignored) return;
+    await replyToLine(event.replyToken, result.error);
+    return;
+  }
+
+  await replyToLineMessages(event.replyToken, [
+    buildReceiptConfirmMessage({
+      code,
+      amountWon: result.amountWon,
+      sheetValue: result.sheetValue,
+      senderName: result.senderName,
+      accountNumber: result.accountNumber,
+      transferDate: result.transferDate
+    })
+  ]);
+}
+
+async function handleReceiptPostback(event, receipt) {
+  if (!canApproveReceipt(event)) {
+    await replyUnauthorized(event);
+    return;
+  }
+
+  if (receipt.action === "cancel") {
+    await replyToLine(event.replyToken, `취소되었습니다.\n${receipt.code} / ${formatWon(receipt.won)} / 입력값 ${receipt.value}\n입금자명 : ${formatOptionalReceiptField(receipt.senderName)}\n계좌번호 : ${maskAccountNumber(receipt.accountNumber)}`);
+    return;
+  }
+
+  const replyText = await writeSheetCommand({ code: receipt.code, value: receipt.value });
+  await replyToLine(event.replyToken, replyText);
+}
+
 async function pushToLine(to, text, retryKey = null) {
   const headers = {
     Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
@@ -633,7 +956,7 @@ async function pushToLine(to, text, retryKey = null) {
 // 필요 시 환경변수 LINE_PUSH_CONCURRENCY로 동시 발송 개수를 조절 가능.
 const LINE_PUSH_CONCURRENCY = Math.max(1, Number(process.env.LINE_PUSH_CONCURRENCY || 10));
 const LINE_PUSH_DELAY_MS = Number(process.env.LINE_PUSH_DELAY_MS || 0);
-const LINE_PUSH_RETRY_COUNT = Number(process.env.LINE_PUSH_RETRY_COUNT || 1);
+const LINE_PUSH_RETRY_COUNT = Number(process.env.LINE_PUSH_RETRY_COUNT || 0);
 const LINE_PUSH_RETRY_DELAY_MS = Number(process.env.LINE_PUSH_RETRY_DELAY_MS || 500);
 
 function sleep(ms) {
@@ -719,6 +1042,12 @@ function getLineUserId(event) {
 function isAdmin(event) {
   const userId = getLineUserId(event);
   return ADMIN_USER_IDS.includes(userId);
+}
+
+function canApproveReceipt(event) {
+  const userId = getLineUserId(event);
+  const approverIds = RECEIPT_APPROVER_USER_IDS.length ? RECEIPT_APPROVER_USER_IDS : ADMIN_USER_IDS;
+  return approverIds.includes(userId);
 }
 
 async function replyUnauthorized(event) {
@@ -1199,14 +1528,15 @@ function findTodayDollarCodes(values, registeredCodes = null) {
   const codes = [];
   const seen = new Set();
 
-  // 오늘상환 알림은 이전 사용 방식처럼 전체 시트에서 검색한다.
-  // 조건: 상태가 진행중이고, 오늘 날짜 칸에 $가 있으며, LINE그룹매핑에 등록된 코드.
-  // B열 년월/H열 날짜 형식이 비어 있거나 깨져 있어도 오늘 $가 있으면 발송 대상에 포함한다.
+  // 오늘상환 알림은 4월 1일부터 현재까지의 실제 고객 행만 검색한다.
+  // 조건: B열 년/월 + H열 날짜가 유효하고, 상태가 진행중이며, 오늘 날짜 칸에 $가 있고, LINE그룹매핑에 등록된 코드.
+  // 목차/구분행/이전 데이터가 후보에 섞여 크레딧이 과다 소모되는 것을 막기 위해 날짜 범위를 먼저 제한한다.
   for (let i = 1; i < values.length; i += 1) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
     const productName = String(row[5] || "").trim(); // F열 상품명
 
+    if (!isBroadcastTargetDateRow(row, today)) continue;
     if (status !== "진행중") continue;
 
     const code = extractCustomerCodeFromProductName(productName);
@@ -1290,16 +1620,20 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
   const values = await getSheetValues(accessToken);
   const groupMapValues = await getGroupMapValues(accessToken);
   const groupMap = new Map();
+  const latestCodeByGroupId = new Map();
 
-  // 코드별 그룹ID를 그대로 보존한다.
-  // 같은 그룹ID가 여러 코드에 있어도 오늘 $가 있는 실제 코드가 제외되지 않게 한다.
-  // 발송 직전 seenGroupIds로 같은 그룹방 중복 발송만 막는다.
+  // 같은 그룹ID가 여러 코드에 남아 있어도, 같은 그룹으로는 1회만 발송한다.
+  // 시트 아래쪽 행을 나중 등록된 값으로 보고 우선 사용한다.
   for (let i = 1; i < groupMapValues.length; i += 1) {
     const code = String(groupMapValues[i]?.[0] || "").trim().toUpperCase();
     const groupId = String(groupMapValues[i]?.[1] || "").trim();
     if (code && groupId) {
-      groupMap.set(code, groupId);
+      latestCodeByGroupId.set(groupId, code);
     }
+  }
+
+  for (const [groupId, code] of latestCodeByGroupId.entries()) {
+    groupMap.set(code, groupId);
   }
 
   const rawCodes = findTodayDollarCodes(values, new Set(groupMap.keys()));
@@ -2123,6 +2457,19 @@ async function replyToLine(replyToken, text) {
   );
 }
 
+async function replyToLineMessages(replyToken, messages) {
+  return axios.post(
+    "https://api.line.me/v2/bot/message/reply",
+    { replyToken, messages },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+}
+
 async function askOpenAI({ systemPrompt, userText, history = [], convertWonToThai = false }) {
   const contextText = buildContextText(history);
 
@@ -2496,8 +2843,15 @@ export default async function handler(req, res) {
 
   for (const event of events) {
     try {
+      if (event.type === "postback") {
+        const receipt = parseReceiptPostback(event);
+        if (receipt) {
+          await handleReceiptPostback(event, receipt);
+        }
+        continue;
+      }
+
       if (event.type !== "message") continue;
-      if (event.message.type !== "text") continue;
 
       // LINE이 webhook 응답 지연/오류로 같은 이벤트를 다시 보낸 경우는 처리하지 않는다.
       // 사용자가 같은 명령어를 새로 다시 보내면 message.id가 달라서 정상 실행된다.
@@ -2510,6 +2864,13 @@ export default async function handler(req, res) {
         console.log(`[LINE WEBHOOK SKIP] duplicate messageId=${event.message?.id || "unknown"}`);
         continue;
       }
+
+      if (event.message.type === "image") {
+        await handleReceiptImageMessage(event);
+        continue;
+      }
+
+      if (event.message.type !== "text") continue;
 
       const text = normalizeText(event.message.text);
       if (!text) continue;
