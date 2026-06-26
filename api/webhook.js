@@ -30,6 +30,33 @@ const RECEIPT_APPROVER_USER_IDS = (process.env.RECEIPT_APPROVER_USER_IDS || "")
   .map(v => v.trim())
   .filter(Boolean);
 
+const RECEIPT_DUPLICATE_TTL_MS = Number(process.env.RECEIPT_DUPLICATE_TTL_MS || 24 * 60 * 60 * 1000);
+const receiptDuplicateCache = globalThis.__receiptDuplicateCache || new Map();
+globalThis.__receiptDuplicateCache = receiptDuplicateCache;
+
+function cleanupReceiptDuplicateCache(now = Date.now()) {
+  for (const [key, item] of receiptDuplicateCache.entries()) {
+    const expiresAt = Number(item?.expiresAt || 0);
+    if (expiresAt <= now) receiptDuplicateCache.delete(key);
+  }
+}
+
+function receiptCacheSet(key, patch = {}) {
+  if (!key) return null;
+  const now = Date.now();
+  cleanupReceiptDuplicateCache(now);
+  const prev = receiptDuplicateCache.get(key) || {};
+  const next = { ...prev, ...patch, updatedAt: now, expiresAt: now + RECEIPT_DUPLICATE_TTL_MS };
+  receiptDuplicateCache.set(key, next);
+  return next;
+}
+
+function receiptCacheGet(key) {
+  if (!key) return null;
+  cleanupReceiptDuplicateCache(Date.now());
+  return receiptDuplicateCache.get(key) || null;
+}
+
 
 // LINE webhook retry / duplicate guard
 // 같은 날 같은 명령어를 여러 번 직접 보내는 것은 허용한다.
@@ -641,8 +668,10 @@ async function downloadLineMessageContent(messageId) {
   });
 
   const contentType = response.headers?.["content-type"] || "image/jpeg";
-  const base64 = Buffer.from(response.data).toString("base64");
-  return { contentType, base64 };
+  const buffer = Buffer.from(response.data);
+  const base64 = buffer.toString("base64");
+  const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+  return { contentType, base64, sha256 };
 }
 
 function parseJsonObjectLoose(text) {
@@ -741,6 +770,33 @@ function formatTransferDate(value) {
   return normalized || "확인 불가";
 }
 
+function normalizeReceiptKeyPart(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/\s+/g, "")
+    .toUpperCase();
+}
+
+function buildReceiptInfoKey({ code, amountWon, senderName, accountNumber, transferDate }) {
+  const amount = normalizeWonAmount(amountWon) || "";
+  const sender = normalizeReceiptKeyPart(normalizeSenderName(senderName));
+  const account = normalizeAccountNumber(accountNumber) || "";
+  const date = normalizeReceiptKeyPart(normalizeTransferDate(transferDate));
+  const parts = [String(code || "").toUpperCase(), amount, sender, account, date].filter(Boolean);
+  return crypto.createHash("sha256").update(parts.join("|"), "utf8").digest("hex");
+}
+
+function buildReceiptImageKey({ sourceGroupId, imageHash }) {
+  if (!imageHash) return "";
+  return crypto.createHash("sha256").update(`${sourceGroupId || ""}|${imageHash}`, "utf8").digest("hex");
+}
+
+function buildReceiptDuplicateText(item) {
+  if (item?.status === "confirmed") return "⚠️ 이미 등록 완료된 동일한 이체사진/이체내역입니다.";
+  if (item?.status === "cancelled") return "⚠️ 이미 취소 처리된 동일한 이체사진/이체내역입니다.";
+  return "⚠️ 이미 분석된 동일한 이체사진/이체내역입니다. 기존 등록/취소 버튼을 사용해주세요.";
+}
+
 function buildReceiptAnalysisText({ code, amountWon, sheetValue, senderName, accountNumber, transferDate }) {
   const matchText = buildReceiptMatchText({ senderName, accountNumber });
   return `📷 이체사진 분석완료\n\n고객코드 : ${code}\n이체날짜 : ${formatTransferDate(transferDate)}\n입금금액 : ${formatWon(amountWon)}\n입력값 : ${sheetValue}\n입금자명 : ${formatOptionalReceiptField(senderName)}\n계좌번호 : ${maskAccountNumber(accountNumber)}\n\n${matchText}\n\n등록하시겠습니까?`;
@@ -828,12 +884,13 @@ async function analyzeReceiptImageAmount(messageId) {
     accountNumber,
     transferDate,
     confidence,
-    reason: String(parsed?.reason || "").slice(0, 80)
+    reason: String(parsed?.reason || "").slice(0, 80),
+    imageHash: image.sha256
   };
 }
 
-function buildReceiptConfirmMessage({ code, amountWon, sheetValue, senderName, accountNumber, transferDate }) {
-  const dataBase = `receipt=1&code=${encodeURIComponent(code)}&value=${encodeURIComponent(sheetValue)}&won=${encodeURIComponent(amountWon)}&sender=${encodeURIComponent(senderName || "")}&account=${encodeURIComponent(accountNumber || "")}&date=${encodeURIComponent(transferDate || "")}`;
+function buildReceiptConfirmMessage({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, receiptKey }) {
+  const dataBase = `receipt=1&key=${encodeURIComponent(receiptKey || "")}&code=${encodeURIComponent(code)}&value=${encodeURIComponent(sheetValue)}&won=${encodeURIComponent(amountWon)}&sender=${encodeURIComponent(senderName || "")}&account=${encodeURIComponent(accountNumber || "")}&date=${encodeURIComponent(transferDate || "")}`;
   const quickReply = {
     items: [
       {
@@ -868,6 +925,7 @@ function parseReceiptPostback(event) {
   const params = new URLSearchParams(data);
   if (params.get("receipt") !== "1") return null;
 
+  const receiptKey = String(params.get("key") || "").trim();
   const code = String(params.get("code") || "").trim().toUpperCase();
   const value = String(params.get("value") || "").trim();
   const won = normalizeWonAmount(params.get("won"));
@@ -877,7 +935,7 @@ function parseReceiptPostback(event) {
   const action = String(params.get("action") || "").trim();
 
   if (!code || !value || !won || !["confirm", "cancel"].includes(action)) return null;
-  return { action, code, value, won, senderName, accountNumber, transferDate };
+  return { action, receiptKey, code, value, won, senderName, accountNumber, transferDate };
 }
 
 async function handleReceiptImageMessage(event) {
@@ -902,6 +960,36 @@ async function handleReceiptImageMessage(event) {
     return;
   }
 
+  const imageKey = buildReceiptImageKey({ sourceGroupId, imageHash: result.imageHash });
+  const infoKey = buildReceiptInfoKey({
+    code,
+    amountWon: result.amountWon,
+    senderName: result.senderName,
+    accountNumber: result.accountNumber,
+    transferDate: result.transferDate
+  });
+
+  const existing = receiptCacheGet(imageKey) || receiptCacheGet(infoKey);
+  if (existing) {
+    await replyToLine(event.replyToken, buildReceiptDuplicateText(existing));
+    return;
+  }
+
+  const receiptKey = infoKey || imageKey;
+  const cacheItem = {
+    status: "pending",
+    imageKey,
+    infoKey,
+    code,
+    amountWon: result.amountWon,
+    sheetValue: result.sheetValue,
+    senderName: result.senderName,
+    accountNumber: result.accountNumber,
+    transferDate: result.transferDate
+  };
+  receiptCacheSet(imageKey, cacheItem);
+  receiptCacheSet(infoKey, cacheItem);
+
   await replyToLineMessages(event.replyToken, [
     buildReceiptConfirmMessage({
       code,
@@ -909,7 +997,8 @@ async function handleReceiptImageMessage(event) {
       sheetValue: result.sheetValue,
       senderName: result.senderName,
       accountNumber: result.accountNumber,
-      transferDate: result.transferDate
+      transferDate: result.transferDate,
+      receiptKey
     })
   ]);
 }
@@ -920,8 +1009,29 @@ async function handleReceiptPostback(event, receipt) {
     return;
   }
 
+  const cached = receiptCacheGet(receipt.receiptKey);
+  if (cached?.status === "confirmed") {
+    await replyToLine(event.replyToken, "⚠️ 이미 등록 완료된 요청입니다.");
+    return;
+  }
+  if (cached?.status === "cancelled") {
+    await replyToLine(event.replyToken, "⚠️ 이미 취소 처리된 요청입니다.");
+    return;
+  }
+
+  const status = receipt.action === "cancel" ? "cancelled" : "confirmed";
+  if (cached) {
+    receiptCacheSet(cached.imageKey, { ...cached, status });
+    receiptCacheSet(cached.infoKey, { ...cached, status });
+  } else if (receipt.receiptKey) {
+    receiptCacheSet(receipt.receiptKey, { status, code: receipt.code, amountWon: receipt.won, sheetValue: receipt.value });
+  }
+
   if (receipt.action === "cancel") {
-    await replyToLine(event.replyToken, `취소되었습니다.\n${receipt.code} / ${formatWon(receipt.won)} / 입력값 ${receipt.value}\n입금자명 : ${formatOptionalReceiptField(receipt.senderName)}\n계좌번호 : ${maskAccountNumber(receipt.accountNumber)}`);
+    await replyToLine(event.replyToken, `취소되었습니다.
+${receipt.code} / ${formatWon(receipt.won)} / 입력값 ${receipt.value}
+입금자명 : ${formatOptionalReceiptField(receipt.senderName)}
+계좌번호 : ${maskAccountNumber(receipt.accountNumber)}`);
     return;
   }
 
