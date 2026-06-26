@@ -476,8 +476,8 @@ function buildRepaymentCells(command) {
     }
   } else {
     // 기존 규칙 유지: 당일부터 카운트해서 intervalDays 간격으로 상환표시.
-    for (let i = 1; i <= plan.repaymentCount; i += 1) {
-      const dueDay = command.startDay + plan.intervalDays * i;
+    for (let i = 0; i < plan.repaymentCount; i += 1) {
+      const dueDay = command.startDay + (plan.intervalDays - 1) + plan.intervalDays * i;
       if (dueDay > lastDayOfMonth) continue;
 
       const dueIndex = dueDay - 1;
@@ -537,15 +537,19 @@ function buildRegistrationRepaymentRows(command, todayInfo = null) {
     return { topCells, bottomCells, plan, prepaidCount };
   }
 
-  const lastOffset = plan.intervalDays * plan.repaymentCount;
+  // 3일/5일/7일 상품은 "당일 포함" 계산이다.
+  // 예: 오늘 포함 7일째가 첫 상환일이므로 offset은 6일이다.
+  const intervalOffset = Math.max(0, plan.intervalDays - 1);
+  const lastOffset = intervalOffset + plan.intervalDays * (plan.repaymentCount - 1);
   for (let offset = 0; offset <= lastOffset; offset += 1) {
     placeRegistrationCell(topCells, bottomCells, today, offset, "-");
   }
 
   placeRegistrationCell(topCells, bottomCells, today, 0, hasCut ? formatAmountValue(command.cut) : "-");
 
-  for (let i = 1; i <= plan.repaymentCount; i += 1) {
-    placeRegistrationCell(topCells, bottomCells, today, plan.intervalDays * i, "$");
+  for (let i = 0; i < plan.repaymentCount; i += 1) {
+    const dueOffset = intervalOffset + plan.intervalDays * i;
+    placeRegistrationCell(topCells, bottomCells, today, dueOffset, "$");
   }
 
   return { topCells, bottomCells, plan, prepaidCount: 0 };
