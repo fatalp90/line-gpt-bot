@@ -208,6 +208,64 @@ function parseCountCommand(text) {
   };
 }
 
+function parseCustomerRegisterCommand(text) {
+  const clean = normalizeText(text);
+  const parts = clean.split("/").map(part => part.trim()).filter(Boolean);
+  if (parts.length < 4 || parts.length > 5) return null;
+
+  // 신규 고객등록 명령어:
+  // 관리자/상품코드(상환금)/대출금/선공제
+  // 예: 태태/PP01(130,000)/-30/5
+  const adminName = parts[0];
+  const productName = parts[1];
+  const loanToken = parts[2];
+  const cutToken = parts[3] ?? "0";
+  const customerName = parts[4] ?? "";
+
+  // 기존 명령어와 충돌 방지: 첫 항목이 코드(KN56 등)면 고객등록으로 보지 않는다.
+  if (/^[A-Za-z]{1,3}\d{1,3}$/i.test(adminName.replace(/\s+/g, ""))) return null;
+  if (!/[A-Za-z]{1,3}\d{1,3}/i.test(productName) || !/\(/.test(productName)) return null;
+
+  const loanParsed = parseNumericRequiredValue(loanToken, "대출금");
+  if (loanParsed.error) return { error: loanParsed.error };
+
+  const cutParsed = parseCutRequiredValue(cutToken);
+  if (cutParsed.error) return { error: cutParsed.error };
+
+  const productCode = extractProductCode(productName);
+  if (!productCode) {
+    return { error: "⚠️ 상품종류에는 코드가 포함되어야 합니다. 예: PP01(130,000)" };
+  }
+
+  const productAmount = extractProductAmount(productName);
+  if (!productAmount) {
+    return { error: "⚠️ 상품종류에서 상환금액을 찾지 못했습니다. 예: PP01(130,000)" };
+  }
+
+  return {
+    adminName,
+    productName,
+    productCode,
+    customerName,
+    loanAmount: loanParsed.value,
+    cut: cutParsed.value,
+    productAmount
+  };
+}
+
+function extractProductCode(productName) {
+  const match = String(productName || "").match(/([A-Za-z]{1,3}\d{1,3})/);
+  return match ? match[1].toUpperCase() : null;
+}
+
+function extractProductAmount(productName) {
+  const raw = String(productName || "");
+  const parenMatch = raw.match(/[DL]?\s*(\d{1,3}(?:,\d{3})+|\d{4,6})/i);
+  if (!parenMatch) return null;
+  const amount = Number(parenMatch[1].replace(/,/g, ""));
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+
 function parseRegisterGroupCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
   const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/등록$/i);
@@ -299,13 +357,33 @@ function parseCutRequiredValue(value) {
 
 function getRepaymentPlanByProductAmount(productAmount) {
   const plans = {
-    130000: { intervalDays: 7, repaymentCount: 4 },
-    195000: { intervalDays: 7, repaymentCount: 4 },
+    // 300,000원 이미지 기준
     25000: { intervalDays: 1, repaymentCount: 10 },
-    40000: { intervalDays: 1, repaymentCount: 15 },
-    45000: { intervalDays: 1, repaymentCount: 12 },
+    130000: { intervalDays: 7, repaymentCount: 4 },
+    145000: { intervalDays: 3, repaymentCount: 4 },
+    175000: { intervalDays: 5, repaymentCount: 4 },
+    195000: { intervalDays: 7, repaymentCount: 4 },
     50000: { intervalDays: 1, repaymentCount: 10 },
-    55000: { intervalDays: 1, repaymentCount: 10 }
+    45000: { intervalDays: 1, repaymentCount: 12 },
+    40000: { intervalDays: 1, repaymentCount: 15 },
+
+    // 400,000원 이미지 기준
+    35000: { intervalDays: 1, repaymentCount: 10 },
+    160000: { intervalDays: 7, repaymentCount: 4 },
+    185000: { intervalDays: 3, repaymentCount: 4 },
+    215000: { intervalDays: 5, repaymentCount: 4 },
+    235000: { intervalDays: 7, repaymentCount: 4 },
+    65000: { intervalDays: 1, repaymentCount: 10 },
+    60000: { intervalDays: 1, repaymentCount: 12 },
+    55000: { intervalDays: 1, repaymentCount: 15 },
+
+    // 500,000원 이미지 기준
+    190000: { intervalDays: 7, repaymentCount: 4 },
+    225000: { intervalDays: 3, repaymentCount: 4 },
+    255000: { intervalDays: 5, repaymentCount: 4 },
+    275000: { intervalDays: 7, repaymentCount: 4 },
+    80000: { intervalDays: 1, repaymentCount: 10 },
+    70000: { intervalDays: 1, repaymentCount: 12 }
   };
   return plans[productAmount] || null;
 }
@@ -353,6 +431,69 @@ function buildRepaymentCells(command) {
   }
 
   return { cells, plan, lastDayOfMonth, noCut: isNoCut };
+}
+
+function placeRegistrationCell(topCells, bottomCells, todayInfo, dayOffsetFromStart, value) {
+  const lastDayOfMonth = getDaysInMonth(todayInfo.year, todayInfo.month);
+  const absoluteDay = todayInfo.day + dayOffsetFromStart;
+
+  if (absoluteDay <= lastDayOfMonth) {
+    const index = absoluteDay - 1;
+    if (index >= 0 && index < topCells.length) topCells[index] = value;
+    return;
+  }
+
+  const nextMonthDay = absoluteDay - lastDayOfMonth;
+  const index = nextMonthDay - 1;
+  if (index >= 0 && index < bottomCells.length) bottomCells[index] = value;
+}
+
+function buildRegistrationRepaymentRows(command, todayInfo = null) {
+  const today = todayInfo || getKoreaToday();
+  const plan = getRepaymentPlanByProductAmount(command.productAmount);
+  if (!plan) {
+    return { error: `⚠️ ${command.productAmount.toLocaleString("ko-KR")}원 상품의 상환방식이 등록되어 있지 않습니다.` };
+  }
+
+  const width = DATE_END_COLUMN_INDEX - DATE_START_COLUMN_INDEX + 1;
+  const topCells = Array(width).fill("");
+  const bottomCells = Array(width).fill("");
+  const isDashCut = String(command.cut).trim() === "-";
+  const cutNumber = isDashCut ? 0 : Number(command.cut);
+  const hasCut = Number.isFinite(cutNumber) && cutNumber > 0;
+  const repaymentUnit = command.productAmount / 10000;
+  const repaymentValueText = formatAmountValue(repaymentUnit);
+
+  if (plan.intervalDays === 1) {
+    // 명령어의 선공제는 만원 단위로 입력한다.
+    // 예: 25,000원 상품 + /5 => 5만원 선공제 => 2.5, 2.5 두 칸 선카운트
+    const prepaidCount = hasCut ? Math.min(plan.repaymentCount, Math.floor(cutNumber / repaymentUnit)) : 0;
+
+    for (let i = 0; i < plan.repaymentCount; i += 1) {
+      const value = i < prepaidCount ? repaymentValueText : "$";
+      placeRegistrationCell(topCells, bottomCells, today, i, value);
+    }
+
+    return { topCells, bottomCells, plan, prepaidCount };
+  }
+
+  const lastOffset = plan.intervalDays * plan.repaymentCount;
+  for (let offset = 0; offset <= lastOffset; offset += 1) {
+    placeRegistrationCell(topCells, bottomCells, today, offset, "-");
+  }
+
+  placeRegistrationCell(topCells, bottomCells, today, 0, hasCut ? formatAmountValue(command.cut) : "-");
+
+  for (let i = 1; i <= plan.repaymentCount; i += 1) {
+    placeRegistrationCell(topCells, bottomCells, today, plan.intervalDays * i, "$");
+  }
+
+  return { topCells, bottomCells, plan, prepaidCount: 0 };
+}
+
+function formatKoreaDateValue(todayInfo = null) {
+  const today = todayInfo || getKoreaToday();
+  return `${today.year}-${String(today.month).padStart(2, "0")}-${String(today.day).padStart(2, "0")}`;
 }
 
 function isBlankCell(value) {
@@ -2053,6 +2194,89 @@ async function applyCountPattern(accessToken, values, topRowNumber, todayColumnI
   return updates.length;
 }
 
+function findExistingProductCustomer(values, productCode) {
+  const targetCode = String(productCode || "").toUpperCase();
+  if (!targetCode) return { exists: false, customerName: "", rowNumber: null };
+
+  // 관리자별 코드는 고유하므로 F열 상품코드가 같은 이전 행을 기존 고객으로 판단한다.
+  // 같은 코드가 여러 번 있으면 가장 아래쪽(최근) 행의 G열 고객명을 우선 반영한다.
+  for (let i = values.length - 1; i >= 1; i -= 1) {
+    const row = values[i] || [];
+    const productName = String(row[5] || "").trim();
+    if (!productName) continue;
+
+    const existingCode = extractProductCode(productName);
+    if (existingCode === targetCode) {
+      return {
+        exists: true,
+        customerName: String(row[6] || "").trim(),
+        rowNumber: i + 1
+      };
+    }
+  }
+
+  return { exists: false, customerName: "", rowNumber: null };
+}
+
+async function writeCustomerRegistration(command) {
+  if (command.error) return command.error;
+
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const values = await getSheetValues(accessToken);
+  const today = getKoreaToday();
+  const repaymentRows = buildRegistrationRepaymentRows(command, today);
+  if (repaymentRows.error) return repaymentRows.error;
+
+  const duplicateRows = [];
+  for (let i = 1; i < values.length; i += 1) {
+    const row = values[i] || [];
+    const status = String(row[2] || "").trim();
+    const productName = String(row[5] || "").trim();
+    if (status !== "진행중") continue;
+
+    const existingCode = extractProductCode(productName);
+    if (existingCode === command.productCode) duplicateRows.push(i + 1);
+  }
+
+  if (duplicateRows.length > 0) {
+    return `⚠️ ${command.productCode} 진행중 항목이 이미 있습니다. 중복 확인이 필요합니다. (${duplicateRows.join(", ")}행)`;
+  }
+
+  const existingCustomer = findExistingProductCustomer(values, command.productCode);
+  const customerType = existingCustomer.exists ? "기존" : "신규";
+  const resolvedCustomerName = command.customerName || existingCustomer.customerName || "";
+  const rowNumber = findNextCustomerWriteRow(values);
+  const nextNo = getNextCustomerNumber(values);
+  const dateText = formatKoreaDateValue(today);
+  const width = DATE_END_COLUMN_INDEX + 1;
+  const topRow = Array(width).fill("");
+  const bottomRow = Array(width).fill("");
+
+  topRow[0] = nextNo;
+  topRow[1] = dateText;
+  topRow[2] = "진행중";
+  topRow[3] = customerType;
+  topRow[4] = command.adminName;
+  topRow[5] = command.productName;
+  topRow[6] = resolvedCustomerName;
+  topRow[7] = dateText;
+  topRow[8] = formatAmountValue(command.loanAmount);
+
+  for (let i = 0; i < repaymentRows.topCells.length; i += 1) {
+    topRow[DATE_START_COLUMN_INDEX + i] = repaymentRows.topCells[i];
+    bottomRow[DATE_START_COLUMN_INDEX + i] = repaymentRows.bottomCells[i];
+  }
+
+  await updateSheetRows(accessToken, rowNumber, [topRow, bottomRow]);
+
+  const cutText = String(command.cut).trim() === "-" ? "공제없음" : `공제 ${formatAmountValue(command.cut)}`;
+  return `✅ ${command.productCode} 고객등록 완료\n${command.customerType} / ${command.adminName} / ${cutText}\n입력행: ${rowNumber}-${rowNumber + 1}`;
+}
+
 async function writeCountCommand(command) {
   if (!SHEET_ID) {
     return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
@@ -3100,6 +3324,18 @@ export default async function handler(req, res) {
 
         const creditReply = await buildCustomerCreditReport(creditCheckCommand);
         await replyToLine(event.replyToken, creditReply);
+        continue;
+      }
+
+      const customerRegisterCommand = parseCustomerRegisterCommand(text);
+      if (customerRegisterCommand) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
+        const customerRegisterReply = await writeCustomerRegistration(customerRegisterCommand);
+        await replyToLine(event.replyToken, customerRegisterReply);
         continue;
       }
 
