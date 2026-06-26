@@ -259,11 +259,31 @@ function extractProductCode(productName) {
 }
 
 function extractProductAmount(productName) {
-  const raw = String(productName || "");
-  const parenMatch = raw.match(/[DL]?\s*(\d{1,3}(?:,\d{3})+|\d{4,6})/i);
-  if (!parenMatch) return null;
-  const amount = Number(parenMatch[1].replace(/,/g, ""));
-  return Number.isFinite(amount) && amount > 0 ? amount : null;
+  const raw = String(productName || "")
+    .replace(/[（]/g, "(")
+    .replace(/[）]/g, ")")
+    .replace(/[，]/g, ",")
+    .replace(/[ㆍ·]/g, ".");
+
+  // 1순위: 괄호 안 금액을 읽는다.
+  // 예: PP01(130,000), PP01(130000), PP01(130,000원), PP01（130,000）
+  const insideParen = raw.match(/\(([^)]*\d[^)]*)\)/);
+  const candidates = [];
+  if (insideParen) candidates.push(insideParen[1]);
+  candidates.push(raw);
+
+  for (const candidate of candidates) {
+    const amountMatch = String(candidate).match(/\d[\d,._\s원บาท]*/);
+    if (!amountMatch) continue;
+
+    const digits = amountMatch[0].replace(/\D/g, "");
+    if (!digits) continue;
+
+    const amount = Number(digits);
+    if (Number.isFinite(amount) && amount > 0) return amount;
+  }
+
+  return null;
 }
 
 function parseRegisterGroupCommand(text) {
@@ -355,41 +375,78 @@ function parseCutRequiredValue(value) {
   return { value: n };
 }
 
-function getRepaymentPlanByProductAmount(productAmount) {
-  const plans = {
-    // 300,000원 이미지 기준
-    25000: { intervalDays: 1, repaymentCount: 10 },
-    130000: { intervalDays: 7, repaymentCount: 4 },
-    145000: { intervalDays: 3, repaymentCount: 4 },
-    175000: { intervalDays: 5, repaymentCount: 4 },
-    195000: { intervalDays: 7, repaymentCount: 4 },
-    50000: { intervalDays: 1, repaymentCount: 10 },
-    45000: { intervalDays: 1, repaymentCount: 12 },
-    40000: { intervalDays: 1, repaymentCount: 15 },
+function getLoanPrincipalUnit(loanAmount) {
+  const amount = Math.abs(Number(loanAmount));
+  if (!Number.isFinite(amount)) return null;
 
-    // 400,000원 이미지 기준
-    35000: { intervalDays: 1, repaymentCount: 10 },
-    160000: { intervalDays: 7, repaymentCount: 4 },
-    185000: { intervalDays: 3, repaymentCount: 4 },
-    215000: { intervalDays: 5, repaymentCount: 4 },
-    235000: { intervalDays: 7, repaymentCount: 4 },
-    65000: { intervalDays: 1, repaymentCount: 10 },
-    60000: { intervalDays: 1, repaymentCount: 12 },
-    55000: { intervalDays: 1, repaymentCount: 15 },
+  // 명령어 대출금은 -30 / -40 / -50 처럼 만원 단위로 입력한다.
+  if (amount === 30 || amount === 300000) return 30;
+  if (amount === 40 || amount === 400000) return 40;
+  if (amount === 50 || amount === 500000) return 50;
 
-    // 500,000원 이미지 기준
-    190000: { intervalDays: 7, repaymentCount: 4 },
-    225000: { intervalDays: 3, repaymentCount: 4 },
-    255000: { intervalDays: 5, repaymentCount: 4 },
-    275000: { intervalDays: 7, repaymentCount: 4 },
-    80000: { intervalDays: 1, repaymentCount: 10 },
-    70000: { intervalDays: 1, repaymentCount: 12 }
-  };
-  return plans[productAmount] || null;
+  return null;
 }
 
+function getRepaymentPlanByProductAmount(productAmount, loanAmount = null) {
+  const principalUnit = getLoanPrincipalUnit(loanAmount);
+
+  const plansByPrincipal = {
+    30: {
+      // 300,000원 이미지 기준
+      25000: { intervalDays: 1, repaymentCount: 10, label: "ดอกลอย 25,000 × 10วัน" },
+      130000: { intervalDays: 7, repaymentCount: 4, label: "ดอกลอยรายอาทิตย์ 130,000 × 4งวด" },
+      145000: { intervalDays: 3, repaymentCount: 4, label: "ราย 3 วัน 145,000 × 4งวด" },
+      175000: { intervalDays: 5, repaymentCount: 4, label: "ราย 5 วัน 175,000 × 4งวด" },
+      195000: { intervalDays: 7, repaymentCount: 4, label: "ราย 7 วัน 195,000 × 4งวด" },
+      50000: { intervalDays: 1, repaymentCount: 10, label: "ทุกวัน 10 วัน 50,000 × 10งวด" },
+      45000: { intervalDays: 1, repaymentCount: 12, label: "ทุกวัน 12 วัน 45,000 × 12งวด" },
+      40000: { intervalDays: 1, repaymentCount: 15, label: "ทุกวัน 15 วัน 40,000 × 15งวด" }
+    },
+    40: {
+      // 400,000원 이미지 기준
+      35000: { intervalDays: 1, repaymentCount: 10, label: "ดอกลอย 35,000 × 10วัน" },
+      160000: { intervalDays: 7, repaymentCount: 4, label: "ดอกลอยรายอาทิตย์ 160,000 × 4งวด" },
+      185000: { intervalDays: 3, repaymentCount: 4, label: "ราย 3 วัน 185,000 × 4งวด" },
+      215000: { intervalDays: 5, repaymentCount: 4, label: "ราย 5 วัน 215,000 × 4งวด" },
+      235000: { intervalDays: 7, repaymentCount: 4, label: "ราย 7 วัน 235,000 × 4งวด" },
+      65000: { intervalDays: 1, repaymentCount: 10, label: "ทุกวัน 10 วัน 65,000 × 10งวด" },
+      60000: { intervalDays: 1, repaymentCount: 12, label: "ทุกวัน 12 วัน 60,000 × 12งวด" },
+      55000: { intervalDays: 1, repaymentCount: 15, label: "ทุกวัน 15 วัน 55,000 × 15งวด" }
+    },
+    50: {
+      // 500,000원 이미지 기준
+      45000: { intervalDays: 1, repaymentCount: 10, label: "ดอกลอย 45,000 × 10วัน" },
+      190000: { intervalDays: 7, repaymentCount: 4, label: "ดอกลอยรายอาทิตย์ 190,000 × 4งวด" },
+      225000: { intervalDays: 3, repaymentCount: 4, label: "ราย 3 วัน 225,000 × 4งวด" },
+      255000: { intervalDays: 5, repaymentCount: 4, label: "ราย 5 วัน 255,000 × 4งวด" },
+      275000: { intervalDays: 7, repaymentCount: 4, label: "ราย 7 วัน 275,000 × 4งวด" },
+      80000: { intervalDays: 1, repaymentCount: 10, label: "ทุกวัน 10 วัน 80,000 × 10งวด" },
+      70000: { intervalDays: 1, repaymentCount: 12, label: "ทุกวัน 12 วัน 70,000 × 12งวด" },
+      60000: { intervalDays: 1, repaymentCount: 15, label: "ทุกวัน 15 วัน 60,000 × 15งวด" }
+    }
+  };
+
+  if (principalUnit && plansByPrincipal[principalUnit]) {
+    return plansByPrincipal[principalUnit][productAmount] || null;
+  }
+
+  // 대출금이 없거나 인식되지 않는 기존 함수 호출 대비용.
+  // 단, 45,000 / 60,000 처럼 금액만으로 상품이 갈리는 경우에는 null을 반환해서 오등록을 막는다.
+  const fallback = {};
+  for (const [principal, table] of Object.entries(plansByPrincipal)) {
+    for (const [amount, plan] of Object.entries(table)) {
+      if (fallback[amount] && JSON.stringify(fallback[amount]) !== JSON.stringify(plan)) {
+        fallback[amount] = null;
+      } else if (!(amount in fallback)) {
+        fallback[amount] = plan;
+      }
+    }
+  }
+
+  return fallback[String(productAmount)] || null;
+}
 function buildRepaymentCells(command) {
-  const plan = getRepaymentPlanByProductAmount(command.productAmount);
+  const plan = getRepaymentPlanByProductAmount(command.productAmount, command.loanAmount);
   if (!plan) {
     return { error: `⚠️ ${command.productAmount.toLocaleString("ko-KR")}원 상품의 상환방식이 등록되어 있지 않습니다.` };
   }
@@ -450,7 +507,7 @@ function placeRegistrationCell(topCells, bottomCells, todayInfo, dayOffsetFromSt
 
 function buildRegistrationRepaymentRows(command, todayInfo = null) {
   const today = todayInfo || getKoreaToday();
-  const plan = getRepaymentPlanByProductAmount(command.productAmount);
+  const plan = getRepaymentPlanByProductAmount(command.productAmount, command.loanAmount);
   if (!plan) {
     return { error: `⚠️ ${command.productAmount.toLocaleString("ko-KR")}원 상품의 상환방식이 등록되어 있지 않습니다.` };
   }
@@ -2274,7 +2331,7 @@ async function writeCustomerRegistration(command) {
   await updateSheetRows(accessToken, rowNumber, [topRow, bottomRow]);
 
   const cutText = String(command.cut).trim() === "-" ? "공제없음" : `공제 ${formatAmountValue(command.cut)}`;
-  return `✅ ${command.productCode} 고객등록 완료\n${command.customerType} / ${command.adminName} / ${cutText}\n입력행: ${rowNumber}-${rowNumber + 1}`;
+  return `✅ ${command.productCode} 고객등록 완료\n${customerType} / ${command.adminName} / ${cutText}\n입력행: ${rowNumber}-${rowNumber + 1}`;
 }
 
 async function writeCountCommand(command) {
