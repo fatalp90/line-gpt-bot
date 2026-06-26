@@ -678,27 +678,68 @@ function hasCustomerRegisterContent(row) {
   return false;
 }
 
-function findNextCustomerWriteRow(values) {
-  // A:I, L:AP 기준으로 실제 고객 데이터가 있는 마지막 줄 바로 다음 줄을 사용한다.
-  // append API는 빈 양식/공백줄을 건너뛰거나 새 행을 삽입해 위치가 밀릴 수 있어 직접 범위 업데이트한다.
-  let lastContentIndex0 = 0; // 1행은 보통 헤더로 보고 최소 2행부터 입력
+function parseCustomerNo(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const no = Number(raw.replace(/,/g, ""));
+  if (!Number.isFinite(no) || no < 1) return null;
+  return Math.floor(no);
+}
 
-  for (let i = 1; i < values.length; i += 1) {
-    if (hasCustomerRegisterContent(values[i])) {
-      lastContentIndex0 = i;
-    }
-  }
+function isRegisteredCustomerTopRow(row) {
+  const no = parseCustomerNo(row?.[0]);
+  if (!no) return false;
 
-  return Math.max(2, lastContentIndex0 + 2);
+  // 고객 1명은 2행 구조이고, 실제 등록 여부는 A열 번호만으로 판단하면 안 된다.
+  // 시트에는 689~1000처럼 번호만 미리 깔려있는 빈 양식 행이 있으므로
+  // F열 상품코드가 있거나, 고객명/날짜/금액 중 실제 입력값이 있는 경우만 등록된 고객으로 본다.
+  const productName = String(row?.[5] || "").trim();
+  if (extractProductCode(productName)) return true;
+
+  const customerName = String(row?.[6] || "").trim();
+  const dateValue = String(row?.[7] || "").trim();
+  const loanValue = String(row?.[8] || "").trim();
+  return Boolean(customerName || dateValue || loanValue);
 }
 
 function getNextCustomerNumber(values) {
   let maxNo = 0;
   for (const row of values.slice(1)) {
-    const no = Number(String(row?.[0] || "").trim());
-    if (Number.isFinite(no)) maxNo = Math.max(maxNo, no);
+    if (!isRegisteredCustomerTopRow(row)) continue;
+    const no = parseCustomerNo(row?.[0]);
+    if (no) maxNo = Math.max(maxNo, no);
   }
   return maxNo + 1;
+}
+
+function findNextCustomerWriteRow(values, nextNo) {
+  // A열 번호 기준으로 입력 위치를 찾는다.
+  // 예: 688번까지 등록되어 있고 689번 양식 행이 이미 있으면 그 행에 덮어쓴다.
+  // 사용자가 700번까지 수동 등록했다면 다음 번호는 701이고, A열 701 행을 찾아 쓴다.
+  const targetNo = parseCustomerNo(nextNo);
+  if (targetNo) {
+    for (let i = 1; i < values.length; i += 1) {
+      const rowNo = parseCustomerNo(values[i]?.[0]);
+      if (rowNo === targetNo) return i + 1;
+    }
+  }
+
+  // 번호 양식이 아직 없으면 마지막 실제 등록 고객의 아래 2행 뒤에 쓴다.
+  let lastRegisteredRowNumber = 1;
+  for (let i = 1; i < values.length; i += 1) {
+    if (isRegisteredCustomerTopRow(values[i])) lastRegisteredRowNumber = i + 1;
+  }
+
+  return Math.max(2, lastRegisteredRowNumber + 2);
+}
+
+function makeWritableRow(row, width) {
+  const next = Array(width).fill("");
+  const source = row || [];
+  for (let i = 0; i < Math.min(width, source.length); i += 1) {
+    next[i] = source[i] ?? "";
+  }
+  return next;
 }
 
 async function getSpreadsheetSheetTitles(accessToken) {
@@ -2306,12 +2347,18 @@ async function writeCustomerRegistration(command) {
   const existingCustomer = findExistingProductCustomer(values, command.productCode);
   const customerType = existingCustomer.exists ? "기존" : "신규";
   const resolvedCustomerName = command.customerName || existingCustomer.customerName || "";
-  const rowNumber = findNextCustomerWriteRow(values);
   const nextNo = getNextCustomerNumber(values);
+  const rowNumber = findNextCustomerWriteRow(values, nextNo);
   const dateText = formatKoreaDateValue(today);
   const width = DATE_END_COLUMN_INDEX + 1;
-  const topRow = Array(width).fill("");
-  const bottomRow = Array(width).fill("");
+  const topRow = makeWritableRow(values[rowNumber - 1], width);
+  const bottomRow = makeWritableRow(values[rowNumber], width);
+
+  // 기존 양식의 J/K 수식 또는 값은 보존하고, 고객 입력 영역만 새 등록값으로 갱신한다.
+  for (let i = 0; i <= 8; i += 1) {
+    topRow[i] = "";
+    bottomRow[i] = "";
+  }
 
   topRow[0] = nextNo;
   topRow[1] = dateText;
