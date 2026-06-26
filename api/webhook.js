@@ -494,15 +494,18 @@ function placeRegistrationCell(topCells, bottomCells, todayInfo, dayOffsetFromSt
   const lastDayOfMonth = getDaysInMonth(todayInfo.year, todayInfo.month);
   const absoluteDay = todayInfo.day + dayOffsetFromStart;
 
+  // 고객등록 시트는 1고객 2행 구조다.
+  // 윗줄(topRows): 고객정보 + 다음달 1일부터 이어지는 카운트
+  // 아랫줄(bottomRows): 이번달 오늘 날짜부터 말일까지의 카운트
   if (absoluteDay <= lastDayOfMonth) {
     const index = absoluteDay - 1;
-    if (index >= 0 && index < topCells.length) topCells[index] = value;
+    if (index >= 0 && index < bottomCells.length) bottomCells[index] = value;
     return;
   }
 
   const nextMonthDay = absoluteDay - lastDayOfMonth;
   const index = nextMonthDay - 1;
-  if (index >= 0 && index < bottomCells.length) bottomCells[index] = value;
+  if (index >= 0 && index < topCells.length) topCells[index] = value;
 }
 
 function buildRegistrationRepaymentRows(command, todayInfo = null) {
@@ -551,6 +554,13 @@ function buildRegistrationRepaymentRows(command, todayInfo = null) {
 function formatKoreaDateValue(todayInfo = null) {
   const today = todayInfo || getKoreaToday();
   return `${today.year}-${String(today.month).padStart(2, "0")}-${String(today.day).padStart(2, "0")}`;
+}
+
+function formatKoreaYearMonthDropdownValue(todayInfo = null) {
+  const today = todayInfo || getKoreaToday();
+  const yy = String(today.year).slice(-2);
+  const mm = String(today.month).padStart(2, "0");
+  return `${yy}/${mm}`;
 }
 
 function isBlankCell(value) {
@@ -2350,6 +2360,7 @@ async function writeCustomerRegistration(command) {
   const nextNo = getNextCustomerNumber(values);
   const rowNumber = findNextCustomerWriteRow(values, nextNo);
   const dateText = formatKoreaDateValue(today);
+  const monthDropdownText = formatKoreaYearMonthDropdownValue(today);
   const width = DATE_END_COLUMN_INDEX + 1;
   const topRow = makeWritableRow(values[rowNumber - 1], width);
   const bottomRow = makeWritableRow(values[rowNumber], width);
@@ -2361,7 +2372,8 @@ async function writeCustomerRegistration(command) {
   }
 
   topRow[0] = nextNo;
-  topRow[1] = dateText;
+  // B열은 YY/MM 형식의 드롭다운 값을 사용한다. 예: 26/06
+  topRow[1] = monthDropdownText;
   topRow[2] = "진행중";
   topRow[3] = customerType;
   topRow[4] = command.adminName;
