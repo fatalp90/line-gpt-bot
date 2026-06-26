@@ -22,7 +22,8 @@ const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "")
   .filter(Boolean);
 
 const RECEIPT_OCR_MODEL = process.env.RECEIPT_OCR_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-4.1-mini";
-const RECEIPT_MIN_CONFIDENCE = Number(process.env.RECEIPT_MIN_CONFIDENCE || 0.6);
+const RECEIPT_MIN_CONFIDENCE = Number(process.env.RECEIPT_MIN_CONFIDENCE || 0.85);
+const RECEIPT_MIN_RECEIPT_SCORE = Number(process.env.RECEIPT_MIN_RECEIPT_SCORE || 80);
 const RECEIPT_EXPECTED_SENDER_NAME = process.env.RECEIPT_EXPECTED_SENDER_NAME || "CHAYAPONE";
 const RECEIPT_EXPECTED_ACCOUNT_NUMBER = process.env.RECEIPT_EXPECTED_ACCOUNT_NUMBER || "110551366954";
 const RECEIPT_APPROVER_USER_IDS = (process.env.RECEIPT_APPROVER_USER_IDS || "")
@@ -827,7 +828,7 @@ async function analyzeReceiptImageAmount(messageId) {
       messages: [
         {
           role: "system",
-          content: "너는 한국 은행/간편송금 이체 캡처 이미지 OCR 분석기다. 먼저 이미지가 실제 이체/송금/입금 완료 또는 확인 화면 캡처인지 판별한다. 일반 사진, 인물/풍경/상품 사진, 채팅 캡처, 광고 이미지, 문서 사진처럼 이체 캡처가 아니면 is_transfer_receipt=false로 둔다. 이체 캡처라면 실제 이체/송금/입금 금액, 이체 날짜/시간, 입금자명/받는분명/예금주명, 계좌번호를 각각 독립적으로 추출한다. 계좌번호에 하이픈이나 공백이 있어도 숫자만 기준으로 읽는다. 잔액, 수수료, 한도, 날짜 숫자는 금액으로 선택하지 마라. 흐리거나 화면에 없는 값은 null로 둔다. 반드시 JSON만 출력한다."
+          content: "너는 한국 은행/간편송금 이체 캡처 이미지 판별 및 OCR 분석기다. 가장 먼저 이미지가 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 매우 엄격하게 판별한다. 금액 숫자가 있어도 안내 포스터, 광고 이미지, 이벤트 배너, 연체/벌금/납부 안내 이미지, 채팅 캡처, 일반 스크린샷, 인물/풍경/상품/문서 사진이면 반드시 is_transfer_receipt=false, receipt_score는 낮게 둔다. 실제 금융앱 거래 완료/확인 화면이라는 증거가 강할 때만 is_transfer_receipt=true로 둔다. 이체 캡처라면 실제 이체/송금/입금 금액, 이체 날짜/시간, 입금자명/받는분명/예금주명, 계좌번호를 각각 독립적으로 추출한다. 계좌번호에 하이픈이나 공백이 있어도 숫자만 기준으로 읽는다. 잔액, 수수료, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 흐리거나 화면에 없는 값은 null로 둔다. 반드시 JSON만 출력한다."
         },
         {
           role: "user",
@@ -861,9 +862,10 @@ async function analyzeReceiptImageAmount(messageId) {
   const accountNumber = normalizeAccountNumber(parsed?.account_number);
   const transferDate = normalizeTransferDate(parsed?.transfer_date);
   const confidence = Number(parsed?.confidence ?? 0);
+  const receiptScore = Number(parsed?.receipt_score ?? 0);
 
-  if (!isTransferReceipt) {
-    // 일반 사진/이체와 무관한 이미지는 그룹방에 아무 안내도 하지 않는다.
+  if (!isTransferReceipt || !Number.isFinite(receiptScore) || receiptScore < RECEIPT_MIN_RECEIPT_SCORE) {
+    // 일반 사진/공지/광고/연체 안내/이체와 무관한 이미지는 그룹방에 아무 안내도 하지 않는다.
     return { ok: false, ignored: true };
   }
 
@@ -884,6 +886,8 @@ async function analyzeReceiptImageAmount(messageId) {
     accountNumber,
     transferDate,
     confidence,
+    receiptScore,
+    receiptKind: String(parsed?.receipt_kind || "").slice(0, 80),
     reason: String(parsed?.reason || "").slice(0, 80),
     imageHash: image.sha256
   };
