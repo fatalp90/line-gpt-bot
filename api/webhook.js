@@ -723,7 +723,7 @@ function convertWonToSheetInputValue(wonAmount) {
 
 function formatWon(amount) {
   const n = normalizeWonAmount(amount);
-  return n ? `${n.toLocaleString("ko-KR")}원` : "금액 확인 불가";
+  return n ? `${n.toLocaleString("ko-KR")}원` : "△ 금액 확인 불가";
 }
 
 function normalizeAccountNumber(value) {
@@ -739,14 +739,14 @@ function normalizeSenderName(value) {
   return clean || null;
 }
 
-function formatOptionalReceiptField(value, fallback = "확인 불가") {
+function formatOptionalReceiptField(value, fallback = "△ 확인 불가") {
   const clean = String(value ?? "").trim();
   return clean || fallback;
 }
 
 function maskAccountNumber(value) {
   const digits = normalizeAccountNumber(value);
-  if (!digits) return "확인 불가";
+  if (!digits) return "△ 확인 불가";
   if (digits.length <= 6) return digits;
   return `${digits.slice(0, 3)}-${digits.slice(3, -3)}-${digits.slice(-3)}`;
 }
@@ -759,10 +759,10 @@ function buildReceiptMatchText({ senderName, accountNumber }) {
 
   const nameStatus = actualName
     ? (expectedName && actualName.toUpperCase() === expectedName.toUpperCase() ? "✅ 일치" : "❌ 불일치")
-    : "❌ 확인 불가";
+    : "△ 확인 불가";
   const accountStatus = actualAccount
     ? (expectedAccount && actualAccount === expectedAccount ? "✅ 일치" : "❌ 불일치")
-    : "❌ 확인 불가";
+    : "△ 확인 불가";
 
   return `입금자명 확인 : ${nameStatus}\n계좌번호 확인 : ${accountStatus}`;
 }
@@ -792,7 +792,7 @@ function normalizeTransferDate(value) {
 
 function formatTransferDate(value) {
   const normalized = normalizeTransferDate(value);
-  return normalized || "확인 불가";
+  return normalized || "△ 확인 불가";
 }
 
 function normalizeReceiptKeyPart(value) {
@@ -822,9 +822,10 @@ function buildReceiptDuplicateText(item) {
   return "⚠️ 이미 분석된 동일한 이체사진/이체내역입니다. 기존 등록/취소 버튼을 사용해주세요.";
 }
 
-function buildReceiptAnalysisText({ code, amountWon, sheetValue, senderName, accountNumber, transferDate }) {
+function buildReceiptAnalysisText({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, includePrompt = true }) {
   const matchText = buildReceiptMatchText({ senderName, accountNumber });
-  return `📷 이체사진 분석완료\n\n고객코드 : ${code}\n이체날짜 : ${formatTransferDate(transferDate)}\n입금금액 : ${formatWon(amountWon)}\n입력값 : ${sheetValue}\n입금자명 : ${formatOptionalReceiptField(senderName)}\n계좌번호 : ${maskAccountNumber(accountNumber)}\n\n${matchText}\n\n등록하시겠습니까?`;
+  const promptText = includePrompt ? "\n\n등록하시겠습니까?" : "";
+  return `✅ 이체사진 분석완료\n\n고객코드 : ${code}\n이체날짜 : ${formatTransferDate(transferDate)}\n입금금액 : ${formatWon(amountWon)}\n입력값 : ${sheetValue}\n입금자명 : ${formatOptionalReceiptField(senderName)}\n계좌번호 : ${maskAccountNumber(accountNumber)}\n\n${matchText}${promptText}`;
 }
 
 function buildTextMessage(text, quickReply) {
@@ -925,35 +926,44 @@ async function analyzeReceiptImageAmount(messageId) {
   };
 }
 
-function buildReceiptConfirmMessage({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, receiptKey }) {
+function buildReceiptConfirmMessages({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, receiptKey }) {
   const dataBase = `receipt=1&key=${encodeURIComponent(receiptKey || "")}&code=${encodeURIComponent(code)}&value=${encodeURIComponent(sheetValue)}&won=${encodeURIComponent(amountWon)}&sender=${encodeURIComponent(senderName || "")}&account=${encodeURIComponent(accountNumber || "")}&date=${encodeURIComponent(transferDate || "")}`;
-  const quickReply = {
-    items: [
-      {
-        type: "action",
-        action: {
-          type: "postback",
-          label: "등록",
-          data: `${dataBase}&action=confirm`,
-          displayText: "등록"
-        }
-      },
-      {
-        type: "action",
-        action: {
-          type: "postback",
-          label: "취소",
-          data: `${dataBase}&action=cancel`,
-          displayText: "취소"
-        }
-      }
-    ]
-  };
 
-  return buildTextMessage(
-    buildReceiptAnalysisText({ code, amountWon, sheetValue, senderName, accountNumber, transferDate }),
-    quickReply
-  );
+  return [
+    buildTextMessage(
+      buildReceiptAnalysisText({
+        code,
+        amountWon,
+        sheetValue,
+        senderName,
+        accountNumber,
+        transferDate,
+        includePrompt: false
+      })
+    ),
+    {
+      type: "template",
+      altText: "등록하시겠습니까?",
+      template: {
+        type: "buttons",
+        text: "등록하시겠습니까?",
+        actions: [
+          {
+            type: "postback",
+            label: "등록",
+            data: `${dataBase}&action=confirm`,
+            displayText: "등록"
+          },
+          {
+            type: "postback",
+            label: "취소",
+            data: `${dataBase}&action=cancel`,
+            displayText: "취소"
+          }
+        ]
+      }
+    }
+  ];
 }
 
 function parseReceiptPostback(event) {
@@ -1026,8 +1036,9 @@ async function handleReceiptImageMessage(event) {
   receiptCacheSet(imageKey, cacheItem);
   receiptCacheSet(infoKey, cacheItem);
 
-  await replyToLineMessages(event.replyToken, [
-    buildReceiptConfirmMessage({
+  await replyToLineMessages(
+    event.replyToken,
+    buildReceiptConfirmMessages({
       code,
       amountWon: result.amountWon,
       sheetValue: result.sheetValue,
@@ -1036,7 +1047,7 @@ async function handleReceiptImageMessage(event) {
       transferDate: result.transferDate,
       receiptKey
     })
-  ]);
+  );
 }
 
 async function handleReceiptPostback(event, receipt) {
@@ -2245,7 +2256,7 @@ async function closeSheetCustomer(command) {
 
   const topRowNumber = matches[0].rowIndex0 + 1;
   const managerProfit = parseCreditNumber((values[topRowNumber] || [])[10]); // K열 하단: 관리자수익
-  const managerProfitText = managerProfit === null ? "△ 확인불가" : formatAmountValue(managerProfit);
+  const managerProfitText = managerProfit === null ? "확인불가" : formatAmountValue(managerProfit);
 
   await updateSheetCell(accessToken, topRowNumber, 2, "종료");
   await applyClosedCustomerStyle(accessToken, topRowNumber);
