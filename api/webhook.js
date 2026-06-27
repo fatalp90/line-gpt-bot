@@ -1115,8 +1115,8 @@ function buildReceiptDuplicateText(item) {
 
 function buildReceiptAnalysisText({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, includePrompt = true }) {
   const matchText = buildReceiptMatchText({ senderName, accountNumber });
-  const promptText = includePrompt ? "\n\n🔔 등록하시겠습니까?" : "";
-  return `🔔이체사진 분석완료\n\n고객코드 : ${code}\n이체날짜 : ${formatTransferDate(transferDate)}\n입금금액 : ${formatWon(amountWon)}\n입력값 : ${sheetValue}\n입금자명 : ${formatOptionalReceiptField(senderName)}\n계좌번호 : ${maskAccountNumber(accountNumber)}\n\n${matchText}${promptText}`;
+  const promptText = includePrompt ? "\n\n💛 등록하시겠습니까?" : "";
+  return `💛이체사진 분석완료\n\n고객코드 : ${code}\n이체날짜 : ${formatTransferDate(transferDate)}\n입금금액 : ${formatWon(amountWon)}\n입력값 : ${sheetValue}\n입금자명 : ${formatOptionalReceiptField(senderName)}\n계좌번호 : ${maskAccountNumber(accountNumber)}\n\n${matchText}${promptText}`;
 }
 
 function buildTextMessage(text, quickReply) {
@@ -1234,10 +1234,10 @@ function buildReceiptConfirmMessages({ code, amountWon, sheetValue, senderName, 
     ),
     {
       type: "template",
-      altText: "🔔 등록하시겠습니까?",
+      altText: "💛 등록하시겠습니까?",
       template: {
         type: "buttons",
-        text: "🔔 등록하시겠습니까?",
+        text: "💛 등록하시겠습니까?",
         actions: [
           {
             type: "postback",
@@ -2854,7 +2854,7 @@ function hasRepeatedWrapperEmoji(text) {
   // 20.10ได้มัยค่ะเลิกงานค่ะทำโอที
   // 는 차단하지 않음
 
-  return /[📌📣✅🔥💸✔️🔔⚠️📍🚨🆘❗‼️⛔]/u.test(clean) || /sos/i.test(clean);
+  return /[📌📣✅🔥💸✔️💛⚠️📍🚨🆘❗‼️⛔]/u.test(clean) || /sos/i.test(clean);
 }
 
 function hasDateLikePattern(text) {
