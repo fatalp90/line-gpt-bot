@@ -1234,10 +1234,10 @@ function buildReceiptConfirmMessages({ code, amountWon, sheetValue, senderName, 
     ),
     {
       type: "template",
-      altText: "등록하시겠습니까?",
+      altText: "🔔 등록하시겠습니까?",
       template: {
         type: "buttons",
-        text: "등록하시겠습니까?",
+        text: "🔔 등록하시겠습니까?",
         actions: [
           {
             type: "postback",
