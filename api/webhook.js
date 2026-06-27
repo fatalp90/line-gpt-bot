@@ -3389,7 +3389,18 @@ export default async function handler(req, res) {
 
   const events = req.body.events || [];
 
-  for (const event of events) {
+  // LINE에서 이미지 직후 스티커/이모티콘/텍스트가 빠르게 들어오면
+  // 같은 webhook 배치 안에 여러 이벤트가 섞여 들어올 수 있다.
+  // 입금 사진 분석은 후속 스티커 이벤트에 밀리거나 상태가 꼬이면 안 되므로
+  // 1) 이미지 이벤트를 항상 먼저 처리하고
+  // 2) 스티커/이모티콘 같은 비처리 메시지는 duplicate guard/상태 저장 전에 바로 무시한다.
+  const sortedEvents = [...events].sort((a, b) => {
+    const aImage = a?.type === "message" && a?.message?.type === "image" ? 0 : 1;
+    const bImage = b?.type === "message" && b?.message?.type === "image" ? 0 : 1;
+    return aImage - bImage;
+  });
+
+  for (const event of sortedEvents) {
     try {
       if (event.type === "postback") {
         const receipt = parseReceiptPostback(event);
@@ -3400,6 +3411,14 @@ export default async function handler(req, res) {
       }
 
       if (event.type !== "message") continue;
+
+      // 스티커/이모티콘/파일/영상 등은 입금 이미지 분석과 무관하므로
+      // message guard나 대화 상태에 영향을 주기 전에 즉시 무시한다.
+      // 이미지 바로 뒤에 스티커가 올라와도 이미지 분석 흐름을 건드리지 않게 하기 위한 처리.
+      if (!["image", "text"].includes(event.message?.type)) {
+        console.log(`[LINE WEBHOOK SKIP] unsupported messageType=${event.message?.type || "unknown"} messageId=${event.message?.id || "unknown"}`);
+        continue;
+      }
 
       // LINE이 webhook 응답 지연/오류로 같은 이벤트를 다시 보낸 경우는 처리하지 않는다.
       // 사용자가 같은 명령어를 새로 다시 보내면 message.id가 달라서 정상 실행된다.
