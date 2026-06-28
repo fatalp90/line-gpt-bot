@@ -34,6 +34,9 @@ const RECEIPT_APPROVER_USER_IDS = (process.env.RECEIPT_APPROVER_USER_IDS || "")
   .filter(Boolean);
 
 const RECEIPT_DUPLICATE_TTL_MS = Number(process.env.RECEIPT_DUPLICATE_TTL_MS || 24 * 60 * 60 * 1000);
+// 고객이 같은 송금내역을 위/아래 화면으로 나눠 2장 이상 연속 전송하는 경우
+// 등록 버튼이 여러 개 뜨지 않도록 짧은 시간 동안 같은 그룹/코드/금액은 하나만 허용한다.
+const RECEIPT_NEAR_DUPLICATE_TTL_MS = Number(process.env.RECEIPT_NEAR_DUPLICATE_TTL_MS || 5 * 60 * 1000);
 const receiptDuplicateCache = globalThis.__receiptDuplicateCache || new Map();
 globalThis.__receiptDuplicateCache = receiptDuplicateCache;
 
@@ -44,12 +47,12 @@ function cleanupReceiptDuplicateCache(now = Date.now()) {
   }
 }
 
-function receiptCacheSet(key, patch = {}) {
+function receiptCacheSet(key, patch = {}, ttlMs = RECEIPT_DUPLICATE_TTL_MS) {
   if (!key) return null;
   const now = Date.now();
   cleanupReceiptDuplicateCache(now);
   const prev = receiptDuplicateCache.get(key) || {};
-  const next = { ...prev, ...patch, updatedAt: now, expiresAt: now + RECEIPT_DUPLICATE_TTL_MS };
+  const next = { ...prev, ...patch, updatedAt: now, expiresAt: now + ttlMs };
   receiptDuplicateCache.set(key, next);
   return next;
 }
@@ -1107,6 +1110,26 @@ function buildReceiptImageKey({ sourceGroupId, imageHash }) {
   return crypto.createHash("sha256").update(`${sourceGroupId || ""}|${imageHash}`, "utf8").digest("hex");
 }
 
+function buildReceiptNearDuplicateKey({ sourceGroupId, code, amountWon, senderName, accountNumber }) {
+  const amount = normalizeWonAmount(amountWon) || "";
+  if (!sourceGroupId || !code || !amount) return "";
+
+  const expectedSender = normalizeSenderName(RECEIPT_EXPECTED_SENDER_NAME);
+  const expectedAccount = normalizeAccountNumber(RECEIPT_EXPECTED_ACCOUNT_NUMBER);
+  const actualSender = normalizeSenderName(senderName);
+  const actualAccount = normalizeAccountNumber(accountNumber);
+
+  const senderMatched = expectedSender && actualSender && actualSender.toUpperCase() === expectedSender.toUpperCase();
+  const accountMatched = expectedAccount && actualAccount && (
+    actualAccount.includes(expectedAccount) || expectedAccount.includes(actualAccount)
+  );
+
+  // 기대 수취인/계좌로 확인되는 입금사진이면, 같은 그룹/코드/금액만 같아도
+  // 같은 송금내역을 위/아래로 나눠 보낸 것으로 보고 버튼 중복 생성을 막는다.
+  const matchPart = senderMatched || accountMatched ? "expected" : `${actualSender || ""}|${actualAccount || ""}`;
+  return crypto.createHash("sha256").update(`${sourceGroupId}|${String(code).toUpperCase()}|${amount}|${matchPart}`, "utf8").digest("hex");
+}
+
 function buildReceiptDuplicateText(item) {
   if (item?.status === "confirmed") return "⚠️ 이미 등록 완료된 동일한 이체사진/이체내역입니다.";
   if (item?.status === "cancelled") return "⚠️ 이미 취소 처리된 동일한 이체사진/이체내역입니다.";
@@ -1129,8 +1152,8 @@ function buildTextMessage(text, quickReply) {
 
 async function callReceiptOcrOpenAI(image, retry = false) {
   const systemPrompt = retry
-    ? "너는 한국 은행/간편송금 이체 캡처 이미지 재검토 OCR 분석기다. 1차 분석에서 등록 버튼을 만들지 못한 이미지를 다시 확인한다. 이미지는 흐릿하거나, 흔들렸거나, 화면이 가로/세로/90도/180도/270도 회전되어 있을 수 있으므로 반드시 가능한 모든 방향으로 돌려 읽는다고 가정한다. 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 먼저 판별한다. 단, 금액이 보인다고 해서 안내 포스터, 광고, 이벤트, 연체/벌금/납부 안내, 채팅 캡처, 일반 스크린샷이면 is_transfer_receipt=false로 둔다. 실제 금융앱 거래 화면으로 보이고 송금 금액이 사람 눈으로 읽히면 confidence를 과도하게 낮추지 마라. 금액은 KRW 55,000 / KRW55,000 / 55,000 KRW / ₩55,000 / 55000 / 55.000처럼 붙거나 줄이 나뉘거나 구분자가 달라도 같은 금액으로 인식한다. 수수료 KRW 0, 잔액, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 계좌번호에 하이픈/공백이 있어도 숫자만 기준으로 읽는다. 수취인/계좌번호 중 하나라도 기대값과 강하게 일치하고 금액이 확실하면 등록 가능한 이체사진으로 판단한다. 반드시 JSON만 출력한다."
-    : "너는 한국 은행/간편송금 이체 캡처 이미지 판별 및 OCR 분석기다. 이미지는 세로/가로/90도/180도/270도 회전 상태일 수 있으므로 반드시 가능한 모든 방향으로 돌려 읽는다고 가정하고 분석한다. 가장 먼저 이미지가 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 엄격하게 판별한다. 금액 숫자가 있어도 안내 포스터, 광고 이미지, 이벤트 배너, 연체/벌금/납부 안내 이미지, 채팅 캡처, 일반 스크린샷, 인물/풍경/상품/문서 사진이면 반드시 is_transfer_receipt=false, receipt_score는 낮게 둔다. 실제 금융앱 거래 완료/확인 화면이라는 증거가 강할 때만 is_transfer_receipt=true로 둔다. 이체 캡처라면 실제 이체/송금/입금 금액, 이체 날짜/시간, 화면에 표시된 상대방 이름(입금자명/받는분명/수취인명/예금주명), 계좌번호를 각각 독립적으로 추출한다. KRW 55,000 / KRW55,000 / 55,000 KRW / ₩55,000 / 55000 처럼 붙어있거나 줄이 나뉜 금액도 같은 금액으로 인식한다. 수수료 KRW 0, 잔액, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 계좌번호에 하이픈이나 공백이 있어도 숫자만 기준으로 읽는다. 흐리거나 화면에 없는 값은 null로 둔다. 금액이 사람 눈으로 충분히 읽히면 confidence를 과도하게 낮추지 마라. 반드시 JSON만 출력한다.";
+    ? "너는 한국 은행/간편송금 이체 캡처 이미지 재검토 OCR 분석기다. 1차 분석에서 등록 버튼을 만들지 못한 이미지를 다시 확인한다. 이미지는 흐릿하거나, 흔들렸거나, 화면이 가로/세로/90도/180도/270도 회전되어 있을 수 있으므로 반드시 가능한 모든 방향으로 돌려 읽는다고 가정한다. 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 먼저 판별한다. 단, 금액이 보인다고 해서 안내 포스터, 광고, 이벤트, 연체/벌금/납부 안내, 채팅 캡처, 일반 스크린샷이면 is_transfer_receipt=false로 둔다. 실제 금융앱 거래 화면으로 보이고 송금 금액이 사람 눈으로 읽히면 confidence를 과도하게 낮추지 마라. 금액은 KRW 55,000 / KRW55,000 / 55,000 KRW / ₩55,000 / 55000 / 55.000처럼 붙거나 줄이 나뉘거나 구분자가 달라도 같은 금액으로 인식한다. 수수료 KRW 0, 잔액, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 계좌번호에 하이픈/공백이 있어도 숫자만 기준으로 읽는다. 수취인/계좌번호 중 하나라도 기대값과 강하게 일치하고 금액이 확실하면 등록 가능한 이체사진으로 판단한다. 한 이미지 안에 같은 송금내역의 상단/하단 화면이 나란히 붙어 있거나, 같은 송금내역이 여러 장 캡처로 보이더라도 하나의 이체로만 판단하고 가장 명확한 송금금액 1개만 amount_won에 넣는다. 반드시 JSON만 출력한다."
+    : "너는 한국 은행/간편송금 이체 캡처 이미지 판별 및 OCR 분석기다. 이미지는 세로/가로/90도/180도/270도 회전 상태일 수 있으므로 반드시 가능한 모든 방향으로 돌려 읽는다고 가정하고 분석한다. 가장 먼저 이미지가 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 엄격하게 판별한다. 금액 숫자가 있어도 안내 포스터, 광고 이미지, 이벤트 배너, 연체/벌금/납부 안내 이미지, 채팅 캡처, 일반 스크린샷, 인물/풍경/상품/문서 사진이면 반드시 is_transfer_receipt=false, receipt_score는 낮게 둔다. 실제 금융앱 거래 완료/확인 화면이라는 증거가 강할 때만 is_transfer_receipt=true로 둔다. 이체 캡처라면 실제 이체/송금/입금 금액, 이체 날짜/시간, 화면에 표시된 상대방 이름(입금자명/받는분명/수취인명/예금주명), 계좌번호를 각각 독립적으로 추출한다. KRW 55,000 / KRW55,000 / 55,000 KRW / ₩55,000 / 55000 처럼 붙어있거나 줄이 나뉜 금액도 같은 금액으로 인식한다. 수수료 KRW 0, 잔액, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 계좌번호에 하이픈이나 공백이 있어도 숫자만 기준으로 읽는다. 흐리거나 화면에 없는 값은 null로 둔다. 금액이 사람 눈으로 충분히 읽히면 confidence를 과도하게 낮추지 마라. 한 이미지 안에 같은 송금내역의 상단/하단 화면이 나란히 붙어 있거나, 같은 송금내역이 여러 장 캡처로 보이더라도 하나의 이체로만 판단하고 가장 명확한 송금금액 1개만 amount_won에 넣는다. 반드시 JSON만 출력한다.";
 
   const userPrompt = retry
     ? "같은 이미지를 한 번 더 재검토해줘. 1차에서 애매했더라도 실제 은행/간편송금 이체 완료 화면으로 보이고 실제 송금 금액이 읽히면 등록 버튼을 만들 수 있게 값을 추출해줘. 단, 일반 사진/공지/광고/연체 안내/채팅 캡처는 절대 통과시키지 마라. amount_won은 실제 송금/입금 금액만 넣고, 수수료/잔액/한도/날짜/연체료는 제외해줘. JSON 형식: {\"is_transfer_receipt\":true,\"amount_won\":60000,\"transfer_date\":\"2026-06-26 18:30\",\"sender_name\":\"CHAYAPONE\",\"account_number\":\"110551366954\",\"confidence\":0.82,\"receipt_score\":85,\"reason\":\"재검토 근거\"}"
@@ -1334,17 +1357,28 @@ async function handleReceiptImageMessage(event) {
     transferDate: result.transferDate
   });
 
-  const existing = receiptCacheGet(imageKey) || receiptCacheGet(infoKey);
+  const nearDuplicateKey = buildReceiptNearDuplicateKey({
+    sourceGroupId,
+    code,
+    amountWon: result.amountWon,
+    senderName: result.senderName,
+    accountNumber: result.accountNumber
+  });
+
+  const existing = receiptCacheGet(imageKey) || receiptCacheGet(infoKey) || receiptCacheGet(nearDuplicateKey);
   if (existing) {
+    // 같은 송금내역을 스크롤해서 위/아래 2장으로 보낸 경우에는
+    // 등록 버튼을 다시 만들지 않고 기존 버튼만 사용하게 한다.
     await replyToLine(event.replyToken, buildReceiptDuplicateText(existing));
     return;
   }
 
-  const receiptKey = infoKey || imageKey;
+  const receiptKey = infoKey || imageKey || nearDuplicateKey;
   const cacheItem = {
     status: "pending",
     imageKey,
     infoKey,
+    nearDuplicateKey,
     code,
     amountWon: result.amountWon,
     sheetValue: result.sheetValue,
@@ -1354,6 +1388,7 @@ async function handleReceiptImageMessage(event) {
   };
   receiptCacheSet(imageKey, cacheItem);
   receiptCacheSet(infoKey, cacheItem);
+  receiptCacheSet(nearDuplicateKey, cacheItem, RECEIPT_NEAR_DUPLICATE_TTL_MS);
 
   await replyToLineMessages(
     event.replyToken,
@@ -1389,6 +1424,7 @@ async function handleReceiptPostback(event, receipt) {
     if (cached) {
       receiptCacheSet(cached.imageKey, { ...cached, status });
       receiptCacheSet(cached.infoKey, { ...cached, status });
+      receiptCacheSet(cached.nearDuplicateKey, { ...cached, status });
     } else if (receipt.receiptKey) {
       receiptCacheSet(receipt.receiptKey, {
         status,
