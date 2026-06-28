@@ -1127,12 +1127,15 @@ function buildTextMessage(text, quickReply) {
   };
 }
 
-async function analyzeReceiptImageAmount(messageId) {
-  if (!process.env.OPENAI_API_KEY) {
-    return { ok: false, error: "⚠️ OPENAI_API_KEY 환경변수가 설정되지 않았습니다." };
-  }
+async function callReceiptOcrOpenAI(image, retry = false) {
+  const systemPrompt = retry
+    ? "너는 한국 은행/간편송금 이체 캡처 이미지 재검토 OCR 분석기다. 1차 분석에서 등록 버튼을 만들지 못한 이미지를 다시 확인한다. 이미지는 흐릿하거나, 흔들렸거나, 화면이 가로/세로/90도/180도/270도 회전되어 있을 수 있으므로 반드시 가능한 모든 방향으로 돌려 읽는다고 가정한다. 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 먼저 판별한다. 단, 금액이 보인다고 해서 안내 포스터, 광고, 이벤트, 연체/벌금/납부 안내, 채팅 캡처, 일반 스크린샷이면 is_transfer_receipt=false로 둔다. 실제 금융앱 거래 화면으로 보이고 송금 금액이 사람 눈으로 읽히면 confidence를 과도하게 낮추지 마라. 금액은 KRW 55,000 / KRW55,000 / 55,000 KRW / ₩55,000 / 55000 / 55.000처럼 붙거나 줄이 나뉘거나 구분자가 달라도 같은 금액으로 인식한다. 수수료 KRW 0, 잔액, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 계좌번호에 하이픈/공백이 있어도 숫자만 기준으로 읽는다. 수취인/계좌번호 중 하나라도 기대값과 강하게 일치하고 금액이 확실하면 등록 가능한 이체사진으로 판단한다. 반드시 JSON만 출력한다."
+    : "너는 한국 은행/간편송금 이체 캡처 이미지 판별 및 OCR 분석기다. 이미지는 세로/가로/90도/180도/270도 회전 상태일 수 있으므로 반드시 가능한 모든 방향으로 돌려 읽는다고 가정하고 분석한다. 가장 먼저 이미지가 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 엄격하게 판별한다. 금액 숫자가 있어도 안내 포스터, 광고 이미지, 이벤트 배너, 연체/벌금/납부 안내 이미지, 채팅 캡처, 일반 스크린샷, 인물/풍경/상품/문서 사진이면 반드시 is_transfer_receipt=false, receipt_score는 낮게 둔다. 실제 금융앱 거래 완료/확인 화면이라는 증거가 강할 때만 is_transfer_receipt=true로 둔다. 이체 캡처라면 실제 이체/송금/입금 금액, 이체 날짜/시간, 화면에 표시된 상대방 이름(입금자명/받는분명/수취인명/예금주명), 계좌번호를 각각 독립적으로 추출한다. KRW 55,000 / KRW55,000 / 55,000 KRW / ₩55,000 / 55000 처럼 붙어있거나 줄이 나뉜 금액도 같은 금액으로 인식한다. 수수료 KRW 0, 잔액, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 계좌번호에 하이픈이나 공백이 있어도 숫자만 기준으로 읽는다. 흐리거나 화면에 없는 값은 null로 둔다. 금액이 사람 눈으로 충분히 읽히면 confidence를 과도하게 낮추지 마라. 반드시 JSON만 출력한다.";
 
-  const image = await downloadLineMessageContent(messageId);
+  const userPrompt = retry
+    ? "같은 이미지를 한 번 더 재검토해줘. 1차에서 애매했더라도 실제 은행/간편송금 이체 완료 화면으로 보이고 실제 송금 금액이 읽히면 등록 버튼을 만들 수 있게 값을 추출해줘. 단, 일반 사진/공지/광고/연체 안내/채팅 캡처는 절대 통과시키지 마라. amount_won은 실제 송금/입금 금액만 넣고, 수수료/잔액/한도/날짜/연체료는 제외해줘. JSON 형식: {\"is_transfer_receipt\":true,\"amount_won\":60000,\"transfer_date\":\"2026-06-26 18:30\",\"sender_name\":\"CHAYAPONE\",\"account_number\":\"110551366954\",\"confidence\":0.82,\"receipt_score\":85,\"reason\":\"재검토 근거\"}"
+    : "이 이미지가 은행/간편송금 이체 캡처인지 먼저 판별하고, 맞을 때만 4가지를 분석해줘. 1) 실제 이체/송금/입금 금액 amount_won, 2) 이체 날짜/시간 transfer_date, 3) 화면에 표시된 상대방 이름(입금자명/받는분명/수취인명/예금주명) sender_name, 4) 계좌번호 account_number. 계좌번호는 하이픈이 있어도 숫자만 account_number에 넣어줘. 날짜는 가능하면 YYYY-MM-DD HH:mm 형식으로 넣어줘. 확실하지 않거나 화면에 없으면 null. 일반 사진이나 이체와 관련 없는 이미지면 is_transfer_receipt=false, amount_won/transfer_date/sender_name/account_number=null로 반환해줘. JSON 형식: {\"is_transfer_receipt\":true,\"amount_won\":60000,\"transfer_date\":\"2026-06-26 18:30\",\"sender_name\":\"CHAYAPONE\",\"account_number\":\"110551366954\",\"confidence\":0.95,\"reason\":\"짧은 근거\"}";
+
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -1142,17 +1145,11 @@ async function analyzeReceiptImageAmount(messageId) {
     body: JSON.stringify({
       model: RECEIPT_OCR_MODEL,
       messages: [
-        {
-          role: "system",
-          content: "너는 한국 은행/간편송금 이체 캡처 이미지 판별 및 OCR 분석기다. 이미지는 세로/가로/90도/180도/270도 회전 상태일 수 있으므로 반드시 가능한 모든 방향으로 돌려 읽는다고 가정하고 분석한다. 가장 먼저 이미지가 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 엄격하게 판별한다. 금액 숫자가 있어도 안내 포스터, 광고 이미지, 이벤트 배너, 연체/벌금/납부 안내 이미지, 채팅 캡처, 일반 스크린샷, 인물/풍경/상품/문서 사진이면 반드시 is_transfer_receipt=false, receipt_score는 낮게 둔다. 실제 금융앱 거래 완료/확인 화면이라는 증거가 강할 때만 is_transfer_receipt=true로 둔다. 이체 캡처라면 실제 이체/송금/입금 금액, 이체 날짜/시간, 화면에 표시된 상대방 이름(입금자명/받는분명/수취인명/예금주명), 계좌번호를 각각 독립적으로 추출한다. KRW 55,000 / KRW55,000 / 55,000 KRW / ₩55,000 / 55000 처럼 붙어있거나 줄이 나뉜 금액도 같은 금액으로 인식한다. 수수료 KRW 0, 잔액, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 계좌번호에 하이픈이나 공백이 있어도 숫자만 기준으로 읽는다. 흐리거나 화면에 없는 값은 null로 둔다. 금액이 사람 눈으로 충분히 읽히면 confidence를 과도하게 낮추지 마라. 반드시 JSON만 출력한다."
-        },
+        { role: "system", content: systemPrompt },
         {
           role: "user",
           content: [
-            {
-              type: "text",
-              text: "이 이미지가 은행/간편송금 이체 캡처인지 먼저 판별하고, 맞을 때만 4가지를 분석해줘. 1) 실제 이체/송금/입금 금액 amount_won, 2) 이체 날짜/시간 transfer_date, 3) 화면에 표시된 상대방 이름(입금자명/받는분명/수취인명/예금주명) sender_name, 4) 계좌번호 account_number. 계좌번호는 하이픈이 있어도 숫자만 account_number에 넣어줘. 날짜는 가능하면 YYYY-MM-DD HH:mm 형식으로 넣어줘. 확실하지 않거나 화면에 없으면 null. 일반 사진이나 이체와 관련 없는 이미지면 is_transfer_receipt=false, amount_won/transfer_date/sender_name/account_number=null로 반환해줘. JSON 형식: {\"is_transfer_receipt\":true,\"amount_won\":60000,\"transfer_date\":\"2026-06-26 18:30\",\"sender_name\":\"CHAYAPONE\",\"account_number\":\"110551366954\",\"confidence\":0.95,\"reason\":\"짧은 근거\"}"
-            },
+            { type: "text", text: userPrompt },
             {
               type: "image_url",
               image_url: { url: `data:${image.contentType};base64,${image.base64}` }
@@ -1184,24 +1181,28 @@ async function analyzeReceiptImageAmount(messageId) {
     : (Number.isFinite(confidence) ? confidence * 100 : 0);
 
   if (!isTransferReceipt || !Number.isFinite(receiptScore) || receiptScore < RECEIPT_MIN_RECEIPT_SCORE) {
-    // 일반 사진/공지/광고/연체 안내/이체와 무관한 이미지는 그룹방에 아무 안내도 하지 않는다.
-    return { ok: false, ignored: true };
+    return { ok: false, ignored: true, reason: retry ? "retry_not_receipt" : "not_receipt" };
   }
 
-  if (RECEIPT_REQUIRE_EXPECTED_SENDER && senderName && !isExpectedReceiptSender(senderName)) {
-    // 예: 내가 고객에게 보낸 송금 완료 캡처처럼 상대방 이름이 기대 입금자명과 다르면 반응하지 않는다.
+  const expectedAccountMatched = accountNumber && RECEIPT_EXPECTED_ACCOUNT_NUMBER
+    ? accountNumber.includes(RECEIPT_EXPECTED_ACCOUNT_NUMBER) || RECEIPT_EXPECTED_ACCOUNT_NUMBER.includes(accountNumber)
+    : false;
+
+  if (RECEIPT_REQUIRE_EXPECTED_SENDER && senderName && !isExpectedReceiptSender(senderName) && !expectedAccountMatched) {
     return { ok: false, ignored: true, reason: "unexpected_sender" };
   }
 
   const hasStrongReceiptClue = Boolean(senderName || accountNumber || transferDate);
   const effectiveConfidence = Number.isFinite(confidence) ? confidence : 0;
-  if (!amountWon || (effectiveConfidence < RECEIPT_MIN_CONFIDENCE && !hasStrongReceiptClue)) {
-    return { ok: false, error: "⚠️ 이체금액을 확실하게 확인하지 못했습니다. 직접 코드/금액으로 등록해주세요." };
+  const retryPassByClue = retry && amountWon && (expectedAccountMatched || isExpectedReceiptSender(senderName) || accountNumber || senderName);
+
+  if (!amountWon || (effectiveConfidence < RECEIPT_MIN_CONFIDENCE && !hasStrongReceiptClue && !retryPassByClue)) {
+    return { ok: false, error: "⚠️ 이체금액을 확실하게 확인하지 못했습니다. 직접 코드/금액으로 등록해주세요.", reason: retry ? "retry_amount_unclear" : "amount_unclear" };
   }
 
   const sheetValue = convertWonToSheetInputValue(amountWon);
   if (!sheetValue) {
-    return { ok: false, error: "⚠️ 이체금액 변환에 실패했습니다. 직접 코드/금액으로 등록해주세요." };
+    return { ok: false, error: "⚠️ 이체금액 변환에 실패했습니다. 직접 코드/금액으로 등록해주세요.", reason: "convert_failed" };
   }
 
   return {
@@ -1215,8 +1216,33 @@ async function analyzeReceiptImageAmount(messageId) {
     receiptScore,
     receiptKind: String(parsed?.receipt_kind || "").slice(0, 80),
     reason: String(parsed?.reason || "").slice(0, 80),
-    imageHash: image.sha256
+    imageHash: image.sha256,
+    retried: retry
   };
+}
+
+async function analyzeReceiptImageAmount(messageId) {
+  if (!process.env.OPENAI_API_KEY) {
+    return { ok: false, error: "⚠️ OPENAI_API_KEY 환경변수가 설정되지 않았습니다." };
+  }
+
+  const image = await downloadLineMessageContent(messageId);
+
+  let result = await callReceiptOcrOpenAI(image, false);
+
+  // 1차 분석에서 등록 버튼을 만들지 못하면 같은 이미지를 한 번 더 재검토한다.
+  // 흐릿함/회전/금액 표기 분리/KRW 표기 문제로 1차가 흔들리는 경우 등록 버튼 누락을 줄이기 위한 처리.
+  if (!result.ok) {
+    console.log(`[RECEIPT OCR RETRY] messageId=${messageId} reason=${result.reason || result.error || "unknown"}`);
+    const retryResult = await callReceiptOcrOpenAI(image, true);
+    if (retryResult.ok) {
+      result = retryResult;
+    } else if (!result.error && retryResult.error) {
+      result = retryResult;
+    }
+  }
+
+  return result;
 }
 
 function buildReceiptConfirmMessages({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, receiptKey }) {
