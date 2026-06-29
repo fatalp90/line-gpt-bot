@@ -34,9 +34,9 @@ const RECEIPT_APPROVER_USER_IDS = (process.env.RECEIPT_APPROVER_USER_IDS || "")
   .filter(Boolean);
 
 // 고객방에 뜨는 이체사진 등록 버튼을 관리자 확인방에도 함께 보내는 기능.
-// 기본은 LINE그룹매핑 시트에서 PP01 코드로 등록된 그룹방을 관리자 확인방으로 사용한다.
+// 기본은 LINE그룹매핑 시트에서 PP02 코드로 등록된 그룹방을 관리자 확인방으로 사용한다.
 // 필요 시 RECEIPT_APPROVAL_GROUP_ID에 그룹ID를 직접 넣거나, RECEIPT_APPROVAL_GROUP_CODE를 다른 코드로 바꿀 수 있다.
-const RECEIPT_APPROVAL_GROUP_CODE = String(process.env.RECEIPT_APPROVAL_GROUP_CODE || "PP01").trim().toUpperCase();
+const RECEIPT_APPROVAL_GROUP_CODE = String(process.env.RECEIPT_APPROVAL_GROUP_CODE || "PP02").trim().toUpperCase();
 const RECEIPT_APPROVAL_GROUP_ID = String(process.env.RECEIPT_APPROVAL_GROUP_ID || "").trim();
 const RECEIPT_PENDING_SHEET_NAME = process.env.RECEIPT_PENDING_SHEET_NAME || "LINE등록대기";
 
@@ -1366,7 +1366,7 @@ async function analyzeReceiptImageAmount(messageId) {
 
 function buildReceiptConfirmMessages({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, receiptKey, sourceGroupId, pendingId, approvalNotice = false }) {
   // LINE postback data는 길이 제한이 있어 입금자/계좌/날짜 같은 표시용 값은 버튼 data에서 제외한다.
-  // 특히 PP01방에서 누를 때 원본 고객방 sourceGroupId가 잘리지 않도록 필수값만 담는다.
+  // 특히 PP02방에서 누를 때 원본 고객방 sourceGroupId가 잘리지 않도록 필수값만 담는다.
   const dataBase = `receipt=1&pid=${encodeURIComponent(pendingId || "")}&key=${encodeURIComponent(receiptKey || "")}&code=${encodeURIComponent(code)}&value=${encodeURIComponent(sheetValue)}&won=${encodeURIComponent(amountWon)}&source=${encodeURIComponent(sourceGroupId || "")}`;
   const analysisText = buildReceiptAnalysisText({
     code,
@@ -1548,8 +1548,8 @@ async function handleReceiptImageMessage(event) {
 
   await replyToLineMessages(event.replyToken, confirmMessages);
 
-  // 고객방에 등록 버튼이 생성되면 PP01 관리자 확인방에도 같은 버튼을 함께 보낸다.
-  // PP01방에서 등록을 눌러도 같은 receiptKey를 처리하므로 고객방과 동일하게 등록된다.
+  // 고객방에 등록 버튼이 생성되면 PP02 관리자 확인방에도 같은 버튼을 함께 보낸다.
+  // PP02방에서 등록을 눌러도 같은 receiptKey를 처리하므로 고객방과 동일하게 등록된다.
   if (approvalGroupId && approvalGroupId !== sourceGroupId) {
     const approvalMessages = buildReceiptConfirmMessages({
       code,
@@ -1633,7 +1633,7 @@ ${receipt.code} / ${formatWon(receipt.won)} / 입력값 ${receipt.value}
     return;
   }
 
-  // 고객방과 PP01방에 같은 버튼이 떠 있어도 시트 반영은 한 번만 실행되게
+  // 고객방과 PP02방에 같은 버튼이 떠 있어도 시트 반영은 한 번만 실행되게
   // 먼저 processing 상태로 잠근 뒤 실제 시트 입력을 진행한다.
   await setReceiptStatus("processing");
 
@@ -1660,7 +1660,7 @@ ${receipt.code} / ${formatWon(receipt.won)} / 입력값 ${receipt.value}
   });
 
   if (!sourceGroupId) {
-    await replyToLine(event.replyToken, "⚠️ 등록은 완료됐지만 원본 고객방 ID를 찾지 못해 고객방 완료 알림을 보낼 수 없습니다. 최신 수정본으로 고객방에서 슬립을 다시 올린 뒤 PP01방 버튼을 눌러주세요.");
+    await replyToLine(event.replyToken, "⚠️ 등록은 완료됐지만 원본 고객방 ID를 찾지 못해 고객방 완료 알림을 보낼 수 없습니다. 최신 수정본으로 고객방에서 슬립을 다시 올린 뒤 PP02방 버튼을 눌러주세요.");
   } else if (pushFailures.length) {
     await replyToLine(event.replyToken, `⚠️ 등록은 완료됐지만 일부 방 완료 알림 발송에 실패했습니다.\n${pushFailures.join("\n")}`);
   }
@@ -1803,8 +1803,8 @@ function canApproveReceipt(event, receipt = null, cached = null, pending = null)
   const approverIds = RECEIPT_APPROVER_USER_IDS.length ? RECEIPT_APPROVER_USER_IDS : ADMIN_USER_IDS;
   if (approverIds.includes(userId)) return true;
 
-  // PP01 관리자 그룹방에 함께 푸시된 등록 버튼은,
-  // 개인 userId가 환경변수에 누락되어 있어도 해당 PP01방 안에서는 승인 가능하게 한다.
+  // PP02 관리자 그룹방에 함께 푸시된 등록 버튼은,
+  // 개인 userId가 환경변수에 누락되어 있어도 해당 PP02방 안에서는 승인 가능하게 한다.
   // 단, 고객방 버튼은 기존처럼 승인자 userId가 있어야 처리된다.
   const clickedGroupId = getLineSourceGroupId(event);
   const approvalGroupId = cached?.approvalGroupId || pending?.approvalGroupId || receipt?.approvalGroupId || "";
