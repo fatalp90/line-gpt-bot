@@ -1227,6 +1227,7 @@ function buildReceiptNearDuplicateKey({ sourceGroupId, code, amountWon, senderNa
 
 function buildReceiptDuplicateText(item) {
   if (item?.status === "confirmed") return "⚠️ 이미 등록 완료된 동일한 이체사진/이체내역입니다.";
+  if (item?.status === "processing") return "⚠️ 이미 등록 처리 중인 동일한 이체사진/이체내역입니다.";
   if (item?.status === "cancelled") return "⚠️ 이미 취소 처리된 동일한 이체사진/이체내역입니다.";
   return "⚠️ 이미 분석된 동일한 이체사진/이체내역입니다. 기존 등록/취소 버튼을 사용해주세요.";
 }
@@ -1571,11 +1572,6 @@ async function handleReceiptImageMessage(event) {
 }
 
 async function handleReceiptPostback(event, receipt) {
-  if (!canApproveReceipt(event)) {
-    await replyUnauthorized(event);
-    return;
-  }
-
   const accessToken = await getGoogleAccessToken();
   let cached = receiptCacheGet(receipt.pendingId) || receiptCacheGet(receipt.receiptKey);
   let pending = null;
@@ -1587,8 +1583,19 @@ async function handleReceiptPostback(event, receipt) {
       console.error(`[RECEIPT PENDING READ FAIL] pendingId=${receipt.pendingId} error=${err?.response?.data?.error?.message || err?.message || err}`);
     }
   }
+
+  const fallbackApprovalGroupId = cached?.approvalGroupId || pending?.approvalGroupId || await getReceiptApprovalGroupId(accessToken);
+  if (!canApproveReceipt(event, { ...receipt, approvalGroupId: fallbackApprovalGroupId }, cached, pending)) {
+    await replyUnauthorized(event);
+    return;
+  }
+
   if (cached?.status === "confirmed") {
     await replyToLine(event.replyToken, "⚠️ 이미 등록 완료된 요청입니다.");
+    return;
+  }
+  if (cached?.status === "processing") {
+    await replyToLine(event.replyToken, "⚠️ 이미 등록 처리 중인 요청입니다.");
     return;
   }
   if (cached?.status === "cancelled") {
@@ -1626,8 +1633,13 @@ ${receipt.code} / ${formatWon(receipt.won)} / 입력값 ${receipt.value}
     return;
   }
 
+  // 고객방과 PP01방에 같은 버튼이 떠 있어도 시트 반영은 한 번만 실행되게
+  // 먼저 processing 상태로 잠근 뒤 실제 시트 입력을 진행한다.
+  await setReceiptStatus("processing");
+
   const replyText = await writeSheetCommand({ code: receipt.code, value: receipt.value });
   if (!String(replyText || "").startsWith("✅")) {
+    await setReceiptStatus("pending");
     await replyToLine(event.replyToken, replyText);
     return;
   }
@@ -1786,10 +1798,17 @@ function isAdmin(event) {
   return ADMIN_USER_IDS.includes(userId);
 }
 
-function canApproveReceipt(event) {
+function canApproveReceipt(event, receipt = null, cached = null, pending = null) {
   const userId = getLineUserId(event);
   const approverIds = RECEIPT_APPROVER_USER_IDS.length ? RECEIPT_APPROVER_USER_IDS : ADMIN_USER_IDS;
-  return approverIds.includes(userId);
+  if (approverIds.includes(userId)) return true;
+
+  // PP01 관리자 그룹방에 함께 푸시된 등록 버튼은,
+  // 개인 userId가 환경변수에 누락되어 있어도 해당 PP01방 안에서는 승인 가능하게 한다.
+  // 단, 고객방 버튼은 기존처럼 승인자 userId가 있어야 처리된다.
+  const clickedGroupId = getLineSourceGroupId(event);
+  const approvalGroupId = cached?.approvalGroupId || pending?.approvalGroupId || receipt?.approvalGroupId || "";
+  return Boolean(clickedGroupId && approvalGroupId && clickedGroupId === approvalGroupId);
 }
 
 async function replyUnauthorized(event) {
