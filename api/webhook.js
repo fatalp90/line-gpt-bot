@@ -952,11 +952,16 @@ async function registerGroupCode(command, event) {
 }
 
 async function findMappedGroupId(accessToken, codeToFind) {
+  const targetCode = String(codeToFind || "").trim().toUpperCase();
   const values = await getGroupMapValues(accessToken);
-  for (let i = 1; i < values.length; i += 1) {
+
+  // LINE그룹매핑 시트에서 같은 코드가 여러 번 등록될 수 있으므로,
+  // 시트 아래쪽(가장 최근에 추가된 행)을 우선 사용한다.
+  // 예: PP01 등록을 다시 하면 맨 아래 새 행이 생기므로 최신 PP01방으로 push한다.
+  for (let i = values.length - 1; i >= 1; i -= 1) {
     const code = String(values[i]?.[0] || "").trim().toUpperCase();
     const groupId = String(values[i]?.[1] || "").trim();
-    if (code === codeToFind && groupId) return groupId;
+    if (code === targetCode && groupId) return groupId;
   }
   return null;
 }
