@@ -1040,12 +1040,17 @@ async function registerGroupCode(command, event) {
   return replyText;
 }
 
-async function findMappedGroupId(accessToken, codeToFind) {
+async function findMappedGroupId(accessToken, codeToFind, excludeGroupId = "") {
+  const targetCode = String(codeToFind || "").trim().toUpperCase();
+  const excluded = String(excludeGroupId || "").trim();
   const values = await getGroupMapValues(accessToken);
-  for (let i = 1; i < values.length; i += 1) {
+
+  // 같은 코드가 여러 번 등록된 경우, 아래쪽(최근 등록) 행을 우선 사용한다.
+  // PP01방을 재등록했거나 예전 groupId가 남아 있으면 위쪽 행으로 push가 실패할 수 있기 때문이다.
+  for (let i = values.length - 1; i >= 1; i -= 1) {
     const code = String(values[i]?.[0] || "").trim().toUpperCase();
     const groupId = String(values[i]?.[1] || "").trim();
-    if (code === codeToFind && groupId) return groupId;
+    if (code === targetCode && groupId && groupId !== excluded) return groupId;
   }
   return null;
 }
@@ -1426,10 +1431,10 @@ function parseReceiptPostback(event) {
   return { action, pendingId, receiptKey, code, value, won, senderName, accountNumber, transferDate, sourceGroupId };
 }
 
-async function getReceiptApprovalGroupId(accessToken) {
+async function getReceiptApprovalGroupId(accessToken, excludeGroupId = "") {
   if (RECEIPT_APPROVAL_GROUP_ID) return RECEIPT_APPROVAL_GROUP_ID;
   if (!RECEIPT_APPROVAL_GROUP_CODE) return null;
-  return await findMappedGroupId(accessToken, RECEIPT_APPROVAL_GROUP_CODE);
+  return await findMappedGroupId(accessToken, RECEIPT_APPROVAL_GROUP_CODE, excludeGroupId);
 }
 
 function getReceiptDoneText(receipt) {
@@ -1506,7 +1511,7 @@ async function handleReceiptImageMessage(event) {
   const receiptKey = infoKey || imageKey || nearDuplicateKey;
   const pendingId = makeReceiptPendingId(receiptKey, sourceGroupId);
   const accessGroupToken = accessToken;
-  const approvalGroupId = await getReceiptApprovalGroupId(accessGroupToken);
+  const approvalGroupId = await getReceiptApprovalGroupId(accessGroupToken, sourceGroupId);
 
   const cacheItem = {
     status: "pending",
@@ -1546,6 +1551,10 @@ async function handleReceiptImageMessage(event) {
   });
 
   await replyToLineMessages(event.replyToken, confirmMessages);
+
+  if (!approvalGroupId) {
+    console.error(`[RECEIPT APPROVAL GROUP NOT FOUND] code=${RECEIPT_APPROVAL_GROUP_CODE} sourceGroupId=${sourceGroupId}. LINE그룹매핑 시트에 ${RECEIPT_APPROVAL_GROUP_CODE} 등록 행이 있는지 확인하세요.`);
+  }
 
   // 고객방에 등록 버튼이 생성되면 PP01 관리자 확인방에도 같은 버튼을 함께 보낸다.
   // PP01방에서 등록을 눌러도 같은 receiptKey를 처리하므로 고객방과 동일하게 등록된다.
@@ -1636,7 +1645,7 @@ ${receipt.code} / ${formatWon(receipt.won)} / 입력값 ${receipt.value}
 
   const clickedGroupId = getLineSourceGroupId(event);
   const doneText = getReceiptDoneText(receipt);
-  const approvalGroupId = cached?.approvalGroupId || (SHEET_ID ? await getReceiptApprovalGroupId(accessToken) : null);
+  const approvalGroupId = cached?.approvalGroupId || (SHEET_ID ? await getReceiptApprovalGroupId(accessToken, clickedGroupId) : null);
   const sourceGroupId = cached?.sourceGroupId || pending?.sourceGroupId || receipt.sourceGroupId;
 
   await replyToLine(event.replyToken, doneText);
