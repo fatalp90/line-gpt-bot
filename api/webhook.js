@@ -33,6 +33,12 @@ const RECEIPT_APPROVER_USER_IDS = (process.env.RECEIPT_APPROVER_USER_IDS || "")
   .map(v => v.trim())
   .filter(Boolean);
 
+// 고객방에 뜨는 이체사진 등록 버튼을 관리자 확인방에도 함께 보내는 기능.
+// 기본은 LINE그룹매핑 시트에서 PP01 코드로 등록된 그룹방을 관리자 확인방으로 사용한다.
+// 필요 시 RECEIPT_APPROVAL_GROUP_ID에 그룹ID를 직접 넣거나, RECEIPT_APPROVAL_GROUP_CODE를 다른 코드로 바꿀 수 있다.
+const RECEIPT_APPROVAL_GROUP_CODE = String(process.env.RECEIPT_APPROVAL_GROUP_CODE || "PP01").trim().toUpperCase();
+const RECEIPT_APPROVAL_GROUP_ID = String(process.env.RECEIPT_APPROVAL_GROUP_ID || "").trim();
+
 const RECEIPT_DUPLICATE_TTL_MS = Number(process.env.RECEIPT_DUPLICATE_TTL_MS || 24 * 60 * 60 * 1000);
 // 고객이 같은 송금내역을 위/아래 화면으로 나눠 2장 이상 연속 전송하는 경우
 // 등록 버튼이 여러 개 뜨지 않도록 짧은 시간 동안 같은 그룹/코드/금액은 하나만 허용한다.
@@ -1268,21 +1274,22 @@ async function analyzeReceiptImageAmount(messageId) {
   return result;
 }
 
-function buildReceiptConfirmMessages({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, receiptKey }) {
-  const dataBase = `receipt=1&key=${encodeURIComponent(receiptKey || "")}&code=${encodeURIComponent(code)}&value=${encodeURIComponent(sheetValue)}&won=${encodeURIComponent(amountWon)}&sender=${encodeURIComponent(senderName || "")}&account=${encodeURIComponent(accountNumber || "")}&date=${encodeURIComponent(transferDate || "")}`;
+function buildReceiptConfirmMessages({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, receiptKey, sourceGroupId, approvalNotice = false }) {
+  const dataBase = `receipt=1&key=${encodeURIComponent(receiptKey || "")}&code=${encodeURIComponent(code)}&value=${encodeURIComponent(sheetValue)}&won=${encodeURIComponent(amountWon)}&sender=${encodeURIComponent(senderName || "")}&account=${encodeURIComponent(accountNumber || "")}&date=${encodeURIComponent(transferDate || "")}&source=${encodeURIComponent(sourceGroupId || "")}`;
+  const analysisText = buildReceiptAnalysisText({
+    code,
+    amountWon,
+    sheetValue,
+    senderName,
+    accountNumber,
+    transferDate,
+    includePrompt: false
+  });
 
   return [
-    buildTextMessage(
-      buildReceiptAnalysisText({
-        code,
-        amountWon,
-        sheetValue,
-        senderName,
-        accountNumber,
-        transferDate,
-        includePrompt: false
-      })
-    ),
+    buildTextMessage(approvalNotice ? `📥 ${RECEIPT_APPROVAL_GROUP_CODE} 등록 대기
+
+${analysisText}` : analysisText),
     {
       type: "template",
       altText: "💛 등록하시겠습니까?",
@@ -1320,10 +1327,37 @@ function parseReceiptPostback(event) {
   const senderName = normalizeSenderName(params.get("sender"));
   const accountNumber = normalizeAccountNumber(params.get("account"));
   const transferDate = normalizeTransferDate(params.get("date"));
+  const sourceGroupId = String(params.get("source") || "").trim();
   const action = String(params.get("action") || "").trim();
 
   if (!code || !value || !won || !["confirm", "cancel"].includes(action)) return null;
-  return { action, receiptKey, code, value, won, senderName, accountNumber, transferDate };
+  return { action, receiptKey, code, value, won, senderName, accountNumber, transferDate, sourceGroupId };
+}
+
+async function getReceiptApprovalGroupId(accessToken) {
+  if (RECEIPT_APPROVAL_GROUP_ID) return RECEIPT_APPROVAL_GROUP_ID;
+  if (!RECEIPT_APPROVAL_GROUP_CODE) return null;
+  return await findMappedGroupId(accessToken, RECEIPT_APPROVAL_GROUP_CODE);
+}
+
+function getReceiptDoneText(receipt) {
+  return `✅ ${receipt.code}/${receipt.value}
+등록 완료되었습니다.
+
+(${getKoreaDateTimeText()})`;
+}
+
+async function pushReceiptDoneToRelatedGroups({ clickedGroupId, sourceGroupId, approvalGroupId, text }) {
+  const targets = new Set([sourceGroupId, approvalGroupId].filter(Boolean));
+  if (clickedGroupId) targets.delete(clickedGroupId);
+
+  for (const targetGroupId of targets) {
+    try {
+      await pushToLine(targetGroupId, text);
+    } catch (err) {
+      console.error(`[RECEIPT DONE PUSH FAIL] targetGroupId=${targetGroupId} error=${getLinePushErrorMessage(err)}`);
+    }
+  }
 }
 
 async function handleReceiptImageMessage(event) {
@@ -1374,11 +1408,16 @@ async function handleReceiptImageMessage(event) {
   }
 
   const receiptKey = infoKey || imageKey || nearDuplicateKey;
+  const accessGroupToken = accessToken;
+  const approvalGroupId = await getReceiptApprovalGroupId(accessGroupToken);
+
   const cacheItem = {
     status: "pending",
     imageKey,
     infoKey,
     nearDuplicateKey,
+    sourceGroupId,
+    approvalGroupId,
     code,
     amountWon: result.amountWon,
     sheetValue: result.sheetValue,
@@ -1390,18 +1429,39 @@ async function handleReceiptImageMessage(event) {
   receiptCacheSet(infoKey, cacheItem);
   receiptCacheSet(nearDuplicateKey, cacheItem, RECEIPT_NEAR_DUPLICATE_TTL_MS);
 
-  await replyToLineMessages(
-    event.replyToken,
-    buildReceiptConfirmMessages({
+  const confirmMessages = buildReceiptConfirmMessages({
+    code,
+    amountWon: result.amountWon,
+    sheetValue: result.sheetValue,
+    senderName: result.senderName,
+    accountNumber: result.accountNumber,
+    transferDate: result.transferDate,
+    receiptKey,
+    sourceGroupId
+  });
+
+  await replyToLineMessages(event.replyToken, confirmMessages);
+
+  // 고객방에 등록 버튼이 생성되면 PP01 관리자 확인방에도 같은 버튼을 함께 보낸다.
+  // PP01방에서 등록을 눌러도 같은 receiptKey를 처리하므로 고객방과 동일하게 등록된다.
+  if (approvalGroupId && approvalGroupId !== sourceGroupId) {
+    const approvalMessages = buildReceiptConfirmMessages({
       code,
       amountWon: result.amountWon,
       sheetValue: result.sheetValue,
       senderName: result.senderName,
       accountNumber: result.accountNumber,
       transferDate: result.transferDate,
-      receiptKey
-    })
-  );
+      receiptKey,
+      sourceGroupId,
+      approvalNotice: true
+    });
+    try {
+      await pushToLineMessages(approvalGroupId, approvalMessages);
+    } catch (err) {
+      console.error(`[RECEIPT APPROVAL PUSH FAIL] code=${code} approvalGroupId=${approvalGroupId} error=${getLinePushErrorMessage(err)}`);
+    }
+  }
 }
 
 async function handleReceiptPostback(event, receipt) {
@@ -1428,6 +1488,7 @@ async function handleReceiptPostback(event, receipt) {
     } else if (receipt.receiptKey) {
       receiptCacheSet(receipt.receiptKey, {
         status,
+        sourceGroupId: receipt.sourceGroupId,
         code: receipt.code,
         amountWon: receipt.won,
         sheetValue: receipt.value
@@ -1451,10 +1512,19 @@ ${receipt.code} / ${formatWon(receipt.won)} / 입력값 ${receipt.value}
   }
 
   setReceiptStatus("confirmed");
-  await replyToLine(event.replyToken, `✅ ${receipt.code}/${receipt.value}
-등록 완료되었습니다.
 
-(${getKoreaDateTimeText()})`);
+  const clickedGroupId = getLineSourceGroupId(event);
+  const doneText = getReceiptDoneText(receipt);
+  const approvalGroupId = cached?.approvalGroupId || (SHEET_ID ? await getReceiptApprovalGroupId(await getGoogleAccessToken()) : null);
+  const sourceGroupId = cached?.sourceGroupId || receipt.sourceGroupId;
+
+  await replyToLine(event.replyToken, doneText);
+  await pushReceiptDoneToRelatedGroups({
+    clickedGroupId,
+    sourceGroupId,
+    approvalGroupId,
+    text: doneText
+  });
 }
 
 async function pushToLine(to, text, retryKey = null) {
@@ -1474,6 +1544,23 @@ async function pushToLine(to, text, retryKey = null) {
       to,
       messages: [{ type: "text", text }]
     },
+    { headers }
+  );
+}
+
+async function pushToLineMessages(to, messages, retryKey = null) {
+  const headers = {
+    Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
+    "Content-Type": "application/json"
+  };
+
+  if (retryKey) {
+    headers["X-Line-Retry-Key"] = retryKey;
+  }
+
+  return axios.post(
+    "https://api.line.me/v2/bot/message/push",
+    { to, messages },
     { headers }
   );
 }
