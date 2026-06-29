@@ -38,7 +38,6 @@ const RECEIPT_APPROVER_USER_IDS = (process.env.RECEIPT_APPROVER_USER_IDS || "")
 // 필요 시 RECEIPT_APPROVAL_GROUP_ID에 그룹ID를 직접 넣거나, RECEIPT_APPROVAL_GROUP_CODE를 다른 코드로 바꿀 수 있다.
 const RECEIPT_APPROVAL_GROUP_CODE = String(process.env.RECEIPT_APPROVAL_GROUP_CODE || "PP01").trim().toUpperCase();
 const RECEIPT_APPROVAL_GROUP_ID = String(process.env.RECEIPT_APPROVAL_GROUP_ID || "").trim();
-const RECEIPT_PENDING_SHEET_NAME = process.env.RECEIPT_PENDING_SHEET_NAME || "LINE등록대기";
 
 const RECEIPT_DUPLICATE_TTL_MS = Number(process.env.RECEIPT_DUPLICATE_TTL_MS || 24 * 60 * 60 * 1000);
 // 고객이 같은 송금내역을 위/아래 화면으로 나눠 2장 이상 연속 전송하는 경우
@@ -863,94 +862,6 @@ async function getGroupMapValues(accessToken) {
   return response.data.values || [];
 }
 
-async function ensureReceiptPendingSheet(accessToken) {
-  const titles = await getSpreadsheetSheetTitles(accessToken);
-  if (titles.includes(RECEIPT_PENDING_SHEET_NAME)) return;
-
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}:batchUpdate`;
-  await axios.post(
-    url,
-    { requests: [{ addSheet: { properties: { title: RECEIPT_PENDING_SHEET_NAME } } }] },
-    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
-  );
-
-  const headerRange = `'${escapeSheetName(RECEIPT_PENDING_SHEET_NAME)}'!A1:O1`;
-  const headerUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(headerRange)}?valueInputOption=USER_ENTERED`;
-  await axios.put(
-    headerUrl,
-    { range: headerRange, majorDimension: "ROWS", values: [[
-      "대기ID", "상태", "원본그룹ID", "승인그룹ID", "코드", "상환값", "금액원", "입금자명", "계좌번호", "이체일", "이미지키", "정보키", "유사키", "생성일시", "수정일시"
-    ]] },
-    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
-  );
-}
-
-function makeReceiptPendingId(receiptKey, sourceGroupId) {
-  const raw = `${receiptKey || ""}|${sourceGroupId || ""}|${Date.now()}|${Math.random()}`;
-  return crypto.createHash("sha256").update(raw, "utf8").digest("hex").slice(0, 20);
-}
-
-async function appendReceiptPending(accessToken, item) {
-  await ensureReceiptPendingSheet(accessToken);
-  const nowText = getKoreaDateTimeText();
-  const range = `'${escapeSheetName(RECEIPT_PENDING_SHEET_NAME)}'!A:O`;
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
-  await axios.post(
-    url,
-    { range, majorDimension: "ROWS", values: [[
-      item.pendingId || "", item.status || "pending", item.sourceGroupId || "", item.approvalGroupId || "", item.code || "", item.sheetValue || "", item.amountWon || "", item.senderName || "", item.accountNumber || "", item.transferDate || "", item.imageKey || "", item.infoKey || "", item.nearDuplicateKey || "", nowText, nowText
-    ]] },
-    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
-  );
-}
-
-function receiptPendingFromRow(row, rowNumber) {
-  return {
-    rowNumber,
-    pendingId: String(row?.[0] || "").trim(),
-    status: String(row?.[1] || "").trim() || "pending",
-    sourceGroupId: String(row?.[2] || "").trim(),
-    approvalGroupId: String(row?.[3] || "").trim(),
-    code: String(row?.[4] || "").trim().toUpperCase(),
-    sheetValue: String(row?.[5] || "").trim(),
-    amountWon: normalizeWonAmount(row?.[6]),
-    senderName: normalizeSenderName(row?.[7]),
-    accountNumber: normalizeAccountNumber(row?.[8]),
-    transferDate: normalizeTransferDate(row?.[9]),
-    imageKey: String(row?.[10] || "").trim(),
-    infoKey: String(row?.[11] || "").trim(),
-    nearDuplicateKey: String(row?.[12] || "").trim()
-  };
-}
-
-async function findReceiptPending(accessToken, pendingId) {
-  const id = String(pendingId || "").trim();
-  if (!id) return null;
-  await ensureReceiptPendingSheet(accessToken);
-  const range = `'${escapeSheetName(RECEIPT_PENDING_SHEET_NAME)}'!A:O`;
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`;
-  const response = await axios.get(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-  const values = response.data.values || [];
-  for (let i = values.length - 1; i >= 1; i -= 1) {
-    if (String(values[i]?.[0] || "").trim() === id) return receiptPendingFromRow(values[i], i + 1);
-  }
-  return null;
-}
-
-async function updateReceiptPendingStatus(accessToken, pending, status) {
-  if (!pending?.rowNumber) return;
-  const nowText = getKoreaDateTimeText();
-  const range = `'${escapeSheetName(RECEIPT_PENDING_SHEET_NAME)}'!B${pending.rowNumber}:O${pending.rowNumber}`;
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
-  await axios.put(
-    url,
-    { range, majorDimension: "ROWS", values: [[
-      status, pending.sourceGroupId || "", pending.approvalGroupId || "", pending.code || "", pending.sheetValue || "", pending.amountWon || "", pending.senderName || "", pending.accountNumber || "", pending.transferDate || "", pending.imageKey || "", pending.infoKey || "", pending.nearDuplicateKey || "", "", nowText
-    ]] },
-    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
-  );
-}
-
 async function registerGroupCode(command, event) {
   if (!SHEET_ID) {
     return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
@@ -1040,17 +951,12 @@ async function registerGroupCode(command, event) {
   return replyText;
 }
 
-async function findMappedGroupId(accessToken, codeToFind, excludeGroupId = "") {
-  const targetCode = String(codeToFind || "").trim().toUpperCase();
-  const excluded = String(excludeGroupId || "").trim();
+async function findMappedGroupId(accessToken, codeToFind) {
   const values = await getGroupMapValues(accessToken);
-
-  // 같은 코드가 여러 번 등록된 경우, 아래쪽(최근 등록) 행을 우선 사용한다.
-  // PP01방을 재등록했거나 예전 groupId가 남아 있으면 위쪽 행으로 push가 실패할 수 있기 때문이다.
-  for (let i = values.length - 1; i >= 1; i -= 1) {
+  for (let i = 1; i < values.length; i += 1) {
     const code = String(values[i]?.[0] || "").trim().toUpperCase();
     const groupId = String(values[i]?.[1] || "").trim();
-    if (code === targetCode && groupId && groupId !== excluded) return groupId;
+    if (code === codeToFind && groupId) return groupId;
   }
   return null;
 }
@@ -1368,10 +1274,11 @@ async function analyzeReceiptImageAmount(messageId) {
   return result;
 }
 
-function buildReceiptConfirmMessages({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, receiptKey, sourceGroupId, pendingId, approvalNotice = false }) {
-  // LINE postback data는 길이 제한이 있어 입금자/계좌/날짜 같은 표시용 값은 버튼 data에서 제외한다.
-  // 특히 PP01방에서 누를 때 원본 고객방 sourceGroupId가 잘리지 않도록 필수값만 담는다.
-  const dataBase = `receipt=1&pid=${encodeURIComponent(pendingId || "")}&key=${encodeURIComponent(receiptKey || "")}&code=${encodeURIComponent(code)}&value=${encodeURIComponent(sheetValue)}&won=${encodeURIComponent(amountWon)}&source=${encodeURIComponent(sourceGroupId || "")}`;
+function buildReceiptConfirmMessages({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, receiptKey, sourceGroupId, approvalNotice = false }) {
+  // PP01방에서 버튼을 눌렀을 때 고객방 완료 알림이 누락되지 않도록,
+  // LINE postback data 길이를 줄여 원본 고객방 sourceGroupId가 잘리지 않게 한다.
+  // 표시용 값(입금자/계좌/날짜)은 분석표 텍스트에만 넣고 버튼 data에서는 제외한다.
+  const dataBase = `receipt=1&key=${encodeURIComponent(receiptKey || "")}&code=${encodeURIComponent(code)}&value=${encodeURIComponent(sheetValue)}&won=${encodeURIComponent(amountWon)}&source=${encodeURIComponent(sourceGroupId || "")}`;
   const analysisText = buildReceiptAnalysisText({
     code,
     amountWon,
@@ -1416,7 +1323,6 @@ function parseReceiptPostback(event) {
   const params = new URLSearchParams(data);
   if (params.get("receipt") !== "1") return null;
 
-  const pendingId = String(params.get("pid") || "").trim();
   const receiptKey = String(params.get("key") || "").trim();
   const code = String(params.get("code") || "").trim().toUpperCase();
   const value = String(params.get("value") || "").trim();
@@ -1428,13 +1334,13 @@ function parseReceiptPostback(event) {
   const action = String(params.get("action") || "").trim();
 
   if (!code || !value || !won || !["confirm", "cancel"].includes(action)) return null;
-  return { action, pendingId, receiptKey, code, value, won, senderName, accountNumber, transferDate, sourceGroupId };
+  return { action, receiptKey, code, value, won, senderName, accountNumber, transferDate, sourceGroupId };
 }
 
-async function getReceiptApprovalGroupId(accessToken, excludeGroupId = "") {
+async function getReceiptApprovalGroupId(accessToken) {
   if (RECEIPT_APPROVAL_GROUP_ID) return RECEIPT_APPROVAL_GROUP_ID;
   if (!RECEIPT_APPROVAL_GROUP_CODE) return null;
-  return await findMappedGroupId(accessToken, RECEIPT_APPROVAL_GROUP_CODE, excludeGroupId);
+  return await findMappedGroupId(accessToken, RECEIPT_APPROVAL_GROUP_CODE);
 }
 
 function getReceiptDoneText(receipt) {
@@ -1448,17 +1354,13 @@ async function pushReceiptDoneToRelatedGroups({ clickedGroupId, sourceGroupId, a
   const targets = new Set([sourceGroupId, approvalGroupId].filter(Boolean));
   if (clickedGroupId) targets.delete(clickedGroupId);
 
-  const failures = [];
   for (const targetGroupId of targets) {
     try {
       await pushToLine(targetGroupId, text);
     } catch (err) {
-      const errorText = getLinePushErrorMessage(err);
-      failures.push(`${targetGroupId}: ${errorText}`);
-      console.error(`[RECEIPT DONE PUSH FAIL] targetGroupId=${targetGroupId} error=${errorText}`);
+      console.error(`[RECEIPT DONE PUSH FAIL] targetGroupId=${targetGroupId} error=${getLinePushErrorMessage(err)}`);
     }
   }
-  return failures;
 }
 
 async function handleReceiptImageMessage(event) {
@@ -1509,13 +1411,11 @@ async function handleReceiptImageMessage(event) {
   }
 
   const receiptKey = infoKey || imageKey || nearDuplicateKey;
-  const pendingId = makeReceiptPendingId(receiptKey, sourceGroupId);
   const accessGroupToken = accessToken;
-  const approvalGroupId = await getReceiptApprovalGroupId(accessGroupToken, sourceGroupId);
+  const approvalGroupId = await getReceiptApprovalGroupId(accessGroupToken);
 
   const cacheItem = {
     status: "pending",
-    pendingId,
     imageKey,
     infoKey,
     nearDuplicateKey,
@@ -1531,12 +1431,6 @@ async function handleReceiptImageMessage(event) {
   receiptCacheSet(imageKey, cacheItem);
   receiptCacheSet(infoKey, cacheItem);
   receiptCacheSet(nearDuplicateKey, cacheItem, RECEIPT_NEAR_DUPLICATE_TTL_MS);
-  receiptCacheSet(pendingId, cacheItem);
-  try {
-    await appendReceiptPending(accessToken, cacheItem);
-  } catch (err) {
-    console.error(`[RECEIPT PENDING APPEND FAIL] pendingId=${pendingId} error=${err?.response?.data?.error?.message || err?.message || err}`);
-  }
 
   const confirmMessages = buildReceiptConfirmMessages({
     code,
@@ -1546,15 +1440,10 @@ async function handleReceiptImageMessage(event) {
     accountNumber: result.accountNumber,
     transferDate: result.transferDate,
     receiptKey,
-    sourceGroupId,
-    pendingId
+    sourceGroupId
   });
 
   await replyToLineMessages(event.replyToken, confirmMessages);
-
-  if (!approvalGroupId) {
-    console.error(`[RECEIPT APPROVAL GROUP NOT FOUND] code=${RECEIPT_APPROVAL_GROUP_CODE} sourceGroupId=${sourceGroupId}. LINE그룹매핑 시트에 ${RECEIPT_APPROVAL_GROUP_CODE} 등록 행이 있는지 확인하세요.`);
-  }
 
   // 고객방에 등록 버튼이 생성되면 PP01 관리자 확인방에도 같은 버튼을 함께 보낸다.
   // PP01방에서 등록을 눌러도 같은 receiptKey를 처리하므로 고객방과 동일하게 등록된다.
@@ -1568,7 +1457,6 @@ async function handleReceiptImageMessage(event) {
       transferDate: result.transferDate,
       receiptKey,
       sourceGroupId,
-      pendingId,
       approvalNotice: true
     });
     try {
@@ -1585,17 +1473,7 @@ async function handleReceiptPostback(event, receipt) {
     return;
   }
 
-  const accessToken = await getGoogleAccessToken();
-  let cached = receiptCacheGet(receipt.pendingId) || receiptCacheGet(receipt.receiptKey);
-  let pending = null;
-  if (receipt.pendingId) {
-    try {
-      pending = await findReceiptPending(accessToken, receipt.pendingId);
-      if (pending) cached = { ...(cached || {}), ...pending };
-    } catch (err) {
-      console.error(`[RECEIPT PENDING READ FAIL] pendingId=${receipt.pendingId} error=${err?.response?.data?.error?.message || err?.message || err}`);
-    }
-  }
+  const cached = receiptCacheGet(receipt.receiptKey);
   if (cached?.status === "confirmed") {
     await replyToLine(event.replyToken, "⚠️ 이미 등록 완료된 요청입니다.");
     return;
@@ -1605,15 +1483,13 @@ async function handleReceiptPostback(event, receipt) {
     return;
   }
 
-  const setReceiptStatus = async status => {
+  const setReceiptStatus = status => {
     if (cached) {
       receiptCacheSet(cached.imageKey, { ...cached, status });
       receiptCacheSet(cached.infoKey, { ...cached, status });
       receiptCacheSet(cached.nearDuplicateKey, { ...cached, status });
-      receiptCacheSet(cached.pendingId || receipt.pendingId, { ...cached, status });
     } else if (receipt.receiptKey) {
       receiptCacheSet(receipt.receiptKey, {
-        pendingId: receipt.pendingId,
         status,
         sourceGroupId: receipt.sourceGroupId,
         code: receipt.code,
@@ -1621,13 +1497,10 @@ async function handleReceiptPostback(event, receipt) {
         sheetValue: receipt.value
       });
     }
-    if (pending) {
-      try { await updateReceiptPendingStatus(accessToken, pending, status); } catch (err) { console.error(`[RECEIPT PENDING STATUS FAIL] pendingId=${receipt.pendingId} error=${err?.response?.data?.error?.message || err?.message || err}`); }
-    }
   };
 
   if (receipt.action === "cancel") {
-    await setReceiptStatus("cancelled");
+    setReceiptStatus("cancelled");
     await replyToLine(event.replyToken, `취소되었습니다.
 ${receipt.code} / ${formatWon(receipt.won)} / 입력값 ${receipt.value}
 입금자명 : ${formatOptionalReceiptField(receipt.senderName)}
@@ -1641,26 +1514,20 @@ ${receipt.code} / ${formatWon(receipt.won)} / 입력값 ${receipt.value}
     return;
   }
 
-  await setReceiptStatus("confirmed");
+  setReceiptStatus("confirmed");
 
   const clickedGroupId = getLineSourceGroupId(event);
   const doneText = getReceiptDoneText(receipt);
-  const approvalGroupId = cached?.approvalGroupId || (SHEET_ID ? await getReceiptApprovalGroupId(accessToken, clickedGroupId) : null);
-  const sourceGroupId = cached?.sourceGroupId || pending?.sourceGroupId || receipt.sourceGroupId;
+  const approvalGroupId = cached?.approvalGroupId || (SHEET_ID ? await getReceiptApprovalGroupId(await getGoogleAccessToken()) : null);
+  const sourceGroupId = cached?.sourceGroupId || receipt.sourceGroupId;
 
   await replyToLine(event.replyToken, doneText);
-  const pushFailures = await pushReceiptDoneToRelatedGroups({
+  await pushReceiptDoneToRelatedGroups({
     clickedGroupId,
     sourceGroupId,
     approvalGroupId,
     text: doneText
   });
-
-  if (!sourceGroupId) {
-    await replyToLine(event.replyToken, "⚠️ 등록은 완료됐지만 원본 고객방 ID를 찾지 못해 고객방 완료 알림을 보낼 수 없습니다. 최신 수정본으로 고객방에서 슬립을 다시 올린 뒤 PP01방 버튼을 눌러주세요.");
-  } else if (pushFailures.length) {
-    await replyToLine(event.replyToken, `⚠️ 등록은 완료됐지만 일부 방 완료 알림 발송에 실패했습니다.\n${pushFailures.join("\n")}`);
-  }
 }
 
 async function pushToLine(to, text, retryKey = null) {
