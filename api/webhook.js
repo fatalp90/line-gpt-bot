@@ -1041,11 +1041,16 @@ async function registerGroupCode(command, event) {
 }
 
 async function findMappedGroupId(accessToken, codeToFind) {
+  const targetCode = String(codeToFind || "").trim().toUpperCase();
   const values = await getGroupMapValues(accessToken);
-  for (let i = 1; i < values.length; i += 1) {
+
+  // 같은 코드가 시트에 여러 번 남아 있으면 아래쪽(최근 등록)을 우선 사용한다.
+  // PP02방에 버튼이 안 들어오는 대부분의 원인이 예전 PP02 매핑행을 먼저 잡는 문제라서,
+  // 관리자 확인방도 최신 groupId 기준으로 찾도록 한다.
+  for (let i = values.length - 1; i >= 1; i -= 1) {
     const code = String(values[i]?.[0] || "").trim().toUpperCase();
     const groupId = String(values[i]?.[1] || "").trim();
-    if (code === codeToFind && groupId) return groupId;
+    if (code === targetCode && groupId) return groupId;
   }
   return null;
 }
@@ -1546,10 +1551,9 @@ async function handleReceiptImageMessage(event) {
     pendingId
   });
 
-  await replyToLineMessages(event.replyToken, confirmMessages);
-
   // 고객방에 등록 버튼이 생성되면 PP02 관리자 확인방에도 같은 버튼을 함께 보낸다.
   // PP02방에서 등록을 눌러도 같은 receiptKey를 처리하므로 고객방과 동일하게 등록된다.
+  let approvalPushError = "";
   if (approvalGroupId && approvalGroupId !== sourceGroupId) {
     const approvalMessages = buildReceiptConfirmMessages({
       code,
@@ -1566,9 +1570,20 @@ async function handleReceiptImageMessage(event) {
     try {
       await pushToLineMessages(approvalGroupId, approvalMessages);
     } catch (err) {
-      console.error(`[RECEIPT APPROVAL PUSH FAIL] code=${code} approvalGroupId=${approvalGroupId} error=${getLinePushErrorMessage(err)}`);
+      approvalPushError = getLinePushErrorMessage(err);
+      console.error(`[RECEIPT APPROVAL PUSH FAIL] code=${code} approvalGroupId=${approvalGroupId} error=${approvalPushError}`);
     }
   }
+
+  // PP02방 동시 푸시가 실패하면 고객방 답변에 실패 사유를 같이 표시해서
+  // 매핑 누락인지, LINE push 권한 문제인지 바로 확인할 수 있게 한다.
+  if (!approvalGroupId) {
+    confirmMessages.push(buildTextMessage(`⚠️ ${RECEIPT_APPROVAL_GROUP_CODE} 관리자방 groupId를 찾지 못해 관리자방 동시 푸시를 건너뛰었습니다. ${RECEIPT_APPROVAL_GROUP_CODE}방에서 그룹등록을 다시 해주세요.`));
+  } else if (approvalPushError) {
+    confirmMessages.push(buildTextMessage(`⚠️ ${RECEIPT_APPROVAL_GROUP_CODE} 관리자방 동시 푸시 실패: ${approvalPushError}`));
+  }
+
+  await replyToLineMessages(event.replyToken, confirmMessages);
 }
 
 async function handleReceiptPostback(event, receipt) {
