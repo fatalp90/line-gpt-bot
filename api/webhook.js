@@ -1275,7 +1275,9 @@ async function analyzeReceiptImageAmount(messageId) {
 }
 
 function buildReceiptConfirmMessages({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, receiptKey, sourceGroupId, approvalNotice = false }) {
-  const dataBase = `receipt=1&key=${encodeURIComponent(receiptKey || "")}&code=${encodeURIComponent(code)}&value=${encodeURIComponent(sheetValue)}&won=${encodeURIComponent(amountWon)}&sender=${encodeURIComponent(senderName || "")}&account=${encodeURIComponent(accountNumber || "")}&date=${encodeURIComponent(transferDate || "")}&source=${encodeURIComponent(sourceGroupId || "")}`;
+  // LINE postback data는 길이 제한이 있어 입금자/계좌/날짜 같은 표시용 값은 버튼 data에서 제외한다.
+  // 특히 PP01방에서 누를 때 원본 고객방 sourceGroupId가 잘리지 않도록 필수값만 담는다.
+  const dataBase = `receipt=1&key=${encodeURIComponent(receiptKey || "")}&code=${encodeURIComponent(code)}&value=${encodeURIComponent(sheetValue)}&won=${encodeURIComponent(amountWon)}&source=${encodeURIComponent(sourceGroupId || "")}`;
   const analysisText = buildReceiptAnalysisText({
     code,
     amountWon,
