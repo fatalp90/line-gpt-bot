@@ -1462,6 +1462,37 @@ async function pushReceiptDoneToRelatedGroups({ clickedGroupId, sourceGroupId, a
   return failures;
 }
 
+
+async function notifyReceiptAnalysisFailureToApprovalGroup({ accessToken, sourceGroupId, code, messageId, error }) {
+  try {
+    const approvalGroupId = await getReceiptApprovalGroupId(accessToken);
+    if (!approvalGroupId || approvalGroupId === sourceGroupId) {
+      console.warn(`[RECEIPT OCR FAIL NOTICE SKIP] approvalGroupId=${approvalGroupId || "not_found"} sourceGroupId=${sourceGroupId}`);
+      return;
+    }
+
+    const safeError = String(error || "분석 결과를 확정하지 못했습니다.").slice(0, 500);
+    const noticeText = [
+      "⚠️ 이체사진 분석 실패",
+      "",
+      `고객방 코드: ${code || "-"}`,
+      `고객방 ID: ${sourceGroupId || "-"}`,
+      `메시지 ID: ${messageId || "-"}`,
+      `사유: ${safeError}`,
+      "",
+      "1차 분석 후 재분석까지 실패해서 등록 버튼을 만들지 못했습니다.",
+      "고객방의 원본 이미지를 직접 확인해주세요.",
+      "",
+      `(${getKoreaDateTimeText()})`
+    ].join("\n");
+
+    await pushToLine(approvalGroupId, noticeText);
+  } catch (err) {
+    const errorText = getLinePushErrorMessage(err);
+    console.error(`[RECEIPT OCR FAIL NOTICE PUSH FAIL] code=${code || "-"} sourceGroupId=${sourceGroupId || "-"} error=${errorText}`);
+  }
+}
+
 async function handleReceiptImageMessage(event) {
   const sourceGroupId = getLineSourceGroupId(event);
   if (!sourceGroupId) return;
@@ -1480,7 +1511,14 @@ async function handleReceiptImageMessage(event) {
   const result = await analyzeReceiptImageAmount(event.message.id);
   if (!result.ok) {
     if (result.ignored) return;
-    await replyToLine(event.replyToken, result.error);
+    await notifyReceiptAnalysisFailureToApprovalGroup({
+      accessToken,
+      sourceGroupId,
+      code,
+      messageId: event.message.id,
+      error: result.error || result.reason
+    });
+    await replyToLine(event.replyToken, result.error || "⚠️ 이체사진 분석에 실패했습니다. 이미지를 다시 올려주세요.");
     return;
   }
 
