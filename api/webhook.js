@@ -78,6 +78,185 @@ const PROCESSED_MESSAGE_TTL_MS = Number(process.env.PROCESSED_MESSAGE_TTL_MS || 
 const processedMessageCache = globalThis.__lineProcessedMessageCache || new Map();
 globalThis.__lineProcessedMessageCache = processedMessageCache;
 
+
+// /im 고객 정보 입력 흐름 (웹폼 없이 LINE 채팅에서 한 항목씩 입력)
+const IM_SESSION_TTL_MS = Number(process.env.IM_SESSION_TTL_MS || 30 * 60 * 1000);
+const imSessionStore = globalThis.__lineImSessionStore || new Map();
+globalThis.__lineImSessionStore = imSessionStore;
+
+const IM_FIELDS = [
+  {
+    key: "address",
+    label: "1. address (ที่อยู่)",
+    prompt: "♥️Important checking♥️\n\nWrite in English or Korea\n(เขียนเป็นภาษาอังกฤษและภาษาไทย)\n\n1. address (ที่อยู่) ="
+  },
+  {
+    key: "passportName",
+    label: "2. Pass port full name (ชื่อในพาส)",
+    prompt: "2. Pass port full name (ชื่อในพาส) ="
+  },
+  {
+    key: "phoneNumber",
+    label: "4. phone number (เบอร์โทรศัพท์)",
+    prompt: "4. phone number (เบอร์โทรศัพท์) ="
+  },
+  {
+    key: "closePhoneNumber",
+    label: "5. Phone numbers of people close to you or friends (หมายเลขโทรศัพท์ของสมาชิกในครอบครัวหนึ่งคน)",
+    prompt: "5. Phone numbers of people close to you or friends\n(หมายเลขโทรศัพท์ของสมาชิกในครอบครัวหนึ่งคน) ="
+  },
+  {
+    key: "facebook",
+    label: "6. Facebook (ชื่อเฟสบุ๊ค)",
+    prompt: "6. Facebook (ชื่อเฟสบุ๊ค) ="
+  },
+  {
+    key: "lineId",
+    label: "7. LINE ID (ไลน์ไอดี)",
+    prompt: "7. LINE ID (ไลน์ไอดี) ="
+  },
+  {
+    key: "job",
+    label: "8. Job (งานที่ทำอยู่)",
+    prompt: "8. Job (งานที่ทำอยู่) ="
+  },
+  {
+    key: "accountNumber",
+    label: "9. Account number (เลขบัญชี+ชื่อธนาคาร)",
+    prompt: "9. Account number (เลขบัญชี+ชื่อธนาคาร) ="
+  }
+];
+
+function cleanupImSessions(now = Date.now()) {
+  for (const [key, session] of imSessionStore.entries()) {
+    if (Number(session?.expiresAt || 0) <= now) imSessionStore.delete(key);
+  }
+}
+
+function getImSessionKey(event) {
+  const source = event?.source || {};
+  const chatId = source.groupId || source.roomId || source.userId || "default";
+  const userId = source.userId || "unknownUser";
+  return `${chatId}:${userId}`;
+}
+
+function parseImCommand(text) {
+  return /^\/im$/i.test(normalizeText(text).replace(/\s+/g, ""));
+}
+
+function startImSession(event) {
+  const key = getImSessionKey(event);
+  const now = Date.now();
+  cleanupImSessions(now);
+  const session = { step: 0, answers: {}, startedAt: now, updatedAt: now, expiresAt: now + IM_SESSION_TTL_MS };
+  imSessionStore.set(key, session);
+  return session;
+}
+
+function getImSession(event) {
+  cleanupImSessions(Date.now());
+  return imSessionStore.get(getImSessionKey(event)) || null;
+}
+
+function saveImSession(event, session) {
+  const now = Date.now();
+  imSessionStore.set(getImSessionKey(event), { ...session, updatedAt: now, expiresAt: now + IM_SESSION_TTL_MS });
+}
+
+function clearImSession(event) {
+  imSessionStore.delete(getImSessionKey(event));
+}
+
+function buildImSummary(session) {
+  const lines = ["♥️Important checking♥️", "", "Write in English or Korea", "(เขียนเป็นภาษาอังกฤษและภาษาไทย)", ""];
+  for (const field of IM_FIELDS) {
+    lines.push(`${field.label} = ${session.answers?.[field.key] || ""}`);
+    lines.push("");
+  }
+  return lines.join("\n").trim();
+}
+
+function buildImConfirmMessages(session) {
+  return [
+    {
+      type: "text",
+      text: `입력 내용 확인해주세요.\n\n${buildImSummary(session)}`
+    },
+    {
+      type: "template",
+      altText: "입력내용 등록 확인",
+      template: {
+        type: "confirm",
+        text: "이 내용으로 등록할까요?",
+        actions: [
+          { type: "postback", label: "등록", data: "action=im_register" },
+          { type: "postback", label: "취소", data: "action=im_cancel" }
+        ]
+      }
+    }
+  ];
+}
+
+async function handleImTextMessage(event, text) {
+  if (parseImCommand(text)) {
+    const session = startImSession(event);
+    await replyToLine(event.replyToken, IM_FIELDS[session.step].prompt);
+    return true;
+  }
+
+  const session = getImSession(event);
+  if (!session) return false;
+
+  const clean = normalizeText(text);
+  if (/^(취소|cancel|ยกเลิก)$/i.test(clean)) {
+    clearImSession(event);
+    await replyToLine(event.replyToken, "입력폼을 취소했습니다.");
+    return true;
+  }
+
+  const field = IM_FIELDS[session.step];
+  if (!field) {
+    clearImSession(event);
+    return false;
+  }
+
+  session.answers[field.key] = clean;
+  session.step += 1;
+
+  if (session.step < IM_FIELDS.length) {
+    saveImSession(event, session);
+    await replyToLine(event.replyToken, IM_FIELDS[session.step].prompt);
+    return true;
+  }
+
+  saveImSession(event, session);
+  await replyToLineMessages(event.replyToken, buildImConfirmMessages(session));
+  return true;
+}
+
+async function handleImPostback(event) {
+  const data = String(event?.postback?.data || "");
+  if (data !== "action=im_register" && data !== "action=im_cancel") return false;
+
+  const session = getImSession(event);
+
+  if (data === "action=im_cancel") {
+    clearImSession(event);
+    await replyToLine(event.replyToken, "입력폼을 취소했습니다.");
+    return true;
+  }
+
+  if (!session) {
+    await replyToLine(event.replyToken, "⚠️ 입력 내용이 만료되었습니다. /im 으로 다시 시작해주세요.");
+    return true;
+  }
+
+  const summary = buildImSummary(session);
+  clearImSession(event);
+  await replyToLine(event.replyToken, `✅ 입력정보 등록 완료\n\n${summary}`);
+  return true;
+}
+
 function cleanupProcessedMessageCache(now = Date.now()) {
   for (const [key, expiresAt] of processedMessageCache.entries()) {
     if (expiresAt <= now) {
@@ -3751,6 +3930,10 @@ export default async function handler(req, res) {
   for (const event of sortedEvents) {
     try {
       if (event.type === "postback") {
+        if (await handleImPostback(event)) {
+          continue;
+        }
+
         const receipt = parseReceiptPostback(event);
         if (receipt) {
           await handleReceiptPostback(event, receipt);
@@ -3789,6 +3972,10 @@ export default async function handler(req, res) {
 
       const text = normalizeText(event.message.text);
       if (!text) continue;
+
+      if (await handleImTextMessage(event, text)) {
+        continue;
+      }
 
       if (parseMyIdCommand(text)) {
         const userId = getLineUserId(event);
