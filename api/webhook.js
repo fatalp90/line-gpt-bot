@@ -2326,14 +2326,10 @@ function canManageCheckOver(event) {
 function canApproveReceipt(event, receipt = null, cached = null, pending = null) {
   const userId = getLineUserId(event);
   const approverIds = RECEIPT_APPROVER_USER_IDS.length ? RECEIPT_APPROVER_USER_IDS : ADMIN_USER_IDS;
-  if (approverIds.includes(userId)) return true;
 
-  // PP01 관리자 그룹방에 함께 푸시된 등록 버튼은,
-  // 개인 userId가 환경변수에 누락되어 있어도 해당 PP01방 안에서는 승인 가능하게 한다.
-  // 단, 고객방 버튼은 기존처럼 승인자 userId가 있어야 처리된다.
-  const clickedGroupId = getLineSourceGroupId(event);
-  const approvalGroupId = cached?.approvalGroupId || pending?.approvalGroupId || receipt?.approvalGroupId || "";
-  return Boolean(clickedGroupId && approvalGroupId && clickedGroupId === approvalGroupId);
+  // 입금 슬립 등록/취소는 지정된 승인자만 가능하다.
+  // PP01 승인방에서 누르더라도 userId가 승인자 목록에 없으면 처리하지 않는다.
+  return approverIds.includes(userId);
 }
 
 async function replyUnauthorized(event) {
