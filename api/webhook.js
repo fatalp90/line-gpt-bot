@@ -78,185 +78,6 @@ const PROCESSED_MESSAGE_TTL_MS = Number(process.env.PROCESSED_MESSAGE_TTL_MS || 
 const processedMessageCache = globalThis.__lineProcessedMessageCache || new Map();
 globalThis.__lineProcessedMessageCache = processedMessageCache;
 
-
-// /im 고객 정보 입력 흐름 (웹폼 없이 LINE 채팅에서 한 항목씩 입력)
-const IM_SESSION_TTL_MS = Number(process.env.IM_SESSION_TTL_MS || 30 * 60 * 1000);
-const imSessionStore = globalThis.__lineImSessionStore || new Map();
-globalThis.__lineImSessionStore = imSessionStore;
-
-const IM_FIELDS = [
-  {
-    key: "address",
-    label: "1. address (ที่อยู่)",
-    prompt: "♥️Important checking♥️\n\nWrite in English or Korea\n(เขียนเป็นภาษาอังกฤษและภาษาไทย)\n\n1. address (ที่อยู่) ="
-  },
-  {
-    key: "passportName",
-    label: "2. Pass port full name (ชื่อในพาส)",
-    prompt: "2. Pass port full name (ชื่อในพาส) ="
-  },
-  {
-    key: "phoneNumber",
-    label: "4. phone number (เบอร์โทรศัพท์)",
-    prompt: "4. phone number (เบอร์โทรศัพท์) ="
-  },
-  {
-    key: "closePhoneNumber",
-    label: "5. Phone numbers of people close to you or friends (หมายเลขโทรศัพท์ของสมาชิกในครอบครัวหนึ่งคน)",
-    prompt: "5. Phone numbers of people close to you or friends\n(หมายเลขโทรศัพท์ของสมาชิกในครอบครัวหนึ่งคน) ="
-  },
-  {
-    key: "facebook",
-    label: "6. Facebook (ชื่อเฟสบุ๊ค)",
-    prompt: "6. Facebook (ชื่อเฟสบุ๊ค) ="
-  },
-  {
-    key: "lineId",
-    label: "7. LINE ID (ไลน์ไอดี)",
-    prompt: "7. LINE ID (ไลน์ไอดี) ="
-  },
-  {
-    key: "job",
-    label: "8. Job (งานที่ทำอยู่)",
-    prompt: "8. Job (งานที่ทำอยู่) ="
-  },
-  {
-    key: "accountNumber",
-    label: "9. Account number (เลขบัญชี+ชื่อธนาคาร)",
-    prompt: "9. Account number (เลขบัญชี+ชื่อธนาคาร) ="
-  }
-];
-
-function cleanupImSessions(now = Date.now()) {
-  for (const [key, session] of imSessionStore.entries()) {
-    if (Number(session?.expiresAt || 0) <= now) imSessionStore.delete(key);
-  }
-}
-
-function getImSessionKey(event) {
-  const source = event?.source || {};
-  const chatId = source.groupId || source.roomId || source.userId || "default";
-  const userId = source.userId || "unknownUser";
-  return `${chatId}:${userId}`;
-}
-
-function parseImCommand(text) {
-  return /^\/im$/i.test(normalizeText(text).replace(/\s+/g, ""));
-}
-
-function startImSession(event) {
-  const key = getImSessionKey(event);
-  const now = Date.now();
-  cleanupImSessions(now);
-  const session = { step: 0, answers: {}, startedAt: now, updatedAt: now, expiresAt: now + IM_SESSION_TTL_MS };
-  imSessionStore.set(key, session);
-  return session;
-}
-
-function getImSession(event) {
-  cleanupImSessions(Date.now());
-  return imSessionStore.get(getImSessionKey(event)) || null;
-}
-
-function saveImSession(event, session) {
-  const now = Date.now();
-  imSessionStore.set(getImSessionKey(event), { ...session, updatedAt: now, expiresAt: now + IM_SESSION_TTL_MS });
-}
-
-function clearImSession(event) {
-  imSessionStore.delete(getImSessionKey(event));
-}
-
-function buildImSummary(session) {
-  const lines = ["♥️Important checking♥️", "", "Write in English or Korea", "(เขียนเป็นภาษาอังกฤษและภาษาไทย)", ""];
-  for (const field of IM_FIELDS) {
-    lines.push(`${field.label} = ${session.answers?.[field.key] || ""}`);
-    lines.push("");
-  }
-  return lines.join("\n").trim();
-}
-
-function buildImConfirmMessages(session) {
-  return [
-    {
-      type: "text",
-      text: `입력 내용 확인해주세요.\n\n${buildImSummary(session)}`
-    },
-    {
-      type: "template",
-      altText: "입력내용 등록 확인",
-      template: {
-        type: "confirm",
-        text: "이 내용으로 등록할까요?",
-        actions: [
-          { type: "postback", label: "등록", data: "action=im_register" },
-          { type: "postback", label: "취소", data: "action=im_cancel" }
-        ]
-      }
-    }
-  ];
-}
-
-async function handleImTextMessage(event, text) {
-  if (parseImCommand(text)) {
-    const session = startImSession(event);
-    await replyToLine(event.replyToken, IM_FIELDS[session.step].prompt);
-    return true;
-  }
-
-  const session = getImSession(event);
-  if (!session) return false;
-
-  const clean = normalizeText(text);
-  if (/^(취소|cancel|ยกเลิก)$/i.test(clean)) {
-    clearImSession(event);
-    await replyToLine(event.replyToken, "입력폼을 취소했습니다.");
-    return true;
-  }
-
-  const field = IM_FIELDS[session.step];
-  if (!field) {
-    clearImSession(event);
-    return false;
-  }
-
-  session.answers[field.key] = clean;
-  session.step += 1;
-
-  if (session.step < IM_FIELDS.length) {
-    saveImSession(event, session);
-    await replyToLine(event.replyToken, IM_FIELDS[session.step].prompt);
-    return true;
-  }
-
-  saveImSession(event, session);
-  await replyToLineMessages(event.replyToken, buildImConfirmMessages(session));
-  return true;
-}
-
-async function handleImPostback(event) {
-  const data = String(event?.postback?.data || "");
-  if (data !== "action=im_register" && data !== "action=im_cancel") return false;
-
-  const session = getImSession(event);
-
-  if (data === "action=im_cancel") {
-    clearImSession(event);
-    await replyToLine(event.replyToken, "입력폼을 취소했습니다.");
-    return true;
-  }
-
-  if (!session) {
-    await replyToLine(event.replyToken, "⚠️ 입력 내용이 만료되었습니다. /im 으로 다시 시작해주세요.");
-    return true;
-  }
-
-  const summary = buildImSummary(session);
-  clearImSession(event);
-  await replyToLine(event.replyToken, `✅ 입력정보 등록 완료\n\n${summary}`);
-  return true;
-}
-
 function cleanupProcessedMessageCache(now = Date.now()) {
   for (const [key, expiresAt] of processedMessageCache.entries()) {
     if (expiresAt <= now) {
@@ -402,14 +223,35 @@ function parseCustomerRegisterCommand(text) {
   const parts = clean.split("/").map(part => part.trim()).filter(Boolean);
   if (parts.length < 4 || parts.length > 5) return null;
 
-  // 신규 고객등록 명령어:
-  // 관리자/상품코드(상환금)/대출금/선공제
-  // 예: 태태/PP01(130,000)/-30/5
+  // 고객등록 명령어:
+  // 기존: 관리자명/코드(상품금액)/대출금/공제
+  // 신규: 관리자명/코드(상품금액)/고객명/대출금/공제
+  // 예: 유나/KN56(130,000)/-30/5
+  // 예: 유나/KN56(130,000)/PORNTHIP KAMHANGPOL/-30/5
   const adminName = parts[0];
   const productName = parts[1];
-  const loanToken = parts[2];
-  const cutToken = parts[3] ?? "0";
-  const customerName = parts[4] ?? "";
+
+  let customerName = "";
+  let loanToken = "";
+  let cutToken = "";
+
+  if (parts.length === 4) {
+    loanToken = parts[2];
+    cutToken = parts[3] ?? "0";
+  } else {
+    // 5개 항목인 경우 기본은 신규 형식(고객명 포함)으로 처리한다.
+    // 혹시 예전식으로 관리자/상품/대출/공제/고객명을 입력한 경우도 감지해서 유지한다.
+    const thirdLooksLoan = /^-?\s*\d+(?:[.,]\d+)?\s*$/.test(String(parts[2] || ""));
+    if (thirdLooksLoan && /^-/.test(String(parts[2] || "").trim())) {
+      loanToken = parts[2];
+      cutToken = parts[3] ?? "0";
+      customerName = parts[4] ?? "";
+    } else {
+      customerName = parts[2] ?? "";
+      loanToken = parts[3];
+      cutToken = parts[4] ?? "0";
+    }
+  }
 
   // 기존 명령어와 충돌 방지: 첫 항목이 코드(KN56 등)면 고객등록으로 보지 않는다.
   if (/^[A-Za-z]{1,3}\d{1,3}$/i.test(adminName.replace(/\s+/g, ""))) return null;
@@ -423,12 +265,12 @@ function parseCustomerRegisterCommand(text) {
 
   const productCode = extractProductCode(productName);
   if (!productCode) {
-    return { error: "⚠️ 상품종류에는 코드가 포함되어야 합니다. 예: PP01(130,000)" };
+    return { error: "⚠️ 상품종류에는 코드가 포함되어야 합니다. 예: KN56(130,000)" };
   }
 
   const productAmount = extractProductAmount(productName);
   if (!productAmount) {
-    return { error: "⚠️ 상품종류에서 상환금액을 찾지 못했습니다. 예: PP01(130,000)" };
+    return { error: "⚠️ 상품종류에서 상품금액을 찾지 못했습니다. 예: KN56(130,000)" };
   }
 
   return {
@@ -441,6 +283,352 @@ function parseCustomerRegisterCommand(text) {
     productAmount
   };
 }
+
+
+const CHECK_OVER_MANAGER_MAP = {
+  OI: "오이",
+  O: "오이",
+  NA: "큰나비",
+  KN: "유나",
+  ZD: "메이",
+  ZHP: "메이2",
+  ZPP: "폼",
+  GT: "넙땅",
+  MU: "문아",
+  MO: "모나",
+  JB: "수연",
+  TT: "지아",
+  KO: "콥"
+};
+
+function getAdminNameByCustomerCode(code) {
+  const raw = String(code || "").trim().toUpperCase().replace(/\s+/g, "");
+  const match = raw.match(/^([A-Z]{1,3})\d{1,3}$/);
+  if (!match) return null;
+
+  const prefix = match[1];
+  return CHECK_OVER_MANAGER_MAP[prefix] || null;
+}
+
+function parseLooseNumberToken(value) {
+  const raw = String(value ?? "")
+    .replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/[，]/g, ",")
+    .replace(/[ㆍ·]/g, ".")
+    .replace(/원|won|บาท|krw|₩/gi, " ")
+    .trim();
+
+  if (!raw || raw === "-") return null;
+
+  const match = raw.match(/-?\d[\d,.\s]*/);
+  if (!match) return null;
+
+  let token = match[0].replace(/\s+/g, "");
+  if (!token) return null;
+
+  // 300.000처럼 천 단위 구분자로 마침표를 쓴 경우는 300000으로 보정한다.
+  // 32.7처럼 소수점 의미가 분명한 경우는 그대로 둔다.
+  if (/^-?\d{1,3}(?:\.\d{3})+$/.test(token) && !token.includes(",")) {
+    token = token.replace(/\./g, "");
+  }
+
+  token = token.replace(/,/g, "");
+  const n = Number(token);
+  return Number.isFinite(n) ? n : null;
+}
+
+function normalizeWonLikeAmount(value) {
+  const n = parseLooseNumberToken(value);
+  if (!Number.isFinite(n)) return null;
+  const abs = Math.abs(n);
+
+  // 30 / 32.7 / 5처럼 만원 단위로 축약한 값은 원화 금액으로 환산한다.
+  // 300000 / 327000 / 50000처럼 실제 원 단위로 쓴 값은 그대로 둔다.
+  if (abs > 0 && abs < 1000) {
+    return Math.round(abs * 10000);
+  }
+
+  return Math.round(abs);
+}
+
+function normalizeProductWonAmountFromCheckOver(value) {
+  const n = parseLooseNumberToken(value);
+  if (!Number.isFinite(n)) return null;
+  const abs = Math.abs(n);
+
+  // 상품금액은 변동값이므로 13 → 130,000 같은 추측 보정은 하지 않는다.
+  // 실제 금액(예: 130000 / 130,000 / 130.000)만 허용한다.
+  if (abs < 1000) return null;
+  return Math.round(abs);
+}
+
+function normalizeLoanUnitFromCheckOver(value) {
+  const n = parseLooseNumberToken(value);
+  if (!Number.isFinite(n)) return null;
+
+  const abs = Math.abs(n);
+  const unit = abs < 1000 ? abs : abs / 10000;
+  if (!Number.isFinite(unit) || unit <= 0) return null;
+
+  const normalized = -Number(formatAmountValue(unit));
+
+  // 체크오버 대출금은 300,000 / 400,000 / 500,000만 허용한다.
+  if (![ -30, -40, -50 ].includes(normalized)) return null;
+  return normalized;
+}
+
+function normalizeCutUnitFromCheckOver(value) {
+  const raw = String(value ?? "").trim();
+  if (raw === "-") return "-";
+
+  const n = parseLooseNumberToken(value);
+  if (!Number.isFinite(n)) return null;
+
+  const abs = Math.abs(n);
+  const unit = abs < 1000 ? abs : abs / 10000;
+  if (!Number.isFinite(unit) || unit < 0) return null;
+
+  return Number(formatAmountValue(unit));
+}
+
+function getCheckOverField(text, labels) {
+  const lines = String(text || "").split(/\r?\n/);
+  const labelList = labels.map(label => String(label).toLowerCase());
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const rawLine = String(lines[i] || "").trim();
+    const line = rawLine
+      .replace(/^[👉▶️💵👌🏻\-\*\s]+/u, "")
+      .trim();
+
+    const lower = line.toLowerCase();
+    const matchedLabel = labelList.find(label => lower.includes(label));
+    if (!matchedLabel) continue;
+
+    const colonIndex = line.search(/[:：=]/);
+    if (colonIndex >= 0) {
+      const value = line.slice(colonIndex + 1).trim();
+      if (value) return value;
+    }
+
+    const compact = line.replace(/\s+/g, "");
+    const matchedOriginal = labels.find(label => compact.toLowerCase().startsWith(String(label).toLowerCase().replace(/\s+/g, "")));
+    if (matchedOriginal) {
+      const value = line.slice(String(matchedOriginal).length).replace(/^[:：=]/, "").trim();
+      if (value) return value;
+    }
+
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const next = String(lines[j] || "").trim();
+      if (next) return next.replace(/^[👉▶️💵👌🏻\-\*\s]+/u, "").trim();
+    }
+  }
+
+  return "";
+}
+
+function buildCheckOverFormatGuide(missingLabels = []) {
+  const missingText = missingLabels.length
+    ? `누락/확인 필요 항목:
+${missingLabels.map(label => `- ${label}`).join("\n")}
+
+`
+    : "";
+
+  return [
+    "⚠️ Check Over 양식 확인 필요",
+    "",
+    missingText.trimEnd(),
+    missingText ? "" : null,
+    "예시)",
+    "",
+    "💵 BOSS 💵 👌🏻 Check Over",
+    "",
+    "👉 รหัส: KN56",
+    "👉 ยอดโอน: 300000",
+    "👉 ยอดสินค้า: 130000",
+    "👉 หัก: 50000",
+    "👉 ชื่อ: NAME",
+    "👉 เลขบัญชี / ธนาคาร: ACCOUNT NUMBER / BANK NAME",
+    "",
+    "대출금(ยอดโอน)은 300000 / 400000 / 500000만 가능합니다."
+  ].filter(item => item !== null && item !== "").join("\n");
+}
+
+function parseCheckOverCommand(text) {
+  const raw = normalizeText(text);
+  if (!/check\s*over/i.test(raw) && !/รหัส|ยอดโอน|ยอดสินค้า|หัก/.test(raw)) return null;
+
+  const code = getCheckOverField(raw, ["รหัส", "code", "코드"]).replace(/\s+/g, "").toUpperCase();
+  const transferRaw = getCheckOverField(raw, ["ยอดโอน", "total", "대출금", "송금"]);
+  const productRaw = getCheckOverField(raw, ["ยอดสินค้า", "สินค้า", "상품금액", "상품"]);
+  const cutRaw = getCheckOverField(raw, ["หัก", "cut", "공제"]);
+  const customerName = getCheckOverField(raw, ["ชื่อ", "name", "고객명", "이름"]);
+  const account = getCheckOverField(raw, ["เลขบัญชี / ธนาคาร", "เลขบัญชี", "account number", "account", "계좌"]);
+
+  if (!code && !transferRaw && !productRaw && !cutRaw && !customerName && !account) return null;
+
+  const missing = [];
+  if (!code) missing.push("รหัส");
+  if (!transferRaw) missing.push("ยอดโอน");
+  if (!productRaw) missing.push("ยอดสินค้า");
+  if (!cutRaw) missing.push("หัก");
+  if (!customerName) missing.push("ชื่อ");
+  if (!account) missing.push("เลขบัญชี / ธนาคาร");
+  if (missing.length) return { error: buildCheckOverFormatGuide(missing) };
+
+  if (!/^[A-Z]{1,3}\d{1,3}$/.test(code)) {
+    return { error: `❌ Check Over 코드 형식이 올바르지 않습니다. 예: KN56\n\n${buildCheckOverFormatGuide(["รหัส"])}` };
+  }
+
+  const adminName = getAdminNameByCustomerCode(code);
+  if (!adminName) {
+    return { error: `❌ 관리자 코드(${code.replace(/\d+$/, "")})를 찾지 못했습니다. 관리자 코드 매핑을 확인해주세요.` };
+  }
+
+  const productAmount = normalizeProductWonAmountFromCheckOver(productRaw);
+  if (!productAmount) {
+    return { error: `❌ 상품금액(ยอดสินค้า)을 찾지 못했습니다. 실제 금액으로 입력해주세요. 예: 130000 또는 130,000\n\n${buildCheckOverFormatGuide(["ยอดสินค้า"])}` };
+  }
+
+  const loanAmount = normalizeLoanUnitFromCheckOver(transferRaw);
+  if (!Number.isFinite(loanAmount) || loanAmount >= 0) {
+    return { error: `❌ 대출금/송금액(ยอดโอน)을 확인해주세요.\n허용되는 대출금은 300,000 / 400,000 / 500,000원만 가능합니다.\n예: 300000, 300,000, 30, -30\n\n${buildCheckOverFormatGuide(["ยอดโอน"])}` };
+  }
+
+  const cut = normalizeCutUnitFromCheckOver(cutRaw);
+  if (!(cut === "-" || Number.isFinite(cut))) {
+    return { error: `❌ 공제금액(หัก)을 찾지 못했습니다. 예: 50000 또는 5\n\n${buildCheckOverFormatGuide(["หัก"])}` };
+  }
+
+  const productName = `${code}(${productAmount.toLocaleString("ko-KR")})`;
+
+  return {
+    source: "checkover",
+    adminName,
+    productName,
+    productCode: code,
+    customerName,
+    account,
+    loanAmount,
+    cut,
+    productAmount,
+    raw: {
+      transferRaw,
+      productRaw,
+      cutRaw
+    }
+  };
+}
+
+function buildCheckOverAnalysisText(command) {
+  return [
+    "✅ Check Over 확인",
+    "",
+    `관리자 : ${command.adminName}`,
+    `코드 : ${command.productCode}`,
+    `고객명 : ${command.customerName || "-"}`,
+    `상품금액 : ${command.productAmount.toLocaleString("ko-KR")}`,
+    `대출금 : ${formatAmountValue(command.loanAmount)}`,
+    `공제 : ${command.cut === "-" ? "-" : formatAmountValue(command.cut)}`,
+    "",
+    "등록하시겠습니까?"
+  ].join("\n");
+}
+
+function buildCheckOverConfirmMessages(command) {
+  const params = new URLSearchParams();
+  params.set("checkover", "1");
+  params.set("action", "confirm");
+  params.set("admin", command.adminName);
+  params.set("code", command.productCode);
+  params.set("productAmount", String(command.productAmount));
+  params.set("customerName", command.customerName || "");
+  params.set("loanAmount", String(command.loanAmount));
+  params.set("cut", String(command.cut));
+
+  const cancelParams = new URLSearchParams(params);
+  cancelParams.set("action", "cancel");
+
+  return [
+    buildTextMessage(buildCheckOverAnalysisText(command)),
+    {
+      type: "template",
+      altText: "Check Over 등록하시겠습니까?",
+      template: {
+        type: "buttons",
+        text: `${command.productCode}(${command.productAmount.toLocaleString("ko-KR")}) 등록하시겠습니까?`,
+        actions: [
+          {
+            type: "postback",
+            label: "등록",
+            data: params.toString(),
+            displayText: "등록"
+          },
+          {
+            type: "postback",
+            label: "취소",
+            data: cancelParams.toString(),
+            displayText: "취소"
+          }
+        ]
+      }
+    }
+  ];
+}
+
+function parseCheckOverPostback(event) {
+  const data = String(event?.postback?.data || "");
+  const params = new URLSearchParams(data);
+  if (params.get("checkover") !== "1") return null;
+
+  const action = String(params.get("action") || "").trim();
+  if (!["confirm", "cancel"].includes(action)) return null;
+
+  const code = String(params.get("code") || "").trim().toUpperCase();
+  const adminName = String(params.get("admin") || "").trim();
+  const productAmount = Number(params.get("productAmount"));
+  const customerName = String(params.get("customerName") || "").trim();
+  const loanAmount = Number(params.get("loanAmount"));
+  const cutToken = String(params.get("cut") || "").trim();
+  const cut = cutToken === "-" ? "-" : Number(cutToken);
+
+  if (!code || !adminName || !Number.isFinite(productAmount) || !Number.isFinite(loanAmount) || !(cut === "-" || Number.isFinite(cut))) {
+    return { action, error: "⚠️ Check Over 등록 데이터가 올바르지 않습니다. 다시 올려주세요." };
+  }
+
+  return {
+    action,
+    adminName,
+    productName: `${code}(${productAmount.toLocaleString("ko-KR")})`,
+    productCode: code,
+    customerName,
+    loanAmount,
+    cut,
+    productAmount
+  };
+}
+
+async function handleCheckOverPostback(event, checkover) {
+  if (checkover.error) {
+    await replyToLine(event.replyToken, checkover.error);
+    return;
+  }
+
+  if (!isAdmin(event)) {
+    await replyUnauthorized(event);
+    return;
+  }
+
+  if (checkover.action === "cancel") {
+    await replyToLine(event.replyToken, `취소되었습니다.\n${checkover.productCode || ""}`);
+    return;
+  }
+
+  const reply = await writeCustomerRegistration(checkover);
+  await replyToLine(event.replyToken, reply);
+}
+
 
 function extractProductCode(productName) {
   const match = String(productName || "").match(/([A-Za-z]{1,3}\d{1,3})/);
@@ -555,21 +743,25 @@ function parseNumericRequiredValue(value, label) {
 }
 
 function getCustomerRegisterFormatGuide() {
-  return "형식\n관리자명/코드(상품명)/대출금액/공제금액\n\n예시\n태태/PP01(130,000)/-30/5";
+  return "형식\n관리자명/코드(상품금액)/대출금액/공제금액\n관리자명/코드(상품금액)/고객명/대출금액/공제금액\n\n예시\n유나/KN56(130,000)/-30/5\n유나/KN56(130,000)/PORNTHIP KAMHANGPOL/-30/5";
 }
 
 function parseLoanRequiredValue(value) {
   const raw = String(value ?? "").trim();
-
-  // 고객등록 명령어의 대출금액은 반드시 -30, -40, -50만 허용한다.
-  // 30, 40, 50, -03, -300000 같은 값은 오등록 방지를 위해 거절한다.
-  if (!["-30", "-40", "-50"].includes(raw)) {
+  const n = Number(raw.replace(/,/g, "").replace(/[ㆍ·]/g, "."));
+  if (!Number.isFinite(n)) {
     return {
-      error: `❌ 대출금액은 -30, -40, -50만 사용할 수 있습니다.\n\n${getCustomerRegisterFormatGuide()}`
+      error: `❌ 대출금액은 음수 숫자로 입력해주세요. 예: -30 또는 -32.7\n\n${getCustomerRegisterFormatGuide()}`
     };
   }
 
-  return { value: Number(raw) };
+  if (n >= 0) {
+    return {
+      error: `❌ 대출금액은 -30처럼 마이너스(-)로 입력해주세요.\n\n${getCustomerRegisterFormatGuide()}`
+    };
+  }
+
+  return { value: n };
 }
 
 function parseCutRequiredValue(value) {
@@ -3930,7 +4122,9 @@ export default async function handler(req, res) {
   for (const event of sortedEvents) {
     try {
       if (event.type === "postback") {
-        if (await handleImPostback(event)) {
+        const checkover = parseCheckOverPostback(event);
+        if (checkover) {
+          await handleCheckOverPostback(event, checkover);
           continue;
         }
 
@@ -3972,10 +4166,6 @@ export default async function handler(req, res) {
 
       const text = normalizeText(event.message.text);
       if (!text) continue;
-
-      if (await handleImTextMessage(event, text)) {
-        continue;
-      }
 
       if (parseMyIdCommand(text)) {
         const userId = getLineUserId(event);
@@ -4029,6 +4219,22 @@ export default async function handler(req, res) {
 
         const creditReply = await buildCustomerCreditReport(creditCheckCommand);
         await replyToLine(event.replyToken, creditReply);
+        continue;
+      }
+
+      const checkOverCommand = parseCheckOverCommand(text);
+      if (checkOverCommand) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
+        if (checkOverCommand.error) {
+          await replyToLine(event.replyToken, checkOverCommand.error);
+          continue;
+        }
+
+        await replyToLine(event.replyToken, buildCheckOverConfirmMessages(checkOverCommand));
         continue;
       }
 
