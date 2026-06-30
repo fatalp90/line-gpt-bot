@@ -532,7 +532,10 @@ function buildCheckOverTemplateText() {
 
 function parseCheckOverCommand(text) {
   const raw = normalizeText(text);
-  if (!/check\s*over/i.test(raw) && !/รหัส|ยอดโอน|ยอดสินค้า|หัก/.test(raw)) return null;
+
+  // Check Over 문구가 들어간 경우에만 Check Over 양식으로 처리한다.
+  // 일반 대출 안내/상환표에 รหัส, ยอดโอน 같은 단어가 있어도 오탐하지 않도록 제한한다.
+  if (!/check\s*over/i.test(raw)) return null;
 
   const code = getCheckOverField(raw, ["รหัส", "code", "코드"]).replace(/\s+/g, "").toUpperCase();
   const transferRaw = getCheckOverField(raw, ["ยอดโอน", "total", "대출금", "송금"]);
@@ -843,20 +846,18 @@ function getCustomerRegisterFormatGuide() {
 
 function parseLoanRequiredValue(value) {
   const raw = String(value ?? "").trim();
-  const n = Number(raw.replace(/,/g, "").replace(/[ㆍ·]/g, "."));
-  if (!Number.isFinite(n)) {
+
+  // 고객등록 명령어의 대출금액은 반드시 -30, -40, -50만 허용한다.
+  // 30, 40, 50, -03, -300000, -32.7 같은 값은 오등록 방지를 위해 거절한다.
+  if (!["-30", "-40", "-50"].includes(raw)) {
     return {
-      error: `❌ 대출금액은 음수 숫자로 입력해주세요. 예: -30 또는 -32.7\n\n${getCustomerRegisterFormatGuide()}`
+      error: `❌ 대출금액은 -30, -40, -50만 사용할 수 있습니다.
+
+${getCustomerRegisterFormatGuide()}`
     };
   }
 
-  if (n >= 0) {
-    return {
-      error: `❌ 대출금액은 -30처럼 마이너스(-)로 입력해주세요.\n\n${getCustomerRegisterFormatGuide()}`
-    };
-  }
-
-  return { value: n };
+  return { value: Number(raw) };
 }
 
 function parseCutRequiredValue(value) {
