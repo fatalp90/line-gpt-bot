@@ -3722,11 +3722,12 @@ function containsNoTranslateAmount(text) {
 
 function shouldIgnoreMessage(text) {
   const clean = normalizeText(text);
+  const lowerClean = clean.toLowerCase();
 
   if (containsNoTranslateAmount(clean)) return true;
 
   for (const keyword of ignoreKeywords) {
-    if (clean.includes(keyword)) return true;
+    if (lowerClean.includes(String(keyword).toLowerCase())) return true;
   }
 
   if (isMentionOnlyMessage(clean)) return true;
