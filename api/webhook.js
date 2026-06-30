@@ -705,11 +705,8 @@ async function handleCheckOverPostback(event, checkover) {
     return;
   }
 
-  if (!isAdmin(event)) {
-    await replyUnauthorized(event);
-    return;
-  }
-
+  // Check Over 등록/취소는 관리자 LINE userId 권한 체크 없이 허용한다.
+  // 메시지 양식 안의 รหัส 코드로 담당자명을 판별한다.
   if (checkover.action === "cancel") {
     await replyToLine(event.replyToken, `취소되었습니다.\n${checkover.productCode || ""}`);
     return;
@@ -4313,22 +4310,12 @@ export default async function handler(req, res) {
       }
 
       if (isCheckOverGuideCommand(text)) {
-        if (!isAdmin(event)) {
-          await replyUnauthorized(event);
-          continue;
-        }
-
         await replyToLine(event.replyToken, buildCheckOverTemplateText());
         continue;
       }
 
       const checkOverCommand = parseCheckOverCommand(text);
       if (checkOverCommand) {
-        if (!isAdmin(event)) {
-          await replyUnauthorized(event);
-          continue;
-        }
-
         if (checkOverCommand.error) {
           await replyToLine(event.replyToken, checkOverCommand.error);
           continue;
