@@ -528,7 +528,7 @@ function buildCheckOverTemplateText() {
 
 function parseCheckOverCommand(text) {
   const raw = normalizeText(text);
-  if (!/check\s*over/i.test(raw) && !/รหัส|ยอดโอน|ยอดสินค้า|หัก/.test(raw)) return null;
+  if (!/check\s*over/i.test(raw)) return null;
 
   const code = getCheckOverField(raw, ["รหัส", "code", "코드"]).replace(/\s+/g, "").toUpperCase();
   const transferRaw = getCheckOverField(raw, ["ยอดโอน", "total", "대출금", "송금"]);
