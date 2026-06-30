@@ -381,7 +381,12 @@ function normalizeLoanUnitFromCheckOver(value) {
 
 function normalizeCutUnitFromCheckOver(value) {
   const raw = String(value ?? "").trim();
-  if (raw === "-") return "-";
+  const compact = normalizeText(raw).replace(/\s+/g, "").toLowerCase();
+
+  // 공제 없음: 빈칸 / 0 / 0.0 / - / 없음 / ไม่มี 등은 모두 0으로 처리한다.
+  if (!compact || compact === "-" || compact === "0" || compact === "0.0" || compact === "없음" || compact === "ไม่มี") {
+    return 0;
+  }
 
   const n = parseLooseNumberToken(value);
   if (!Number.isFinite(n)) return null;
@@ -393,39 +398,82 @@ function normalizeCutUnitFromCheckOver(value) {
   return Number(formatAmountValue(unit));
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripCheckOverPrefix(line) {
+  return String(line || "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/^[\s👉▶️💵👌🏻👌✅❌⚠️\-\*•:：=]+/u, "")
+    .trim();
+}
+
 function getCheckOverField(text, labels) {
   const lines = String(text || "").split(/\r?\n/);
-  const labelList = labels.map(label => String(label).toLowerCase());
+  const normalizedLabels = labels.map(label => String(label || "").trim()).filter(Boolean);
 
   for (let i = 0; i < lines.length; i += 1) {
-    const rawLine = String(lines[i] || "").trim();
-    const line = rawLine
-      .replace(/^[👉▶️💵👌🏻\-\*\s]+/u, "")
-      .trim();
+    const rawLine = String(lines[i] || "");
+    const line = stripCheckOverPrefix(rawLine);
+    if (!line) continue;
 
-    const lower = line.toLowerCase();
-    const matchedLabel = labelList.find(label => lower.includes(label));
-    if (!matchedLabel) continue;
-
-    const colonIndex = line.search(/[:：=]/);
-    if (colonIndex >= 0) {
-      const value = line.slice(colonIndex + 1).trim();
-      if (value) return value;
+    for (const label of normalizedLabels) {
+      const labelPattern = escapeRegExp(label).replace(/\ /g, "\\s*").replace(/\//g, "\\s*\/\\s*");
+      const direct = line.match(new RegExp("^\\s*" + labelPattern + "\\s*[:：=]?\\s*(.*)$", "i"));
+      if (direct) {
+        const value = String(direct[1] || "").trim();
+        return value || getNextCheckOverValueLine(lines, i);
+      }
     }
 
-    const compact = line.replace(/\s+/g, "");
-    const matchedOriginal = labels.find(label => compact.toLowerCase().startsWith(String(label).toLowerCase().replace(/\s+/g, "")));
-    if (matchedOriginal) {
-      const value = line.slice(String(matchedOriginal).length).replace(/^[:：=]/, "").trim();
-      if (value) return value;
-    }
+    // 콜론 뒤 공백이 없거나 라벨 주변 공백/기호가 섞인 경우를 한 번 더 처리한다.
+    const compactLine = line.replace(/\s+/g, "").toLowerCase();
+    for (const label of normalizedLabels) {
+      const compactLabel = String(label).replace(/\s+/g, "").toLowerCase();
+      if (!compactLine.startsWith(compactLabel)) continue;
 
-    for (let j = i + 1; j < lines.length; j += 1) {
-      const next = String(lines[j] || "").trim();
-      if (next) return next.replace(/^[👉▶️💵👌🏻\-\*\s]+/u, "").trim();
+      let value = line.slice(String(label).length).replace(/^\s*[:：=]?\s*/, "").trim();
+      if (!value) {
+        const compactValue = compactLine.slice(compactLabel.length).replace(/^[:：=]/, "").trim();
+        value = compactValue;
+      }
+      if (value) return value;
     }
   }
 
+  return "";
+}
+
+
+function normalizeCheckOverCustomerName(value) {
+  return normalizeText(value)
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function isCheckOverLabelLine(line) {
+  const stripped = stripCheckOverPrefix(line).replace(/\s+/g, "").toLowerCase();
+  if (!stripped) return false;
+  const labels = [
+    "รหัส", "code", "코드",
+    "ยอดโอน", "total", "대출금", "송금",
+    "ยอดสินค้า", "สินค้า", "상품금액", "상품",
+    "หัก", "cut", "공제",
+    "ชื่อ", "name", "고객명", "이름",
+    "เลขบัญชี/ธนาคาร", "เลขบัญชี", "accountnumber", "account", "계좌"
+  ];
+  return labels.some(label => stripped.startsWith(String(label).replace(/\s+/g, "").toLowerCase()));
+}
+
+function getNextCheckOverValueLine(lines, startIndex) {
+  for (let j = startIndex + 1; j < Math.min(lines.length, startIndex + 4); j += 1) {
+    const nextLine = stripCheckOverPrefix(lines[j]);
+    if (!nextLine) continue;
+    if (isCheckOverLabelLine(nextLine)) return "";
+    return nextLine.trim();
+  }
   return "";
 }
 
@@ -443,6 +491,41 @@ function buildCheckOverFormatGuide(problemLabels = [], options = {}) {
   ].join("\n");
 }
 
+function isCheckOverGuideCommand(text) {
+  const raw = normalizeText(text).trim().toLowerCase();
+  return raw === "/co" || raw === "co" || raw === "checkover" || raw === "check over";
+}
+
+function buildCheckOverTemplateText() {
+  return [
+    "💵 BOSS 💵 👌🏻 Check Over",
+    "",
+    "👉 รหัส:",
+    "👉 ยอดโอน:",
+    "👉 ยอดสินค้า:",
+    "👉 หัก:",
+    "👉 ชื่อ:",
+    "👉 เลขบัญชี / ธนาคาร:",
+    "",
+    "━━━━━━━━━━━━━━━━━━",
+    "📌 Example",
+    "",
+    "💵 BOSS 💵 👌🏻 Check Over",
+    "",
+    "👉 รหัส: KN56",
+    "👉 ยอดโอน: 300,000",
+    "👉 ยอดสินค้า: 130,000",
+    "👉 หัก: 50,000",
+    "👉 ชื่อ: NAME",
+    "👉 เลขบัญชี / ธนาคาร: ACCOUNT NUMBER / BANK NAME",
+    "",
+    "📌 หมายเหตุ",
+    "- ยอดโอน ใช้ได้เฉพาะ 300,000 / 400,000 / 500,000",
+    "- หัก ถ้าไม่มี ให้เว้นว่าง หรือใส่ 0",
+    "- จำนวนเงินใส่ comma ได้ เช่น 300,000"
+  ].join("\n");
+}
+
 function parseCheckOverCommand(text) {
   const raw = normalizeText(text);
   if (!/check\s*over/i.test(raw) && !/รหัส|ยอดโอน|ยอดสินค้า|หัก/.test(raw)) return null;
@@ -451,7 +534,7 @@ function parseCheckOverCommand(text) {
   const transferRaw = getCheckOverField(raw, ["ยอดโอน", "total", "대출금", "송금"]);
   const productRaw = getCheckOverField(raw, ["ยอดสินค้า", "สินค้า", "상품금액", "상품"]);
   const cutRaw = getCheckOverField(raw, ["หัก", "cut", "공제"]);
-  const customerName = getCheckOverField(raw, ["ชื่อ", "name", "고객명", "이름"]);
+  const customerName = normalizeCheckOverCustomerName(getCheckOverField(raw, ["ชื่อ", "name", "고객명", "이름"]));
   const account = getCheckOverField(raw, ["เลขบัญชี / ธนาคาร", "เลขบัญชี", "account number", "account", "계좌"]);
 
   if (!code && !transferRaw && !productRaw && !cutRaw && !customerName && !account) return null;
@@ -460,7 +543,7 @@ function parseCheckOverCommand(text) {
   if (!code) missing.push("รหัส");
   if (!transferRaw) missing.push("ยอดโอน");
   if (!productRaw) missing.push("ยอดสินค้า");
-  if (!cutRaw) missing.push("หัก");
+  // หัก은 선택값이다. 비어 있거나 없으면 공제 0으로 처리한다.
   if (!customerName) missing.push("ชื่อ");
   if (missing.length) return { error: buildCheckOverFormatGuide(missing) };
 
@@ -484,8 +567,8 @@ function parseCheckOverCommand(text) {
   }
 
   const cut = normalizeCutUnitFromCheckOver(cutRaw);
-  if (!(cut === "-" || Number.isFinite(cut))) {
-    return { error: buildCheckOverFormatGuide(["หัก (ตัวอย่าง: 50000 หรือ 5)"]) };
+  if (!Number.isFinite(cut)) {
+    return { error: buildCheckOverFormatGuide(["หัก"]) };
   }
 
   const productName = `${code}(${productAmount.toLocaleString("ko-KR")})`;
@@ -510,20 +593,20 @@ function parseCheckOverCommand(text) {
 
 function buildCheckOverAnalysisText(command) {
   return [
-    "✅ ตรวจสอบ Check Over",
+    "✅ Check Over 확인",
     "",
-    `ผู้ดูแล : ${command.adminName}`,
-    `รหัส : ${command.productCode}`,
-    `ชื่อ : ${command.customerName || "-"}`,
-    `ยอดสินค้า : ${command.productAmount.toLocaleString("ko-KR")}`,
-    `ยอดโอน : ${formatAmountValue(command.loanAmount)}`,
-    `หัก : ${command.cut === "-" ? "-" : formatAmountValue(command.cut)}`,
+    `관리자 : ${command.adminName}`,
+    `코드 : ${command.productCode}`,
+    `고객명 : ${command.customerName || "-"}`,
+    `상품금액 : ${command.productAmount.toLocaleString("ko-KR")}`,
+    `대출금 : ${formatAmountValue(command.loanAmount)}`,
+    `공제 : ${formatAmountValue(command.cut)}`,
     "",
-    "ต้องการลงทะเบียนใช่ไหม?"
+    "등록하시겠습니까?"
   ].join("\n");
 }
 
-function buildCheckOverConfirmMessages(command) {
+function buildCheckOverConfirmMessages(command, options = {}) {
   const params = new URLSearchParams();
   params.set("checkover", "1");
   params.set("action", "confirm");
@@ -537,31 +620,51 @@ function buildCheckOverConfirmMessages(command) {
   const cancelParams = new URLSearchParams(params);
   cancelParams.set("action", "cancel");
 
+  const analysisText = options.approvalNotice
+    ? [`📥 ${RECEIPT_APPROVAL_GROUP_CODE} Check Over 등록 대기`, "", buildCheckOverAnalysisText(command)].join("\n")
+    : buildCheckOverAnalysisText(command);
+
   return [
-    buildTextMessage(buildCheckOverAnalysisText(command)),
+    buildTextMessage(analysisText),
     {
       type: "template",
-      altText: "ต้องการลงทะเบียน Check Over ใช่ไหม?",
+      altText: "Check Over 등록하시겠습니까?",
       template: {
         type: "buttons",
-        text: `${command.productCode}(${command.productAmount.toLocaleString("ko-KR")}) ลงทะเบียนใช่ไหม?`,
+        text: `${command.productCode}(${command.productAmount.toLocaleString("ko-KR")}) 등록하시겠습니까?`,
         actions: [
           {
             type: "postback",
-            label: "ลงทะเบียน",
+            label: "등록",
             data: params.toString(),
-            displayText: "ลงทะเบียน"
+            displayText: "등록"
           },
           {
             type: "postback",
-            label: "ยกเลิก",
+            label: "취소",
             data: cancelParams.toString(),
-            displayText: "ยกเลิก"
+            displayText: "취소"
           }
         ]
       }
     }
   ];
+}
+
+async function pushCheckOverConfirmToApprovalGroup(event, command) {
+  try {
+    const sourceGroupId = getLineSourceGroupId(event);
+    if (!sourceGroupId) return;
+
+    const accessToken = SHEET_ID ? await getGoogleAccessToken() : null;
+    const approvalGroupId = await getReceiptApprovalGroupId(accessToken);
+    if (!approvalGroupId || approvalGroupId === sourceGroupId) return;
+
+    await pushToLineMessages(approvalGroupId, buildCheckOverConfirmMessages(command, { approvalNotice: true }));
+  } catch (err) {
+    const errorText = getLinePushErrorMessage(err);
+    console.error(`[CHECKOVER APPROVAL PUSH FAIL] code=${command?.productCode || "-"} error=${errorText}`);
+  }
 }
 
 function parseCheckOverPostback(event) {
@@ -578,9 +681,9 @@ function parseCheckOverPostback(event) {
   const customerName = String(params.get("customerName") || "").trim();
   const loanAmount = Number(params.get("loanAmount"));
   const cutToken = String(params.get("cut") || "").trim();
-  const cut = cutToken === "-" ? "-" : Number(cutToken);
+  const cut = Number(cutToken);
 
-  if (!code || !adminName || !Number.isFinite(productAmount) || !Number.isFinite(loanAmount) || !(cut === "-" || Number.isFinite(cut))) {
+  if (!code || !adminName || !Number.isFinite(productAmount) || !Number.isFinite(loanAmount) || !Number.isFinite(cut)) {
     return { action, error: "⚠️ ข้อมูล Check Over ไม่ถูกต้อง กรุณาส่งใหม่อีกครั้ง" };
   }
 
@@ -608,7 +711,7 @@ async function handleCheckOverPostback(event, checkover) {
   }
 
   if (checkover.action === "cancel") {
-    await replyToLine(event.replyToken, `ยกเลิกแล้ว\n${checkover.productCode || ""}`);
+    await replyToLine(event.replyToken, `취소되었습니다.\n${checkover.productCode || ""}`);
     return;
   }
 
@@ -1754,15 +1857,15 @@ ${analysisText}` : analysisText),
         actions: [
           {
             type: "postback",
-            label: "ลงทะเบียน",
+            label: "등록",
             data: `${dataBase}&action=confirm`,
-            displayText: "ลงทะเบียน"
+            displayText: "등록"
           },
           {
             type: "postback",
-            label: "ยกเลิก",
+            label: "취소",
             data: `${dataBase}&action=cancel`,
-            displayText: "ยกเลิก"
+            displayText: "취소"
           }
         ]
       }
@@ -4209,6 +4312,16 @@ export default async function handler(req, res) {
         continue;
       }
 
+      if (isCheckOverGuideCommand(text)) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
+        await replyToLine(event.replyToken, buildCheckOverTemplateText());
+        continue;
+      }
+
       const checkOverCommand = parseCheckOverCommand(text);
       if (checkOverCommand) {
         if (!isAdmin(event)) {
@@ -4221,7 +4334,9 @@ export default async function handler(req, res) {
           continue;
         }
 
-        await replyToLine(event.replyToken, buildCheckOverConfirmMessages(checkOverCommand));
+        const confirmMessages = buildCheckOverConfirmMessages(checkOverCommand);
+        await replyToLineMessages(event.replyToken, confirmMessages);
+        await pushCheckOverConfirmToApprovalGroup(event, checkOverCommand);
         continue;
       }
 
