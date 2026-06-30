@@ -429,39 +429,18 @@ function getCheckOverField(text, labels) {
   return "";
 }
 
-function buildCheckOverFormatGuide(missingLabels = [], options = {}) {
-  const missingText = missingLabels.length
-    ? `ข้อมูลที่ยังไม่ครบ / ต้องตรวจสอบ:
-${missingLabels.map(label => `- ${label}`).join("\n")}
+function buildCheckOverFormatGuide(problemLabels = [], options = {}) {
+  const labels = Array.isArray(problemLabels) ? problemLabels.filter(Boolean) : [];
+  const problemText = labels.length
+    ? labels.map(label => `- ${label}`).join("\n")
+    : "- กรุณาตรวจสอบข้อมูล";
 
-`
-    : "";
-
-  const lines = [
-    "⚠️ กรุณาตรวจสอบรูปแบบ Check Over",
+  return [
+    "⚠️ กรุณาตรวจสอบ Check Over",
     "",
-    missingText.trimEnd(),
-    missingText ? "" : null,
-    "ตัวอย่าง)",
-    "",
-    "💵 BOSS 💵 👌🏻 Check Over",
-    "",
-    "👉 รหัส: KN56",
-    "👉 ยอดโอน: 300000",
-    "👉 ยอดสินค้า: 130000",
-    "👉 หัก: 50000",
-    "👉 ชื่อ: NAME",
-    "👉 เลขบัญชี / ธนาคาร: ACCOUNT NUMBER / BANK NAME"
-  ];
-
-  if (options.loanNotice) {
-    lines.push(
-      "",
-      "หมายเหตุ: ยอดโอนใส่ได้เฉพาะ 300000 / 400000 / 500000 เท่านั้น"
-    );
-  }
-
-  return lines.filter(item => item !== null && item !== "").join("\n");
+    "รายการที่ต้องแก้ไข:",
+    problemText
+  ].join("\n");
 }
 
 function parseCheckOverCommand(text) {
@@ -483,31 +462,30 @@ function parseCheckOverCommand(text) {
   if (!productRaw) missing.push("ยอดสินค้า");
   if (!cutRaw) missing.push("หัก");
   if (!customerName) missing.push("ชื่อ");
-  if (!account) missing.push("เลขบัญชี / ธนาคาร");
   if (missing.length) return { error: buildCheckOverFormatGuide(missing) };
 
   if (!/^[A-Z]{1,3}\d{1,3}$/.test(code)) {
-    return { error: `❌ รูปแบบรหัสไม่ถูกต้อง กรุณาใส่แบบนี้ เช่น KN56\n\n${buildCheckOverFormatGuide(["รหัส"])}` };
+    return { error: buildCheckOverFormatGuide(["รหัส (ตัวอย่าง: KN56)"]) };
   }
 
   const adminName = getAdminNameByCustomerCode(code);
   if (!adminName) {
-    return { error: `❌ ไม่พบรหัสผู้ดูแล (${code.replace(/\d+$/, "")}) กรุณาตรวจสอบรหัสอีกครั้ง` };
+    return { error: buildCheckOverFormatGuide([`รหัสผู้ดูแลไม่ถูกต้อง (${code.replace(/\d+$/, "")})`]) };
   }
 
   const productAmount = normalizeProductWonAmountFromCheckOver(productRaw);
   if (!productAmount) {
-    return { error: `❌ กรุณาตรวจสอบยอดสินค้า ใส่เป็นจำนวนเงินจริง เช่น 130000 หรือ 130,000\n\n${buildCheckOverFormatGuide(["ยอดสินค้า"])}` };
+    return { error: buildCheckOverFormatGuide(["ยอดสินค้า (ตัวอย่าง: 130000 หรือ 130,000)"]) };
   }
 
   const loanAmount = normalizeLoanUnitFromCheckOver(transferRaw);
   if (!Number.isFinite(loanAmount) || loanAmount >= 0) {
-    return { error: `❌ กรุณาตรวจสอบยอดโอน\nยอดโอนใส่ได้เฉพาะ 300000 / 400000 / 500000 เท่านั้น\nตัวอย่าง: 300000, 300,000, 30, -30\n\n${buildCheckOverFormatGuide(["ยอดโอน"], { loanNotice: true })}` };
+    return { error: buildCheckOverFormatGuide(["ยอดโอน ใช้ได้เฉพาะ 300000 / 400000 / 500000"]) };
   }
 
   const cut = normalizeCutUnitFromCheckOver(cutRaw);
   if (!(cut === "-" || Number.isFinite(cut))) {
-    return { error: `❌ กรุณาตรวจสอบยอดหัก เช่น 50000 หรือ 5\n\n${buildCheckOverFormatGuide(["หัก"])}` };
+    return { error: buildCheckOverFormatGuide(["หัก (ตัวอย่าง: 50000 หรือ 5)"]) };
   }
 
   const productName = `${code}(${productAmount.toLocaleString("ko-KR")})`;
