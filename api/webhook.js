@@ -32,6 +32,10 @@ const RECEIPT_APPROVER_USER_IDS = (process.env.RECEIPT_APPROVER_USER_IDS || "")
   .split(",")
   .map(v => v.trim())
   .filter(Boolean);
+const CHECKOVER_ADMIN_USER_IDS = (process.env.CHECKOVER_ADMIN_USER_IDS || "")
+  .split(",")
+  .map(v => v.trim())
+  .filter(Boolean);
 
 // 고객방에 뜨는 이체사진 등록 버튼을 관리자 확인방에도 함께 보내는 기능.
 // 기본은 LINE그룹매핑 시트에서 PP01 코드로 등록된 그룹방을 관리자 확인방으로 사용한다.
@@ -528,7 +532,7 @@ function buildCheckOverTemplateText() {
 
 function parseCheckOverCommand(text) {
   const raw = normalizeText(text);
-  if (!/check\s*over/i.test(raw)) return null;
+  if (!/check\s*over/i.test(raw) && !/รหัส|ยอดโอน|ยอดสินค้า|หัก/.test(raw)) return null;
 
   const code = getCheckOverField(raw, ["รหัส", "code", "코드"]).replace(/\s+/g, "").toUpperCase();
   const transferRaw = getCheckOverField(raw, ["ยอดโอน", "total", "대출금", "송금"]);
@@ -705,8 +709,12 @@ async function handleCheckOverPostback(event, checkover) {
     return;
   }
 
-  // Check Over 등록/취소는 관리자 LINE userId 권한 체크 없이 허용한다.
-  // 메시지 양식 안의 รหัส 코드로 담당자명을 판별한다.
+  // Check Over 등록/취소는 지정된 Check Over 관리자만 가능.
+  if (!canManageCheckOver(event)) {
+    await replyUnauthorized(event);
+    return;
+  }
+
   if (checkover.action === "cancel") {
     await replyToLine(event.replyToken, `취소되었습니다.\n${checkover.productCode || ""}`);
     return;
@@ -2307,6 +2315,12 @@ function getLineUserId(event) {
 function isAdmin(event) {
   const userId = getLineUserId(event);
   return ADMIN_USER_IDS.includes(userId);
+}
+
+function canManageCheckOver(event) {
+  const userId = getLineUserId(event);
+  const allowedIds = CHECKOVER_ADMIN_USER_IDS.length ? CHECKOVER_ADMIN_USER_IDS : ADMIN_USER_IDS;
+  return allowedIds.includes(userId);
 }
 
 function canApproveReceipt(event, receipt = null, cached = null, pending = null) {
