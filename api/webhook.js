@@ -315,7 +315,9 @@ function parseLooseNumberToken(value) {
     .replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
     .replace(/[，]/g, ",")
     .replace(/[ㆍ·]/g, ".")
-    .replace(/원|won|บาท|krw|₩/gi, " ")
+    // 관리자들이 붙이는 단위는 먼저 제거한다.
+    // 예: 300,000원 / 300000w / 300000 W / 300000 วอน
+    .replace(/วอน|원|won|บาท|krw|₩|w/gi, " ")
     .trim();
 
   if (!raw || raw === "-") return null;
@@ -427,20 +429,20 @@ function getCheckOverField(text, labels) {
   return "";
 }
 
-function buildCheckOverFormatGuide(missingLabels = []) {
+function buildCheckOverFormatGuide(missingLabels = [], options = {}) {
   const missingText = missingLabels.length
-    ? `누락/확인 필요 항목:
+    ? `ข้อมูลที่ยังไม่ครบ / ต้องตรวจสอบ:
 ${missingLabels.map(label => `- ${label}`).join("\n")}
 
 `
     : "";
 
-  return [
-    "⚠️ Check Over 양식 확인 필요",
+  const lines = [
+    "⚠️ กรุณาตรวจสอบรูปแบบ Check Over",
     "",
     missingText.trimEnd(),
     missingText ? "" : null,
-    "예시)",
+    "ตัวอย่าง)",
     "",
     "💵 BOSS 💵 👌🏻 Check Over",
     "",
@@ -449,10 +451,17 @@ ${missingLabels.map(label => `- ${label}`).join("\n")}
     "👉 ยอดสินค้า: 130000",
     "👉 หัก: 50000",
     "👉 ชื่อ: NAME",
-    "👉 เลขบัญชี / ธนาคาร: ACCOUNT NUMBER / BANK NAME",
-    "",
-    "대출금(ยอดโอน)은 300000 / 400000 / 500000만 가능합니다."
-  ].filter(item => item !== null && item !== "").join("\n");
+    "👉 เลขบัญชี / ธนาคาร: ACCOUNT NUMBER / BANK NAME"
+  ];
+
+  if (options.loanNotice) {
+    lines.push(
+      "",
+      "หมายเหตุ: ยอดโอนใส่ได้เฉพาะ 300000 / 400000 / 500000 เท่านั้น"
+    );
+  }
+
+  return lines.filter(item => item !== null && item !== "").join("\n");
 }
 
 function parseCheckOverCommand(text) {
@@ -478,27 +487,27 @@ function parseCheckOverCommand(text) {
   if (missing.length) return { error: buildCheckOverFormatGuide(missing) };
 
   if (!/^[A-Z]{1,3}\d{1,3}$/.test(code)) {
-    return { error: `❌ Check Over 코드 형식이 올바르지 않습니다. 예: KN56\n\n${buildCheckOverFormatGuide(["รหัส"])}` };
+    return { error: `❌ รูปแบบรหัสไม่ถูกต้อง กรุณาใส่แบบนี้ เช่น KN56\n\n${buildCheckOverFormatGuide(["รหัส"])}` };
   }
 
   const adminName = getAdminNameByCustomerCode(code);
   if (!adminName) {
-    return { error: `❌ 관리자 코드(${code.replace(/\d+$/, "")})를 찾지 못했습니다. 관리자 코드 매핑을 확인해주세요.` };
+    return { error: `❌ ไม่พบรหัสผู้ดูแล (${code.replace(/\d+$/, "")}) กรุณาตรวจสอบรหัสอีกครั้ง` };
   }
 
   const productAmount = normalizeProductWonAmountFromCheckOver(productRaw);
   if (!productAmount) {
-    return { error: `❌ 상품금액(ยอดสินค้า)을 찾지 못했습니다. 실제 금액으로 입력해주세요. 예: 130000 또는 130,000\n\n${buildCheckOverFormatGuide(["ยอดสินค้า"])}` };
+    return { error: `❌ กรุณาตรวจสอบยอดสินค้า ใส่เป็นจำนวนเงินจริง เช่น 130000 หรือ 130,000\n\n${buildCheckOverFormatGuide(["ยอดสินค้า"])}` };
   }
 
   const loanAmount = normalizeLoanUnitFromCheckOver(transferRaw);
   if (!Number.isFinite(loanAmount) || loanAmount >= 0) {
-    return { error: `❌ 대출금/송금액(ยอดโอน)을 확인해주세요.\n허용되는 대출금은 300,000 / 400,000 / 500,000원만 가능합니다.\n예: 300000, 300,000, 30, -30\n\n${buildCheckOverFormatGuide(["ยอดโอน"])}` };
+    return { error: `❌ กรุณาตรวจสอบยอดโอน\nยอดโอนใส่ได้เฉพาะ 300000 / 400000 / 500000 เท่านั้น\nตัวอย่าง: 300000, 300,000, 30, -30\n\n${buildCheckOverFormatGuide(["ยอดโอน"], { loanNotice: true })}` };
   }
 
   const cut = normalizeCutUnitFromCheckOver(cutRaw);
   if (!(cut === "-" || Number.isFinite(cut))) {
-    return { error: `❌ 공제금액(หัก)을 찾지 못했습니다. 예: 50000 또는 5\n\n${buildCheckOverFormatGuide(["หัก"])}` };
+    return { error: `❌ กรุณาตรวจสอบยอดหัก เช่น 50000 หรือ 5\n\n${buildCheckOverFormatGuide(["หัก"])}` };
   }
 
   const productName = `${code}(${productAmount.toLocaleString("ko-KR")})`;
@@ -523,16 +532,16 @@ function parseCheckOverCommand(text) {
 
 function buildCheckOverAnalysisText(command) {
   return [
-    "✅ Check Over 확인",
+    "✅ ตรวจสอบ Check Over",
     "",
-    `관리자 : ${command.adminName}`,
-    `코드 : ${command.productCode}`,
-    `고객명 : ${command.customerName || "-"}`,
-    `상품금액 : ${command.productAmount.toLocaleString("ko-KR")}`,
-    `대출금 : ${formatAmountValue(command.loanAmount)}`,
-    `공제 : ${command.cut === "-" ? "-" : formatAmountValue(command.cut)}`,
+    `ผู้ดูแล : ${command.adminName}`,
+    `รหัส : ${command.productCode}`,
+    `ชื่อ : ${command.customerName || "-"}`,
+    `ยอดสินค้า : ${command.productAmount.toLocaleString("ko-KR")}`,
+    `ยอดโอน : ${formatAmountValue(command.loanAmount)}`,
+    `หัก : ${command.cut === "-" ? "-" : formatAmountValue(command.cut)}`,
     "",
-    "등록하시겠습니까?"
+    "ต้องการลงทะเบียนใช่ไหม?"
   ].join("\n");
 }
 
@@ -554,22 +563,22 @@ function buildCheckOverConfirmMessages(command) {
     buildTextMessage(buildCheckOverAnalysisText(command)),
     {
       type: "template",
-      altText: "Check Over 등록하시겠습니까?",
+      altText: "ต้องการลงทะเบียน Check Over ใช่ไหม?",
       template: {
         type: "buttons",
-        text: `${command.productCode}(${command.productAmount.toLocaleString("ko-KR")}) 등록하시겠습니까?`,
+        text: `${command.productCode}(${command.productAmount.toLocaleString("ko-KR")}) ลงทะเบียนใช่ไหม?`,
         actions: [
           {
             type: "postback",
-            label: "등록",
+            label: "ลงทะเบียน",
             data: params.toString(),
-            displayText: "등록"
+            displayText: "ลงทะเบียน"
           },
           {
             type: "postback",
-            label: "취소",
+            label: "ยกเลิก",
             data: cancelParams.toString(),
-            displayText: "취소"
+            displayText: "ยกเลิก"
           }
         ]
       }
@@ -594,7 +603,7 @@ function parseCheckOverPostback(event) {
   const cut = cutToken === "-" ? "-" : Number(cutToken);
 
   if (!code || !adminName || !Number.isFinite(productAmount) || !Number.isFinite(loanAmount) || !(cut === "-" || Number.isFinite(cut))) {
-    return { action, error: "⚠️ Check Over 등록 데이터가 올바르지 않습니다. 다시 올려주세요." };
+    return { action, error: "⚠️ ข้อมูล Check Over ไม่ถูกต้อง กรุณาส่งใหม่อีกครั้ง" };
   }
 
   return {
@@ -621,7 +630,7 @@ async function handleCheckOverPostback(event, checkover) {
   }
 
   if (checkover.action === "cancel") {
-    await replyToLine(event.replyToken, `취소되었습니다.\n${checkover.productCode || ""}`);
+    await replyToLine(event.replyToken, `ยกเลิกแล้ว\n${checkover.productCode || ""}`);
     return;
   }
 
@@ -1767,15 +1776,15 @@ ${analysisText}` : analysisText),
         actions: [
           {
             type: "postback",
-            label: "등록",
+            label: "ลงทะเบียน",
             data: `${dataBase}&action=confirm`,
-            displayText: "등록"
+            displayText: "ลงทะเบียน"
           },
           {
             type: "postback",
-            label: "취소",
+            label: "ยกเลิก",
             data: `${dataBase}&action=cancel`,
-            displayText: "취소"
+            displayText: "ยกเลิก"
           }
         ]
       }
