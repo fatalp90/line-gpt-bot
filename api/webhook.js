@@ -624,6 +624,10 @@ function buildCheckOverConfirmMessages(command, options = {}) {
   params.set("loanAmount", String(command.loanAmount));
   params.set("cut", String(command.cut));
 
+  // PP01 관리자 확인방에서 등록 버튼을 눌러도
+  // 원본 고객방에 완료 메시지를 같이 보내기 위해 고객방 ID를 postback에 보관한다.
+  if (options.sourceGroupId) params.set("sourceGroupId", String(options.sourceGroupId));
+
   const cancelParams = new URLSearchParams(params);
   cancelParams.set("action", "cancel");
 
@@ -667,7 +671,10 @@ async function pushCheckOverConfirmToApprovalGroup(event, command) {
     const approvalGroupId = await getReceiptApprovalGroupId(accessToken);
     if (!approvalGroupId || approvalGroupId === sourceGroupId) return;
 
-    await pushToLineMessages(approvalGroupId, buildCheckOverConfirmMessages(command, { approvalNotice: true }));
+    await pushToLineMessages(
+      approvalGroupId,
+      buildCheckOverConfirmMessages(command, { approvalNotice: true, sourceGroupId })
+    );
   } catch (err) {
     const errorText = getLinePushErrorMessage(err);
     console.error(`[CHECKOVER APPROVAL PUSH FAIL] code=${command?.productCode || "-"} error=${errorText}`);
@@ -689,6 +696,7 @@ function parseCheckOverPostback(event) {
   const loanAmount = Number(params.get("loanAmount"));
   const cutToken = String(params.get("cut") || "").trim();
   const cut = Number(cutToken);
+  const sourceGroupId = String(params.get("sourceGroupId") || "").trim();
 
   if (!code || !adminName || !Number.isFinite(productAmount) || !Number.isFinite(loanAmount) || !Number.isFinite(cut)) {
     return { action, error: "⚠️ ข้อมูล Check Over ไม่ถูกต้อง กรุณาส่งใหม่อีกครั้ง" };
@@ -702,7 +710,8 @@ function parseCheckOverPostback(event) {
     customerName,
     loanAmount,
     cut,
-    productAmount
+    productAmount,
+    sourceGroupId
   };
 }
 
@@ -725,6 +734,26 @@ async function handleCheckOverPostback(event, checkover) {
 
   const reply = await writeCustomerRegistration(checkover);
   await replyToLine(event.replyToken, reply);
+
+  // 등록이 성공한 경우, PP01에서 버튼을 눌러도 원본 고객방에 완료 메시지를 같이 보낸다.
+  // 고객방에서 직접 눌렀다면 중복 발송을 피하기 위해 현재 방은 제외된다.
+  if (String(reply || "").startsWith("✅")) {
+    const clickedGroupId = getLineSourceGroupId(event);
+    const sourceGroupId = checkover.sourceGroupId || "";
+    const approvalGroupId = SHEET_ID ? await getReceiptApprovalGroupId(await getGoogleAccessToken()) : null;
+    const pushFailures = await pushReceiptDoneToRelatedGroups({
+      clickedGroupId,
+      sourceGroupId,
+      approvalGroupId,
+      text: reply
+    });
+
+    if (!sourceGroupId && clickedGroupId === approvalGroupId) {
+      await replyToLine(event.replyToken, "⚠️ 등록은 완료됐지만 원본 고객방 ID를 찾지 못해 고객방 완료 알림을 보낼 수 없습니다. 최신 수정본으로 고객방에서 Check Over 양식을 다시 올린 뒤 PP01방 버튼을 눌러주세요.");
+    } else if (pushFailures.length) {
+      await replyToLine(event.replyToken, `⚠️ 등록은 완료됐지만 일부 방 완료 알림 발송에 실패했습니다.\n${pushFailures.join("\n")}`);
+    }
+  }
 }
 
 
@@ -4361,7 +4390,8 @@ export default async function handler(req, res) {
           continue;
         }
 
-        const confirmMessages = buildCheckOverConfirmMessages(checkOverCommand);
+        const sourceGroupId = getLineSourceGroupId(event);
+        const confirmMessages = buildCheckOverConfirmMessages(checkOverCommand, { sourceGroupId });
         await replyToLineMessages(event.replyToken, confirmMessages);
         await pushCheckOverConfirmToApprovalGroup(event, checkOverCommand);
         continue;
