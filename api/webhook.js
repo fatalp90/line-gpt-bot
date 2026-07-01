@@ -4479,7 +4479,15 @@ export default async function handler(req, res) {
 
         const sourceGroupId = groupMapping.sourceGroupId || getLineSourceGroupId(event);
         const confirmMessages = buildCheckOverConfirmMessages(checkOverCommand, { sourceGroupId });
-        await replyToLineMessages(event.replyToken, confirmMessages);
+
+        // Check Over 때문에 자동으로 코드/등록이 실행된 경우,
+        // 고객방에도 먼저 그룹등록 안내를 보여준 뒤 Check Over 확인 메시지와 등록 버튼을 이어서 보여준다.
+        // 이미 같은 코드로 등록된 고객방이면 안내는 생략하고 기존처럼 바로 확인 메시지/버튼만 표시한다.
+        const replyMessages = groupMapping.autoRegistered && groupMapping.autoRegisterReply
+          ? [buildTextMessage(groupMapping.autoRegisterReply), ...confirmMessages]
+          : confirmMessages;
+
+        await replyToLineMessages(event.replyToken, replyMessages);
         await pushCheckOverConfirmToApprovalGroup(event, checkOverCommand);
         continue;
       }
