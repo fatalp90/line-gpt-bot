@@ -1576,7 +1576,9 @@ function receiptPendingFromRow(row, rowNumber) {
     transferDate: normalizeTransferDate(row?.[9]),
     imageKey: String(row?.[10] || "").trim(),
     infoKey: String(row?.[11] || "").trim(),
-    nearDuplicateKey: String(row?.[12] || "").trim()
+    nearDuplicateKey: String(row?.[12] || "").trim(),
+    createdAt: String(row?.[13] || "").trim(),
+    updatedAt: String(row?.[14] || "").trim()
   };
 }
 
@@ -1595,12 +1597,26 @@ async function findReceiptPending(accessToken, pendingId) {
 }
 
 
+function parseKoreaDateTimeMs(value) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return null;
+  const [, y, mo, d, h, mi, s = "00"] = match;
+  const ms = Date.parse(`${y}-${mo}-${d}T${h}:${mi}:${s}+09:00`);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function isFreshReceiptPending(pending, ttlMs = RECEIPT_NEAR_DUPLICATE_TTL_MS) {
+  const createdMs = parseKoreaDateTimeMs(pending?.createdAt);
+  if (!createdMs) return false;
+  return Date.now() - createdMs <= ttlMs;
+}
+
 async function findReceiptDuplicatePendingByKeys(accessToken, keys = {}) {
   const imageKey = String(keys.imageKey || "").trim();
   const infoKey = String(keys.infoKey || "").trim();
   const nearDuplicateKey = String(keys.nearDuplicateKey || "").trim();
-  const targetKeys = new Set([imageKey, infoKey, nearDuplicateKey].filter(Boolean));
-  if (!targetKeys.size) return null;
+  if (!imageKey && !infoKey && !nearDuplicateKey) return null;
 
   await ensureReceiptPendingSheet(accessToken);
   const range = `'${escapeSheetName(RECEIPT_PENDING_SHEET_NAME)}'!A:O`;
@@ -1610,8 +1626,29 @@ async function findReceiptDuplicatePendingByKeys(accessToken, keys = {}) {
 
   for (let i = values.length - 1; i >= 1; i -= 1) {
     const pending = receiptPendingFromRow(values[i], i + 1);
-    const rowKeys = [pending.imageKey, pending.infoKey, pending.nearDuplicateKey].filter(Boolean);
-    if (rowKeys.some(key => targetKeys.has(key))) {
+    const status = String(pending.status || "").toLowerCase();
+
+    // 1) 완전히 같은 이미지면 상태와 관계없이 중복으로 본다.
+    if (imageKey && pending.imageKey && pending.imageKey === imageKey) {
+      return pending;
+    }
+
+    // 2) 이체일시까지 포함된 정보키가 같으면 상태와 관계없이 동일 이체내역으로 본다.
+    //    buildReceiptInfoKey는 날짜/시간이 확인되지 않으면 빈 값이므로,
+    //    매일 같은 금액을 입금하는 고객이 금액만으로 막히지 않는다.
+    if (infoKey && pending.infoKey && pending.infoKey === infoKey) {
+      return pending;
+    }
+
+    // 3) 유사키는 위/아래로 나눠 찍은 캡처의 "등록 대기 중복"만 막는다.
+    //    이미 완료/취소된 과거 입금은 매일 같은 금액 고객을 막을 수 있으므로 제외한다.
+    if (
+      nearDuplicateKey &&
+      pending.nearDuplicateKey &&
+      pending.nearDuplicateKey === nearDuplicateKey &&
+      ["pending", "processing"].includes(status) &&
+      isFreshReceiptPending(pending)
+    ) {
       return pending;
     }
   }
@@ -1983,12 +2020,18 @@ function normalizeReceiptKeyPart(value) {
     .toUpperCase();
 }
 
-function buildReceiptInfoKey({ code, amountWon, senderName, accountNumber, transferDate }) {
+function buildReceiptInfoKey({ sourceGroupId, code, amountWon, senderName, accountNumber, transferDate }) {
   const amount = normalizeWonAmount(amountWon) || "";
   const sender = normalizeReceiptKeyPart(normalizeSenderName(senderName));
   const account = normalizeAccountNumber(accountNumber) || "";
   const date = normalizeReceiptKeyPart(normalizeTransferDate(transferDate));
-  const parts = [String(code || "").toUpperCase(), amount, sender, account, date].filter(Boolean);
+
+  // 매일 같은 금액을 입금하는 고객이 있으므로, 날짜/시간을 못 읽은 경우에는
+  // 금액+계좌만으로 "이미 등록 완료" 중복 판정을 하지 않는다.
+  // 정확한 완료 중복 판정은 이미지가 완전히 같거나, 이체일시까지 확인되는 경우만 사용한다.
+  if (!sourceGroupId || !code || !amount || !date) return "";
+
+  const parts = [sourceGroupId, String(code || "").toUpperCase(), amount, sender, account, date].filter(Boolean);
   return crypto.createHash("sha256").update(parts.join("|"), "utf8").digest("hex");
 }
 
@@ -2367,6 +2410,7 @@ async function handleReceiptImageMessage(event) {
 
   const imageKey = buildReceiptImageKey({ sourceGroupId, imageHash: result.imageHash });
   const infoKey = buildReceiptInfoKey({
+    sourceGroupId,
     code,
     amountWon: result.amountWon,
     senderName: result.senderName,
@@ -2525,7 +2569,11 @@ async function handleReceiptPostback(event, receipt) {
     if (cached) {
       receiptCacheSet(cached.imageKey, { ...cached, status });
       receiptCacheSet(cached.infoKey, { ...cached, status });
-      receiptCacheSet(cached.nearDuplicateKey, { ...cached, status });
+      if (["pending", "processing"].includes(String(status).toLowerCase())) {
+        receiptCacheSet(cached.nearDuplicateKey, { ...cached, status }, RECEIPT_NEAR_DUPLICATE_TTL_MS);
+      } else if (cached.nearDuplicateKey) {
+        receiptDuplicateCache.delete(cached.nearDuplicateKey);
+      }
       receiptCacheSet(cached.pendingId || receipt.pendingId, { ...cached, status });
     } else if (receipt.receiptKey) {
       receiptCacheSet(receipt.receiptKey, {
