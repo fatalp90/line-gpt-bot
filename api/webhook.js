@@ -644,7 +644,7 @@ function buildCheckOverConfirmMessages(command, options = {}) {
       altText: "Check Over 등록하시겠습니까?",
       template: {
         type: "buttons",
-        text: `${command.productCode}(${command.productAmount.toLocaleString("ko-KR")}) 등록하시겠습니까?`,
+        text: `⚠️ 고객은 누르지 마세요.\n\n${command.productCode}(${command.productAmount.toLocaleString("ko-KR")}) 등록하시겠습니까?`,
         actions: [
           {
             type: "postback",
@@ -2160,10 +2160,10 @@ function buildReceiptConfirmMessages({ code, amountWon, sheetValue, senderName, 
 ${analysisText}` : analysisText),
     {
       type: "template",
-      altText: "💛 등록하시겠습니까?",
+      altText: "입금 등록하시겠습니까?",
       template: {
         type: "buttons",
-        text: "💛 등록하시겠습니까?",
+        text: `⚠️ 고객은 누르지 마세요.\n\n${code}(${Number(amountWon).toLocaleString("ko-KR")}원) 등록하시겠습니까?`,
         actions: [
           {
             type: "postback",
