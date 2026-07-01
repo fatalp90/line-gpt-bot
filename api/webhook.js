@@ -1594,6 +1594,31 @@ async function findReceiptPending(accessToken, pendingId) {
   return null;
 }
 
+
+async function findReceiptDuplicatePendingByKeys(accessToken, keys = {}) {
+  const imageKey = String(keys.imageKey || "").trim();
+  const infoKey = String(keys.infoKey || "").trim();
+  const nearDuplicateKey = String(keys.nearDuplicateKey || "").trim();
+  const targetKeys = new Set([imageKey, infoKey, nearDuplicateKey].filter(Boolean));
+  if (!targetKeys.size) return null;
+
+  await ensureReceiptPendingSheet(accessToken);
+  const range = `'${escapeSheetName(RECEIPT_PENDING_SHEET_NAME)}'!A:O`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`;
+  const response = await axios.get(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const values = response.data.values || [];
+
+  for (let i = values.length - 1; i >= 1; i -= 1) {
+    const pending = receiptPendingFromRow(values[i], i + 1);
+    const rowKeys = [pending.imageKey, pending.infoKey, pending.nearDuplicateKey].filter(Boolean);
+    if (rowKeys.some(key => targetKeys.has(key))) {
+      return pending;
+    }
+  }
+
+  return null;
+}
+
 async function updateReceiptPendingStatus(accessToken, pending, status) {
   if (!pending?.rowNumber) return;
   const nowText = getKoreaDateTimeText();
@@ -2357,10 +2382,32 @@ async function handleReceiptImageMessage(event) {
     accountNumber: result.accountNumber
   });
 
-  const existing = receiptCacheGet(imageKey) || receiptCacheGet(infoKey) || receiptCacheGet(nearDuplicateKey);
+  let existing = receiptCacheGet(imageKey) || receiptCacheGet(infoKey) || receiptCacheGet(nearDuplicateKey);
+  if (!existing) {
+    try {
+      // Vercel/서버리스 환경에서는 연속 이미지가 서로 다른 인스턴스에서 처리될 수 있어
+      // 메모리 캐시만으로는 같은 입금내역 중복 버튼을 막지 못한다.
+      // LINE등록대기 시트에 저장된 이미지키/정보키/유사키까지 확인해서
+      // 위/아래로 나눠 보낸 같은 입금 캡처는 버튼과 PP01 푸시를 다시 만들지 않는다.
+      existing = await findReceiptDuplicatePendingByKeys(accessToken, {
+        imageKey,
+        infoKey,
+        nearDuplicateKey
+      });
+      if (existing) {
+        receiptCacheSet(imageKey, existing);
+        receiptCacheSet(infoKey, existing);
+        receiptCacheSet(nearDuplicateKey, existing, RECEIPT_NEAR_DUPLICATE_TTL_MS);
+        receiptCacheSet(existing.pendingId, existing);
+      }
+    } catch (err) {
+      console.error(`[RECEIPT DUPLICATE SHEET CHECK FAIL] code=${code} error=${err?.response?.data?.error?.message || err?.message || err}`);
+    }
+  }
+
   if (existing) {
     // 같은 송금내역을 스크롤해서 위/아래 2장으로 보낸 경우에는
-    // 등록 버튼을 다시 만들지 않고 기존 버튼만 사용하게 한다.
+    // 등록 버튼과 PP01 푸시를 다시 만들지 않고 기존 버튼만 사용하게 한다.
     await replyToLine(event.replyToken, buildReceiptDuplicateText(existing));
     return;
   }
