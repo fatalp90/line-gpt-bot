@@ -1565,6 +1565,87 @@ async function findMappedCodeByGroupId(accessToken, sourceGroupId) {
   return null;
 }
 
+
+function buildCheckOverGroupMismatchMessage(currentCode, checkOverCode) {
+  return [
+    "⚠️ 고객방 등록 코드가 다릅니다.",
+    "",
+    `현재 등록된 코드 : ${currentCode || "-"}`,
+    `체크오버 코드 : ${checkOverCode || "-"}`,
+    "",
+    "잘못된 고객방에서 Check Over를 작성했거나",
+    "코드를 잘못 입력했을 수 있습니다.",
+    "",
+    "코드를 변경하려면 고객방에서",
+    `${checkOverCode}/등록`,
+    "명령어를 먼저 실행해주세요."
+  ].join("\n");
+}
+
+function buildCheckOverCodeAlreadyMappedMessage(checkOverCode) {
+  return [
+    "⚠️ 이미 다른 고객방에 등록된 코드입니다.",
+    "",
+    `체크오버 코드 : ${checkOverCode || "-"}`,
+    "",
+    "관리자가 기존에 있는 코드를 잘못 적었을 수 있습니다.",
+    "LINE그룹매핑 시트 또는 고객방 코드를 확인해주세요."
+  ].join("\n");
+}
+
+async function ensureCheckOverGroupMapping(event, command) {
+  if (!SHEET_ID) {
+    return { ok: false, message: "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다." };
+  }
+
+  const sourceGroupId = getLineSourceGroupId(event);
+  if (!sourceGroupId) {
+    return { ok: false, message: "⚠️ Check Over는 그룹방에서만 등록 가능합니다." };
+  }
+
+  const checkOverCode = String(command?.productCode || "").trim().toUpperCase();
+  if (!checkOverCode) {
+    return { ok: false, message: "⚠️ Check Over 코드가 없습니다." };
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const currentMappedCode = await findMappedCodeByGroupId(accessToken, sourceGroupId);
+
+  // 이미 같은 코드로 등록된 고객방이면 자동 등록을 생략하고 그대로 진행한다.
+  if (currentMappedCode === checkOverCode) {
+    return { ok: true, sourceGroupId, currentMappedCode, autoRegistered: false };
+  }
+
+  // 같은 고객방이 다른 코드로 등록되어 있으면 오등록 방지를 위해 자동 변경하지 않는다.
+  if (currentMappedCode && currentMappedCode !== checkOverCode) {
+    return {
+      ok: false,
+      sourceGroupId,
+      currentMappedCode,
+      message: buildCheckOverGroupMismatchMessage(currentMappedCode, checkOverCode)
+    };
+  }
+
+  const targetMappedGroupId = await findMappedGroupId(accessToken, checkOverCode);
+
+  // 고객방은 미등록인데, 체크오버 코드가 이미 다른 고객방에 등록되어 있으면 오입력 가능성이 높으므로 중단한다.
+  if (targetMappedGroupId && targetMappedGroupId !== sourceGroupId) {
+    return {
+      ok: false,
+      sourceGroupId,
+      message: buildCheckOverCodeAlreadyMappedMessage(checkOverCode)
+    };
+  }
+
+  // 고객방도 미등록이고 코드도 다른 고객방에 사용 중이 아니면 자동으로 코드/등록 처리한다.
+  const autoRegisterReply = await registerGroupCode({ code: checkOverCode }, event);
+  if (!String(autoRegisterReply || "").startsWith("✅")) {
+    return { ok: false, sourceGroupId, message: autoRegisterReply || "⚠️ 고객방 자동 그룹등록에 실패했습니다." };
+  }
+
+  return { ok: true, sourceGroupId, currentMappedCode: checkOverCode, autoRegistered: true, autoRegisterReply };
+}
+
 function getLineSourceGroupId(event) {
   return event?.source?.groupId || event?.source?.roomId || "";
 }
@@ -4390,7 +4471,13 @@ export default async function handler(req, res) {
           continue;
         }
 
-        const sourceGroupId = getLineSourceGroupId(event);
+        const groupMapping = await ensureCheckOverGroupMapping(event, checkOverCommand);
+        if (!groupMapping.ok) {
+          await replyToLine(event.replyToken, groupMapping.message || "⚠️ 고객방 그룹등록 상태를 확인하지 못했습니다.");
+          continue;
+        }
+
+        const sourceGroupId = groupMapping.sourceGroupId || getLineSourceGroupId(event);
         const confirmMessages = buildCheckOverConfirmMessages(checkOverCommand, { sourceGroupId });
         await replyToLineMessages(event.replyToken, confirmMessages);
         await pushCheckOverConfirmToApprovalGroup(event, checkOverCommand);
