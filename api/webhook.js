@@ -4742,3 +4742,27 @@ export default async function handler(req, res) {
 
   return res.status(200).send("OK");
 }
+
+
+// 송금완료 Flex reply
+async function replyTransferComplete(event){
+  const flex={
+    type:"flex",
+    altText:"송금완료",
+    contents:{
+      type:"bubble",
+      body:{
+        type:"box",
+        layout:"vertical",
+        alignItems:"center",
+        spacing:"md",
+        contents:[
+          {type:"text",text:"💸",size:"5xl",align:"center"},
+          {type:"text",text:"โอนเงินเรียบร้อยแล้ว",weight:"bold",size:"lg",align:"center"},
+          {type:"text",text:"송금이 완료되었습니다",size:"sm",color:"#888888",align:"center"}
+        ]
+      }
+    }
+  };
+  return client.replyMessage(event.replyToken, flex);
+}
