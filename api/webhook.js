@@ -43,6 +43,7 @@ const CHECKOVER_ADMIN_USER_IDS = (process.env.CHECKOVER_ADMIN_USER_IDS || "")
 const RECEIPT_APPROVAL_GROUP_CODE = String(process.env.RECEIPT_APPROVAL_GROUP_CODE || "PP01").trim().toUpperCase();
 const RECEIPT_APPROVAL_GROUP_ID = String(process.env.RECEIPT_APPROVAL_GROUP_ID || "").trim();
 const RECEIPT_PENDING_SHEET_NAME = process.env.RECEIPT_PENDING_SHEET_NAME || "LINE등록대기";
+const CHECKOVER_PENDING_SHEET_NAME = process.env.CHECKOVER_PENDING_SHEET_NAME || "체크오버등록대기";
 
 const RECEIPT_DUPLICATE_TTL_MS = Number(process.env.RECEIPT_DUPLICATE_TTL_MS || 24 * 60 * 60 * 1000);
 // 고객이 같은 송금내역을 위/아래 화면으로 나눠 2장 이상 연속 전송하는 경우
@@ -623,6 +624,7 @@ function buildCheckOverConfirmMessages(command, options = {}) {
   params.set("customerName", command.customerName || "");
   params.set("loanAmount", String(command.loanAmount));
   params.set("cut", String(command.cut));
+  if (command.checkoverPendingId || options.pendingId) params.set("pid", String(command.checkoverPendingId || options.pendingId));
 
   // PP01 관리자 확인방에서 등록 버튼을 눌러도
   // 원본 고객방에 완료 메시지를 같이 보내기 위해 고객방 ID를 postback에 보관한다.
@@ -697,6 +699,7 @@ function parseCheckOverPostback(event) {
   const cutToken = String(params.get("cut") || "").trim();
   const cut = Number(cutToken);
   const sourceGroupId = String(params.get("sourceGroupId") || "").trim();
+  const pendingId = String(params.get("pid") || "").trim();
 
   if (!code || !adminName || !Number.isFinite(productAmount) || !Number.isFinite(loanAmount) || !Number.isFinite(cut)) {
     return { action, error: "⚠️ ข้อมูล Check Over ไม่ถูกต้อง กรุณาส่งใหม่อีกครั้ง" };
@@ -711,7 +714,8 @@ function parseCheckOverPostback(event) {
     loanAmount,
     cut,
     productAmount,
-    sourceGroupId
+    sourceGroupId,
+    pendingId
   };
 }
 
@@ -727,20 +731,62 @@ async function handleCheckOverPostback(event, checkover) {
     return;
   }
 
+  const accessToken = SHEET_ID ? await getGoogleAccessToken() : null;
+  const pending = checkover.pendingId && accessToken
+    ? await findCheckOverPending(accessToken, checkover.pendingId)
+    : null;
+
+  if (checkover.pendingId && !pending) {
+    await replyToLine(event.replyToken, "⚠️ Check Over 등록 대기 정보를 찾지 못했습니다. 고객방에서 Check Over 양식을 다시 올려주세요.");
+    return;
+  }
+
+  if (pending?.status === "completed") {
+    await replyToLine(event.replyToken, pending.doneText || "⚠️ 이미 등록 완료된 Check Over입니다.");
+    return;
+  }
+
+  if (["cancelled", "canceled"].includes(String(pending?.status || ""))) {
+    await replyToLine(event.replyToken, pending.doneText || "⚠️ 이미 취소된 Check Over입니다.");
+    return;
+  }
+
+  if (pending?.status === "processing") {
+    await replyToLine(event.replyToken, "⚠️ 이미 처리 중인 Check Over입니다. 잠시 후 완료 메시지를 확인해주세요.");
+    return;
+  }
+
   if (checkover.action === "cancel") {
+    if (pending && accessToken) {
+      await updateCheckOverPendingStatus(accessToken, pending, "canceled");
+    }
     await replyToLine(event.replyToken, `취소되었습니다.\n${checkover.productCode || ""}`);
     return;
   }
 
+  if (pending && accessToken) {
+    await updateCheckOverPendingStatus(accessToken, pending, "processing");
+    pending.status = "processing";
+  }
+
   const reply = await writeCustomerRegistration(checkover);
+
+  if (pending && accessToken) {
+    if (String(reply || "").startsWith("✅")) {
+      await updateCheckOverPendingStatus(accessToken, pending, "completed", reply);
+    } else {
+      await updateCheckOverPendingStatus(accessToken, pending, "pending");
+    }
+  }
+
   await replyToLine(event.replyToken, reply);
 
   // 등록이 성공한 경우, PP01에서 버튼을 눌러도 원본 고객방에 완료 메시지를 같이 보낸다.
   // 고객방에서 직접 눌렀다면 중복 발송을 피하기 위해 현재 방은 제외된다.
   if (String(reply || "").startsWith("✅")) {
     const clickedGroupId = getLineSourceGroupId(event);
-    const sourceGroupId = checkover.sourceGroupId || "";
-    const approvalGroupId = SHEET_ID ? await getReceiptApprovalGroupId(await getGoogleAccessToken()) : null;
+    const sourceGroupId = checkover.sourceGroupId || pending?.sourceGroupId || "";
+    const approvalGroupId = pending?.approvalGroupId || (accessToken ? await getReceiptApprovalGroupId(accessToken) : null);
     const pushFailures = await pushReceiptDoneToRelatedGroups({
       clickedGroupId,
       sourceGroupId,
@@ -748,10 +794,8 @@ async function handleCheckOverPostback(event, checkover) {
       text: reply
     });
 
-    if (!sourceGroupId && clickedGroupId === approvalGroupId) {
-      await replyToLine(event.replyToken, "⚠️ 등록은 완료됐지만 원본 고객방 ID를 찾지 못해 고객방 완료 알림을 보낼 수 없습니다. 최신 수정본으로 고객방에서 Check Over 양식을 다시 올린 뒤 PP01방 버튼을 눌러주세요.");
-    } else if (pushFailures.length) {
-      await replyToLine(event.replyToken, `⚠️ 등록은 완료됐지만 일부 방 완료 알림 발송에 실패했습니다.\n${pushFailures.join("\n")}`);
+    if (pushFailures.length) {
+      console.error(`[CHECKOVER DONE PUSH FAIL] ${pushFailures.join(" | ")}`);
     }
   }
 }
@@ -1376,6 +1420,123 @@ async function ensureReceiptPendingSheet(accessToken) {
     headerUrl,
     { range: headerRange, majorDimension: "ROWS", values: [[
       "대기ID", "상태", "원본그룹ID", "승인그룹ID", "코드", "상환값", "금액원", "입금자명", "계좌번호", "이체일", "이미지키", "정보키", "유사키", "생성일시", "수정일시"
+    ]] },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+}
+
+
+async function ensureCheckOverPendingSheet(accessToken) {
+  const titles = await getSpreadsheetSheetTitles(accessToken);
+  if (titles.includes(CHECKOVER_PENDING_SHEET_NAME)) return;
+
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}:batchUpdate`;
+  await axios.post(
+    url,
+    { requests: [{ addSheet: { properties: { title: CHECKOVER_PENDING_SHEET_NAME } } }] },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+
+  const headerRange = `'${escapeSheetName(CHECKOVER_PENDING_SHEET_NAME)}'!A:L`;
+  const headerUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(headerRange)}?valueInputOption=USER_ENTERED`;
+  await axios.put(
+    headerUrl,
+    { range: headerRange, majorDimension: "ROWS", values: [[
+      "대기ID", "상태", "원본그룹ID", "승인그룹ID", "코드", "상품금액", "고객명", "대출금", "공제", "생성일시", "수정일시", "완료메시지"
+    ]] },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+}
+
+function makeCheckOverPendingId(command, sourceGroupId) {
+  const raw = [
+    "checkover",
+    command?.productCode || "",
+    command?.productAmount || "",
+    command?.customerName || "",
+    command?.loanAmount || "",
+    command?.cut || "",
+    sourceGroupId || "",
+    Date.now(),
+    Math.random()
+  ].join("|");
+  return crypto.createHash("sha256").update(raw, "utf8").digest("hex").slice(0, 20);
+}
+
+async function appendCheckOverPending(accessToken, item) {
+  await ensureCheckOverPendingSheet(accessToken);
+  const nowText = getKoreaDateTimeText();
+  const range = `'${escapeSheetName(CHECKOVER_PENDING_SHEET_NAME)}'!A:L`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+  await axios.post(
+    url,
+    { range, majorDimension: "ROWS", values: [[
+      item.pendingId || "",
+      item.status || "pending",
+      item.sourceGroupId || "",
+      item.approvalGroupId || "",
+      item.code || "",
+      item.productAmount || "",
+      item.customerName || "",
+      item.loanAmount || "",
+      item.cut || "",
+      nowText,
+      nowText,
+      item.doneText || ""
+    ]] },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+}
+
+function checkOverPendingFromRow(row, rowNumber) {
+  return {
+    rowNumber,
+    pendingId: String(row?.[0] || "").trim(),
+    status: String(row?.[1] || "").trim() || "pending",
+    sourceGroupId: String(row?.[2] || "").trim(),
+    approvalGroupId: String(row?.[3] || "").trim(),
+    code: String(row?.[4] || "").trim().toUpperCase(),
+    productAmount: Number(row?.[5]),
+    customerName: String(row?.[6] || "").trim(),
+    loanAmount: Number(row?.[7]),
+    cut: Number(row?.[8]),
+    doneText: String(row?.[11] || "").trim()
+  };
+}
+
+async function findCheckOverPending(accessToken, pendingId) {
+  const id = String(pendingId || "").trim();
+  if (!id) return null;
+  await ensureCheckOverPendingSheet(accessToken);
+  const range = `'${escapeSheetName(CHECKOVER_PENDING_SHEET_NAME)}'!A:L`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`;
+  const response = await axios.get(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const values = response.data.values || [];
+  for (let i = values.length - 1; i >= 1; i -= 1) {
+    if (String(values[i]?.[0] || "").trim() === id) return checkOverPendingFromRow(values[i], i + 1);
+  }
+  return null;
+}
+
+async function updateCheckOverPendingStatus(accessToken, pending, status, doneText = "") {
+  if (!pending?.rowNumber) return;
+  const nowText = getKoreaDateTimeText();
+  const range = `'${escapeSheetName(CHECKOVER_PENDING_SHEET_NAME)}'!B${pending.rowNumber}:L${pending.rowNumber}`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
+  await axios.put(
+    url,
+    { range, majorDimension: "ROWS", values: [[
+      status,
+      pending.sourceGroupId || "",
+      pending.approvalGroupId || "",
+      pending.code || "",
+      Number.isFinite(pending.productAmount) ? pending.productAmount : "",
+      pending.customerName || "",
+      Number.isFinite(pending.loanAmount) ? pending.loanAmount : "",
+      Number.isFinite(pending.cut) ? pending.cut : "",
+      "",
+      nowText,
+      doneText || pending.doneText || ""
     ]] },
     { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
   );
@@ -4478,6 +4639,23 @@ export default async function handler(req, res) {
         }
 
         const sourceGroupId = groupMapping.sourceGroupId || getLineSourceGroupId(event);
+        const accessToken = SHEET_ID ? await getGoogleAccessToken() : null;
+        const approvalGroupId = accessToken ? await getReceiptApprovalGroupId(accessToken) : null;
+        const checkoverPendingId = makeCheckOverPendingId(checkOverCommand, sourceGroupId);
+        checkOverCommand.checkoverPendingId = checkoverPendingId;
+        if (accessToken) {
+          await appendCheckOverPending(accessToken, {
+            pendingId: checkoverPendingId,
+            status: "pending",
+            sourceGroupId,
+            approvalGroupId,
+            code: checkOverCommand.productCode,
+            productAmount: checkOverCommand.productAmount,
+            customerName: checkOverCommand.customerName,
+            loanAmount: checkOverCommand.loanAmount,
+            cut: checkOverCommand.cut
+          });
+        }
         const confirmMessages = buildCheckOverConfirmMessages(checkOverCommand, { sourceGroupId });
 
         // Check Over 때문에 자동으로 코드/등록이 실행된 경우,
