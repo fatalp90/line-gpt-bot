@@ -2013,6 +2013,53 @@ function buildTextMessage(text, quickReply) {
   };
 }
 
+function isTransferCompleteCommand(text) {
+  const clean = normalizeText(text).replace(/\s+/g, "");
+  return clean === "송금완료";
+}
+
+function buildTransferCompleteFlexMessage() {
+  return {
+    type: "flex",
+    altText: "송금완료",
+    contents: {
+      type: "bubble",
+      size: "kilo",
+      body: {
+        type: "box",
+        layout: "vertical",
+        alignItems: "center",
+        spacing: "md",
+        paddingAll: "24px",
+        contents: [
+          {
+            type: "text",
+            text: "💸",
+            size: "5xl",
+            align: "center"
+          },
+          {
+            type: "text",
+            text: "โอนเงินเรียบร้อยแล้ว",
+            weight: "bold",
+            size: "lg",
+            align: "center",
+            wrap: true
+          },
+          {
+            type: "text",
+            text: "송금이 완료되었습니다.",
+            size: "sm",
+            color: "#888888",
+            align: "center",
+            wrap: true
+          }
+        ]
+      }
+    }
+  };
+}
+
 async function callReceiptOcrOpenAI(image, retry = false) {
   const systemPrompt = retry
     ? "너는 한국 은행/간편송금 이체 캡처 이미지 재검토 OCR 분석기다. 1차 분석에서 등록 버튼을 만들지 못한 이미지를 다시 확인한다. 이미지는 모니터/ATM/휴대폰 화면을 다시 촬영한 사진일 수 있고, 반사광/유리빛/기울어짐/부분 가림/흐림/흔들림이 있거나, 화면이 가로/세로/90도/180도/270도 회전되어 있을 수 있으므로 반드시 가능한 모든 방향으로 돌려 읽는다고 가정한다. 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 먼저 판별한다. 단, 금액이 보인다고 해서 안내 포스터, 광고, 이벤트, 연체/벌금/납부 안내, 채팅 캡처, 일반 스크린샷이면 is_transfer_receipt=false로 둔다. 실제 금융앱 거래 화면으로 보이고 송금 금액이 사람 눈으로 읽히면 confidence를 과도하게 낮추지 마라. 금액은 KRW 55,000 / KRW55,000 / 55,000 KRW / ₩55,000 / 55000 / 55.000처럼 붙거나 줄이 나뉘거나 구분자가 달라도 같은 금액으로 인식한다. amount_won은 실제 상대방에게 송금/입금되는 순수 입금액만 넣는다. 수수료, 잔액, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 특히 화면에 송금액과 수수료가 따로 있고 총 결제금액/납부금액/합계가 크게 표시되는 경우, 총액이 더 크게 보이더라도 amount_won에는 송금액만 넣고 수수료 포함 총액은 제외한다. 금액 후보가 여러 개이면 Transfer amount / Amount to transfer / Sent amount / 송금액 / 이체금액 / 입금액 / จำนวนเงินที่ต้องการโอน / จำนวนเงินโอน 같은 라벨 옆 금액을 우선하고, Fee / Charge / 수수료 / ค่าธรรมเนียม 및 Total / Amount to pay / 총 결제금액 / 합계 / จำนวนที่ต้องชำระ 라벨 옆 금액은 제외한다. 계좌번호에 하이픈/공백이 있어도 숫자만 기준으로 읽는다. 수취인/예금주명/계좌번호 중 하나라도 기대값과 강하게 일치하고 금액이 확실하면, 화면 일부가 가려져도 등록 가능한 이체사진으로 판단한다. 특히 계좌번호 110551366954 또는 CHAYAPONE 계열 이름이 보이면 receipt_score와 confidence를 과도하게 낮추지 마라. 한 이미지 안에 같은 송금내역의 상단/하단 화면이 나란히 붙어 있거나, 같은 송금내역이 여러 장 캡처로 보이더라도 하나의 이체로만 판단하고 가장 명확한 송금금액 1개만 amount_won에 넣는다. 반드시 JSON만 출력한다."
@@ -4570,6 +4617,11 @@ export default async function handler(req, res) {
       const text = normalizeText(event.message.text);
       if (!text) continue;
 
+      if (isTransferCompleteCommand(text)) {
+        await replyToLineMessages(event.replyToken, [buildTransferCompleteFlexMessage()]);
+        continue;
+      }
+
       if (parseMyIdCommand(text)) {
         const userId = getLineUserId(event);
         await replyToLine(event.replyToken, userId ? `내아이디\n${userId}` : "⚠️ userId를 확인할 수 없습니다.");
@@ -4741,28 +4793,4 @@ export default async function handler(req, res) {
   }
 
   return res.status(200).send("OK");
-}
-
-
-// 송금완료 Flex reply
-async function replyTransferComplete(event){
-  const flex={
-    type:"flex",
-    altText:"송금완료",
-    contents:{
-      type:"bubble",
-      body:{
-        type:"box",
-        layout:"vertical",
-        alignItems:"center",
-        spacing:"md",
-        contents:[
-          {type:"text",text:"💸",size:"5xl",align:"center"},
-          {type:"text",text:"โอนเงินเรียบร้อยแล้ว",weight:"bold",size:"lg",align:"center"},
-          {type:"text",text:"송금이 완료되었습니다",size:"sm",color:"#888888",align:"center"}
-        ]
-      }
-    }
-  };
-  return client.replyMessage(event.replyToken, flex);
 }
