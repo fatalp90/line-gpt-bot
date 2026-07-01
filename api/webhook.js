@@ -4618,6 +4618,13 @@ export default async function handler(req, res) {
       if (!text) continue;
 
       if (isTransferCompleteCommand(text)) {
+        // 송금완료 카드는 관리자만 실행 가능.
+        // 고객이 같은 문구를 입력해도 카드가 뜨지 않도록 Check Over 관리자 권한을 재사용한다.
+        if (!canManageCheckOver(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
         await replyToLineMessages(event.replyToken, [buildTransferCompleteFlexMessage()]);
         continue;
       }
