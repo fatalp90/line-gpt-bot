@@ -117,7 +117,6 @@ function markMessageProcessing(event) {
 
 const LINE_CUSTOMER_START_ROW = 1058;
 const LINE_CUSTOMER_START_INDEX0 = LINE_CUSTOMER_START_ROW - 1;
-const LINE_BROADCAST_START_DATE = process.env.LINE_BROADCAST_START_DATE || "2026-04-01";
 const REPAYMENT_IGNORE_NOTICE = "(※ หากโอนเงินแล้ว หรือวันนี้ไม่ใช่วันชำระของคุณ กรุณาไม่ต้องสนใจข้อความนี้)";
 
 const REPAYMENT_MORNING_MESSAGE = `📌 วันนี้เป็นวันชำระ
@@ -143,8 +142,8 @@ const PAYMENT_REQUEST_MESSAGE = `📌 ยังไม่พบยอดโอน
 กรุณาโอนเงินโดยเร็ว
 
 👉ธนาคาร SHINHAN BANK
-👉ชื่อบช. 110551366954
-👉ชื่อ  CHAYAPONE
+👉เลขบัญชี 110551366954
+👉ชื่อบัญชี CHAYAPONE
 
 ${REPAYMENT_IGNORE_NOTICE}`;
 
@@ -3230,75 +3229,25 @@ function hasDollarToday(values, topIndex0, todayColumnIndex0) {
   return topToday === "$" || bottomToday === "$";
 }
 
-function parseBroadcastStartDate(todayInfo = null) {
-  const today = todayInfo || getKoreaToday();
-  const raw = String(LINE_BROADCAST_START_DATE || "").trim();
-  const match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-
-  if (match) {
-    return {
-      year: Number(match[1]),
-      month: Number(match[2]),
-      day: Number(match[3])
-    };
-  }
-
-  // 환경변수 형식이 잘못된 경우 현재 연도 4월 1일로 제한한다.
-  return { year: today.year, month: 4, day: 1 };
-}
-
-function dateInfoToNumber(dateInfo) {
-  return dateInfo.year * 10000 + dateInfo.month * 100 + dateInfo.day;
-}
-
-function parseCustomerStartDateFromRow(row) {
-  const yearMonth = parseYearMonthValue(row?.[1]); // B열 년/월
-  const dayRaw = String(row?.[7] ?? "").trim(); // H열 날짜
-
-  if (!yearMonth || !dayRaw) return null;
-
-  const year = getFullYearFromYearMonth(yearMonth);
-  const month = Number(String(yearMonth).slice(2, 4));
-  const day = Number(dayRaw.replace(/[^0-9]/g, ""));
-
-  if (!Number.isInteger(day) || day < 1 || day > 31) return null;
-
-  return { year, month, day };
-}
-
-function isBroadcastTargetDateRow(row, todayInfo = null) {
-  const today = todayInfo || getKoreaToday();
-  const startDate = parseBroadcastStartDate(today);
-  const rowDate = parseCustomerStartDateFromRow(row);
-
-  if (!rowDate) return false;
-
-  const rowNumber = dateInfoToNumber(rowDate);
-  return rowNumber >= dateInfoToNumber(startDate) && rowNumber <= dateInfoToNumber(today);
-}
-
-function findTodayDollarCodes(values, registeredCodes = null) {
+function findTodayDollarCodes(values) {
   const today = getKoreaToday();
   const todayColumnIndex0 = findTodayColumnIndex(values, today.day);
   const codes = [];
   const seen = new Set();
 
-  // 오늘상환오전/오후/요청 공통 대상 조회
-  // 조건을 단순화한다: 진행중 + 오늘 날짜 칸에 $ + 상품명(F열) 코드 추출 + LINE그룹매핑 등록.
-  // B열/H열 날짜 계산, 시작일 계산, 4월 1일 이후 필터는 오작동 원인이 될 수 있어 제외한다.
-  // LINE 고객 구간은 고객 1명당 2행 구조이므로 1058행부터 2행씩 검색한다.
+  // 오늘상환 알림 대상 조회 조건을 단순화한다.
+  // 조건: 상태가 진행중이고, 오늘 날짜 칸에 $가 있으며, F열 상품명에서 코드가 추출되는 고객.
+  // B열/H열 날짜 계산이나 시작월 필터는 사용하지 않는다.
   for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
     const productName = String(row[5] || "").trim(); // F열 상품명
 
     if (status !== "진행중") continue;
+    if (!hasDollarToday(values, i, todayColumnIndex0)) continue;
 
     const code = extractCustomerCodeFromProductName(productName);
     if (!code) continue;
-    if (registeredCodes && !registeredCodes.has(code)) continue;
-
-    if (!hasDollarToday(values, i, todayColumnIndex0)) continue;
 
     if (!seen.has(code)) {
       seen.add(code);
@@ -3391,19 +3340,33 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
     groupMap.set(code, groupId);
   }
 
-  const rawCodes = findTodayDollarCodes(values, new Set(groupMap.keys()));
+  const rawCodes = findTodayDollarCodes(values);
   const codes = [];
+  const unregisteredCodes = [];
   const seenGroupIds = new Set();
+  const seenUnregisteredCodes = new Set();
 
   for (const code of rawCodes) {
     const groupId = groupMap.get(code);
-    if (!groupId) continue;
+
+    if (!groupId) {
+      if (!seenUnregisteredCodes.has(code)) {
+        seenUnregisteredCodes.add(code);
+        unregisteredCodes.push(code);
+      }
+      continue;
+    }
+
     if (seenGroupIds.has(groupId)) continue;
     seenGroupIds.add(groupId);
     codes.push(code);
   }
 
   if (!codes.length) {
+    if (unregisteredCodes.length) {
+      return `⚠️ 오늘 발송 대상이 없습니다.\n\n그룹 미등록: ${unregisteredCodes.length}명\n${unregisteredCodes.join("\n")}`;
+    }
+
     return "⚠️ 오늘 발송 대상이 없습니다.";
   }
 
@@ -3447,12 +3410,20 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
     }
   }
 
-  if (failedItems.length) {
-    const lines = failedItems.map(item => `${item.code} - ${item.error}`);
-    return `❌ 발송 일부 실패\n\n✅ 성공: ${successCount}건\n❌ 실패: ${failedItems.length}건\n\n${lines.join("\n")}`;
+  const summaryLines = [`✅ 발송 완료`, ``, `발송 완료: ${successCount}건`];
+
+  if (unregisteredCodes.length) {
+    summaryLines.push(`그룹 미등록: ${unregisteredCodes.length}명`, ``, ...unregisteredCodes);
+  } else {
+    summaryLines.push(`그룹 미등록: 0명`);
   }
 
-  return `✅ 발송 완료\n\n총 ${successCount}건 전송완료`;
+  if (failedItems.length) {
+    const lines = failedItems.map(item => `${item.code} - ${item.error}`);
+    return `❌ 발송 일부 실패\n\n${summaryLines.join("\n")}\n\n실패: ${failedItems.length}건\n${lines.join("\n")}`;
+  }
+
+  return summaryLines.join("\n");
 }
 
 
