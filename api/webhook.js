@@ -118,7 +118,7 @@ function markMessageProcessing(event) {
 const LINE_CUSTOMER_START_ROW = 1058;
 const LINE_CUSTOMER_START_INDEX0 = LINE_CUSTOMER_START_ROW - 1;
 const LINE_BROADCAST_START_DATE = process.env.LINE_BROADCAST_START_DATE || "2026-04-01";
-const REPAYMENT_IGNORE_NOTICE = "(หากชำระเรียบร้อยแล้ว สามารถละเว้นข้อความนี้ได้ครับ)";
+const REPAYMENT_IGNORE_NOTICE = "(※ หากโอนเงินแล้ว หรือวันนี้ไม่ใช่วันชำระของคุณ กรุณาไม่ต้องสนใจข้อความนี้)";
 
 const REPAYMENT_MORNING_MESSAGE = `📌 วันนี้เป็นวันชำระ
 โอนภายในเวลา 20:00 น.
@@ -139,7 +139,8 @@ const REPAYMENT_AFTERNOON_MESSAGE = `📌 เวลา 20:00 น. แล้ว
 ${REPAYMENT_IGNORE_NOTICE}`;
 
 const PAYMENT_REQUEST_MESSAGE = `📌 ยังไม่พบยอดโอน
-รีบโอนเงินครับ
+
+กรุณาโอนเงินโดยเร็ว
 
 👉ธนาคาร SHINHAN BANK
 👉ชื่อบช. 110551366954
@@ -3282,15 +3283,15 @@ function findTodayDollarCodes(values, registeredCodes = null) {
   const codes = [];
   const seen = new Set();
 
-  // 오늘상환 알림은 4월 1일부터 현재까지의 실제 고객 행만 검색한다.
-  // 조건: B열 년/월 + H열 날짜가 유효하고, 상태가 진행중이며, 오늘 날짜 칸에 $가 있고, LINE그룹매핑에 등록된 코드.
-  // 목차/구분행/이전 데이터가 후보에 섞여 크레딧이 과다 소모되는 것을 막기 위해 날짜 범위를 먼저 제한한다.
-  for (let i = 1; i < values.length; i += 1) {
+  // 오늘상환오전/오후/요청 공통 대상 조회
+  // 조건을 단순화한다: 진행중 + 오늘 날짜 칸에 $ + 상품명(F열) 코드 추출 + LINE그룹매핑 등록.
+  // B열/H열 날짜 계산, 시작일 계산, 4월 1일 이후 필터는 오작동 원인이 될 수 있어 제외한다.
+  // LINE 고객 구간은 고객 1명당 2행 구조이므로 1058행부터 2행씩 검색한다.
+  for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
     const productName = String(row[5] || "").trim(); // F열 상품명
 
-    if (!isBroadcastTargetDateRow(row, today)) continue;
     if (status !== "진행중") continue;
 
     const code = extractCustomerCodeFromProductName(productName);
