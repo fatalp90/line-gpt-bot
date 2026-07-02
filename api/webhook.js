@@ -1221,6 +1221,32 @@ async function updateSheetCell(accessToken, rowNumber, columnIndex0, value) {
   return `${columnLetter}${rowNumber}`;
 }
 
+async function batchUpdateSheetCells(accessToken, updates) {
+  const validUpdates = (updates || [])
+    .filter(item => item && Number.isFinite(item.rowNumber) && Number.isFinite(item.columnIndex0));
+
+  if (!validUpdates.length) return [];
+
+  const data = validUpdates.map(item => {
+    const columnLetter = columnNumberToLetter(item.columnIndex0 + 1);
+    const range = `'${escapeSheetName(SHEET_NAME)}'!${columnLetter}${item.rowNumber}`;
+    return {
+      range,
+      majorDimension: "ROWS",
+      values: [[item.value]]
+    };
+  });
+
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values:batchUpdate`;
+  await axios.post(
+    url,
+    { valueInputOption: "USER_ENTERED", data },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+
+  return data.map(item => item.range);
+}
+
 async function updateSheetRange(accessToken, startRowNumber, startColumnIndex0, values) {
   const rowCount = values.length;
   const columnCount = values.reduce((max, row) => Math.max(max, row.length), 0);
@@ -3434,6 +3460,103 @@ function findTodayColumnIndex(values, day) {
     if (Number(cell) === Number(day)) return col;
   }
   return DATE_START_COLUMN_INDEX + day - 1;
+}
+
+function getKoreaYesterdayInfo(todayInfo = null) {
+  const today = todayInfo || getKoreaToday();
+  if (today.day > 1) {
+    return { year: today.year, month: today.month, day: today.day - 1 };
+  }
+
+  if (today.month > 1) {
+    const month = today.month - 1;
+    return { year: today.year, month, day: getDaysInMonth(today.year, month) };
+  }
+
+  return { year: today.year - 1, month: 12, day: 31 };
+}
+
+function buildRepaymentRolloverUpdates(values, todayInfo = null) {
+  const today = todayInfo || getKoreaToday();
+  const yesterday = getKoreaYesterdayInfo(today);
+  const todayColumnIndex0 = findTodayColumnIndex(values, today.day);
+  const yesterdayColumnIndex0 = findTodayColumnIndex(values, yesterday.day);
+  const updates = [];
+  let activeCount = 0;
+  let yesterdayXCount = 0;
+  let todayDollarCount = 0;
+
+  // 고객 데이터는 1058행부터 고객 1명당 2행 구조다.
+  // 진행중 건만 대상으로 하며, 전날 $가 남아 있는 같은 행만 오늘 날짜로 이월한다.
+  // 오늘 칸에 숫자가 있거나 이미 $가 있으면 절대 덮어쓰지 않는다.
+  for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
+    const topRow = values[i] || [];
+    const bottomRow = values[i + 1] || [];
+    const status = String(topRow[2] || "").trim(); // C열 상태
+    const productName = String(topRow[5] || "").trim(); // F열 상품명
+    const customerName = String(topRow[6] || "").trim(); // G열 고객명
+
+    if (status !== "진행중") continue;
+    if (!customerName && !extractCustomerCodeFromProductName(productName)) continue;
+
+    activeCount += 1;
+
+    for (const offset of [0, 1]) {
+      const rowIndex0 = i + offset;
+      const row = offset === 0 ? topRow : bottomRow;
+      const rowNumber = rowIndex0 + 1;
+      const yesterdayValue = String(row[yesterdayColumnIndex0] ?? "").trim();
+      const todayValue = String(row[todayColumnIndex0] ?? "").trim();
+
+      if (yesterdayValue !== "$") continue;
+
+      updates.push({ rowNumber, columnIndex0: yesterdayColumnIndex0, value: "X" });
+      yesterdayXCount += 1;
+
+      if (isBlankCell(todayValue) || todayValue === "-") {
+        updates.push({ rowNumber, columnIndex0: todayColumnIndex0, value: "$" });
+        todayDollarCount += 1;
+      }
+    }
+  }
+
+  return {
+    today,
+    yesterday,
+    todayColumnIndex0,
+    yesterdayColumnIndex0,
+    activeCount,
+    yesterdayXCount,
+    todayDollarCount,
+    updates
+  };
+}
+
+export async function runRepaymentRolloverCron() {
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const values = await getSheetValues(accessToken);
+  const result = buildRepaymentRolloverUpdates(values);
+
+  if (result.updates.length) {
+    await batchUpdateSheetCells(accessToken, result.updates);
+  }
+
+  const todayText = `${result.today.year}-${pad2(result.today.month)}-${pad2(result.today.day)}`;
+  const yesterdayText = `${result.yesterday.year}-${pad2(result.yesterday.month)}-${pad2(result.yesterday.day)}`;
+
+  return {
+    message: "repayment rollover completed",
+    yesterday: yesterdayText,
+    today: todayText,
+    activeCount: result.activeCount,
+    yesterdayDollarToX: result.yesterdayXCount,
+    todayBlankOrDashToDollar: result.todayDollarCount,
+    updatedCells: result.updates.length
+  };
 }
 
 function chooseTargetRow(values, topIndex0, todayColumnIndex0) {
