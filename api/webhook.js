@@ -2377,7 +2377,7 @@ async function getReceiptApprovalGroupId(accessToken) {
 
 function getReceiptDoneText(receipt) {
   return `✅ ${receipt.code}/${receipt.value}
-${formatWon(receipt.won)} ยืนยันการรับโอนเรียบร้อยแล้ว
+${formatWon(receipt.won)} รับโอนเรียบร้อย
 
 (${getKoreaDateTimeText()})`;
 }
@@ -2407,7 +2407,7 @@ function buildReceiptDoneFlexMessage(receipt, dateTimeText = getKoreaDateTimeTex
           },
           {
             type: "text",
-            text: "ยืนยันการรับโอนเรียบร้อยแล้ว",
+            text: "รับโอนเรียบร้อย",
             weight: "bold",
             size: "lg",
             align: "center",
@@ -2430,33 +2430,33 @@ function buildReceiptDoneFlexMessage(receipt, dateTimeText = getKoreaDateTimeTex
             layout: "vertical",
             spacing: "sm",
             margin: "lg",
+            width: "100%",
             contents: [
               {
-                type: "box",
-                layout: "baseline",
-                spacing: "sm",
-                contents: [
-                  { type: "text", text: "👤", size: "sm", flex: 0 },
-                  { type: "text", text: codeText, size: "md", weight: "bold", color: "#333333", wrap: true }
-                ]
+                type: "text",
+                text: `👤 ${codeText}`,
+                size: "md",
+                weight: "bold",
+                color: "#333333",
+                align: "center",
+                wrap: true
               },
               {
-                type: "box",
-                layout: "baseline",
-                spacing: "sm",
-                contents: [
-                  { type: "text", text: "💰", size: "sm", flex: 0 },
-                  { type: "text", text: amountText, size: "md", weight: "bold", color: "#333333", wrap: true }
-                ]
+                type: "text",
+                text: `💰 ${amountText}`,
+                size: "md",
+                weight: "bold",
+                color: "#333333",
+                align: "center",
+                wrap: true
               },
               {
-                type: "box",
-                layout: "baseline",
-                spacing: "sm",
-                contents: [
-                  { type: "text", text: "🕒", size: "sm", flex: 0 },
-                  { type: "text", text: dateTimeText, size: "sm", color: "#888888", wrap: true }
-                ]
+                type: "text",
+                text: `🕒 ${dateTimeText}`,
+                size: "sm",
+                color: "#888888",
+                align: "center",
+                wrap: true
               }
             ]
           }
