@@ -2868,17 +2868,25 @@ async function pushToLineWithRetry(code, groupId, text) {
 
 function parseTodayRepaymentBroadcastCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
+  const match = clean.match(/^(오늘상환요청|오늘상환오전|오늘상환오후)(?:\/([A-Za-z0-9가-힣_-]{1,10}))?$/);
 
-  if (clean === "오늘상환요청") {
-    return { type: "payment", message: PAYMENT_REQUEST_MESSAGE };
+  if (!match) {
+    return null;
   }
 
-  if (clean === "오늘상환오전") {
-    return { type: "morning", message: REPAYMENT_MORNING_MESSAGE };
+  const command = match[1];
+  const codePrefix = match[2] ? match[2].trim().toUpperCase() : "";
+
+  if (command === "오늘상환요청") {
+    return { type: "payment", message: PAYMENT_REQUEST_MESSAGE, codePrefix };
   }
 
-  if (clean === "오늘상환오후") {
-    return { type: "afternoon", message: REPAYMENT_AFTERNOON_MESSAGE };
+  if (command === "오늘상환오전") {
+    return { type: "morning", message: REPAYMENT_MORNING_MESSAGE, codePrefix };
+  }
+
+  if (command === "오늘상환오후") {
+    return { type: "afternoon", message: REPAYMENT_AFTERNOON_MESSAGE, codePrefix };
   }
 
   return null;
@@ -3429,10 +3437,12 @@ async function checkUnregisteredGroups() {
   return `❌ 미등록 고객\n\n${unregisteredCodes.join("\n")}`;
 }
 
-async function sendTodayRepaymentBroadcast(broadcastMessage) {
+async function sendTodayRepaymentBroadcast(broadcastMessage, codePrefix = "") {
   if (!SHEET_ID) {
     return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
   }
+
+  const targetPrefix = String(codePrefix || "").trim().toUpperCase();
 
   const accessToken = await getGoogleAccessToken();
   const values = await getSheetValues(accessToken);
@@ -3455,12 +3465,15 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
   }
 
   const rawCodes = findTodayDollarCodes(values);
+  const filteredRawCodes = targetPrefix
+    ? rawCodes.filter(code => String(code || "").toUpperCase().startsWith(targetPrefix))
+    : rawCodes;
   const codes = [];
   const unregisteredCodes = [];
   const seenGroupIds = new Set();
   const seenUnregisteredCodes = new Set();
 
-  for (const code of rawCodes) {
+  for (const code of filteredRawCodes) {
     const groupId = groupMap.get(code);
 
     if (!groupId) {
@@ -3477,11 +3490,13 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
   }
 
   if (!codes.length) {
+    const prefixNotice = targetPrefix ? ` (${targetPrefix} 대상)` : "";
+
     if (unregisteredCodes.length) {
-      return `⚠️ 오늘 발송 대상이 없습니다.\n\n그룹 미등록: ${unregisteredCodes.length}명\n${unregisteredCodes.join("\n")}`;
+      return `⚠️ 오늘 발송 대상이 없습니다${prefixNotice}.\n\n그룹 미등록: ${unregisteredCodes.length}명\n${unregisteredCodes.join("\n")}`;
     }
 
-    return "⚠️ 오늘 발송 대상이 없습니다.";
+    return `⚠️ 오늘 발송 대상이 없습니다${prefixNotice}.`;
   }
 
   const failedItems = [];
@@ -3524,7 +3539,9 @@ async function sendTodayRepaymentBroadcast(broadcastMessage) {
     }
   }
 
-  const summaryLines = [`✅ 발송 완료`, ``, `발송 완료: ${successCount}건`];
+  const summaryLines = targetPrefix
+    ? [`✅ 발송 완료`, ``, `대상코드: ${targetPrefix}`, `발송 완료: ${successCount}건`]
+    : [`✅ 발송 완료`, ``, `발송 완료: ${successCount}건`];
 
   if (unregisteredCodes.length) {
     summaryLines.push(`그룹 미등록: ${unregisteredCodes.length}명`, ``, ...unregisteredCodes);
@@ -5078,7 +5095,10 @@ export default async function handler(req, res) {
           continue;
         }
 
-        const broadcastReply = await sendTodayRepaymentBroadcast(todayRepaymentBroadcastCommand.message);
+        const broadcastReply = await sendTodayRepaymentBroadcast(
+          todayRepaymentBroadcastCommand.message,
+          todayRepaymentBroadcastCommand.codePrefix
+        );
         if (broadcastReply) {
           await replyToLine(event.replyToken, broadcastReply);
         }
