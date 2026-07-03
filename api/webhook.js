@@ -4767,7 +4767,6 @@ async function translateText(text, conversationKey) {
 }
 
 
-
 function getKoreaHourNumber(date = new Date()) {
   const hourText = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Seoul",
