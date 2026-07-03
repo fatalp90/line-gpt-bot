@@ -2377,19 +2377,107 @@ async function getReceiptApprovalGroupId(accessToken) {
 
 function getReceiptDoneText(receipt) {
   return `✅ ${receipt.code}/${receipt.value}
-등록 완료되었습니다.
+${formatWon(receipt.won)} ยืนยันการรับโอนเรียบร้อยแล้ว
 
 (${getKoreaDateTimeText()})`;
 }
 
-async function pushReceiptDoneToRelatedGroups({ clickedGroupId, sourceGroupId, approvalGroupId, text }) {
+function buildReceiptDoneFlexMessage(receipt, dateTimeText = getKoreaDateTimeText()) {
+  const codeText = `${receipt.code}/${receipt.value}`;
+  const amountText = formatWon(receipt.won);
+
+  return {
+    type: "flex",
+    altText: `✅ ${codeText} ${amountText} 입금 확인 완료`,
+    contents: {
+      type: "bubble",
+      size: "kilo",
+      body: {
+        type: "box",
+        layout: "vertical",
+        alignItems: "center",
+        spacing: "md",
+        paddingAll: "24px",
+        contents: [
+          {
+            type: "text",
+            text: "✅",
+            size: "5xl",
+            align: "center"
+          },
+          {
+            type: "text",
+            text: "ยืนยันการรับโอนเรียบร้อยแล้ว",
+            weight: "bold",
+            size: "lg",
+            align: "center",
+            wrap: true
+          },
+          {
+            type: "text",
+            text: "입금 확인 완료",
+            size: "sm",
+            color: "#888888",
+            align: "center",
+            wrap: true
+          },
+          {
+            type: "separator",
+            margin: "lg"
+          },
+          {
+            type: "box",
+            layout: "vertical",
+            spacing: "sm",
+            margin: "lg",
+            contents: [
+              {
+                type: "box",
+                layout: "baseline",
+                spacing: "sm",
+                contents: [
+                  { type: "text", text: "👤", size: "sm", flex: 0 },
+                  { type: "text", text: codeText, size: "md", weight: "bold", color: "#333333", wrap: true }
+                ]
+              },
+              {
+                type: "box",
+                layout: "baseline",
+                spacing: "sm",
+                contents: [
+                  { type: "text", text: "💰", size: "sm", flex: 0 },
+                  { type: "text", text: amountText, size: "md", weight: "bold", color: "#333333", wrap: true }
+                ]
+              },
+              {
+                type: "box",
+                layout: "baseline",
+                spacing: "sm",
+                contents: [
+                  { type: "text", text: "🕒", size: "sm", flex: 0 },
+                  { type: "text", text: dateTimeText, size: "sm", color: "#888888", wrap: true }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  };
+}
+
+function buildReceiptDoneMessages(receipt) {
+  return [buildReceiptDoneFlexMessage(receipt)];
+}
+
+async function pushReceiptDoneToRelatedGroups({ clickedGroupId, sourceGroupId, approvalGroupId, messages }) {
   const targets = new Set([sourceGroupId, approvalGroupId].filter(Boolean));
   if (clickedGroupId) targets.delete(clickedGroupId);
 
   const failures = [];
   for (const targetGroupId of targets) {
     try {
-      await pushToLine(targetGroupId, text);
+      await pushToLineMessages(targetGroupId, messages);
     } catch (err) {
       const errorText = getLinePushErrorMessage(err);
       failures.push(`${targetGroupId}: ${errorText}`);
@@ -2664,16 +2752,16 @@ ${receipt.code} / ${formatWon(receipt.won)} / 입력값 ${receipt.value}
   await setReceiptStatus("confirmed");
 
   const clickedGroupId = getLineSourceGroupId(event);
-  const doneText = getReceiptDoneText(receipt);
+  const doneMessages = buildReceiptDoneMessages(receipt);
   const approvalGroupId = cached?.approvalGroupId || (SHEET_ID ? await getReceiptApprovalGroupId(accessToken) : null);
   const sourceGroupId = cached?.sourceGroupId || pending?.sourceGroupId || receipt.sourceGroupId;
 
-  await replyToLine(event.replyToken, doneText);
+  await replyToLineMessages(event.replyToken, doneMessages);
   const pushFailures = await pushReceiptDoneToRelatedGroups({
     clickedGroupId,
     sourceGroupId,
     approvalGroupId,
-    text: doneText
+    messages: doneMessages
   });
 
   if (!sourceGroupId) {
