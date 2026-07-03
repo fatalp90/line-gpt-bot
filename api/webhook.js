@@ -3820,23 +3820,23 @@ function buildManualDateChangePlan(values, todayInfo = null) {
       const todayValueRaw = row[todayColumnIndex0] ?? "";
       const yesterdayValue = String(yesterdayValueRaw).trim();
       const todayValue = String(todayValueRaw).trim();
-      const shouldCreateTodayDollar = isBlankCell(todayValue) || todayValue === "-";
-      const shouldChangeYesterdayToX = yesterdayValue === "$";
 
-      if (shouldChangeYesterdayToX) yesterdayDollarTotal += 1;
-      if (!shouldCreateTodayDollar && !shouldChangeYesterdayToX) continue;
+      // 날짜변경 대상은 "어제 $"인 진행중 고객만이다.
+      // 오늘 칸이 비어있는 진행중 전체에 $를 찍지 않는다.
+      if (yesterdayValue !== "$") continue;
 
+      yesterdayDollarTotal += 1;
       addBackup(rowNumber, yesterdayValueRaw, todayValueRaw);
 
-      if (shouldCreateTodayDollar) {
+      // 실행 순서: 오늘 $ 생성 → 어제 $를 X로 변경.
+      // 단, 오늘 칸에 이미 값이 있으면 덮어쓰지 않는다.
+      if (isBlankCell(todayValue) || todayValue === "-") {
         updates.push({ rowNumber, columnIndex0: todayColumnIndex0, value: "$" });
         todayDollarCount += 1;
       }
 
-      if (shouldChangeYesterdayToX) {
-        updates.push({ rowNumber, columnIndex0: yesterdayColumnIndex0, value: "X" });
-        yesterdayXCount += 1;
-      }
+      updates.push({ rowNumber, columnIndex0: yesterdayColumnIndex0, value: "X" });
+      yesterdayXCount += 1;
     }
   }
 
@@ -3871,7 +3871,6 @@ async function runManualDateChange() {
       "",
       `오늘($) 생성 : ${result.todayDollarCount}건`,
       `어제($→X) 변경 : ${result.yesterdayXCount}건`,
-      `진행중 기준 어제 $ 전체 : ${result.yesterdayDollarTotal}건`,
       "",
       "※ 기존 날짜복구 백업은 유지했습니다."
     ].join("\n");
@@ -3896,7 +3895,6 @@ async function runManualDateChange() {
     "",
     `오늘($) 생성 : ${result.todayDollarCount}건`,
     `어제($→X) 변경 : ${result.yesterdayXCount}건`,
-    `진행중 기준 어제 $ 전체 : ${result.yesterdayDollarTotal}건`,
     "",
     "※ 필요 시 '날짜복구' 명령으로 이전 상태를 복원할 수 있습니다."
   ].join("\n");
