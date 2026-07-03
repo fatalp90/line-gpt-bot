@@ -791,7 +791,7 @@ async function handleCheckOverPostback(event, checkover) {
       clickedGroupId,
       sourceGroupId,
       approvalGroupId,
-      text: reply
+      messages: [buildTextMessage(reply)]
     });
 
     if (pushFailures.length) {
