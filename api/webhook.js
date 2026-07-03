@@ -3799,7 +3799,8 @@ function buildManualDateChangePlan(values, todayInfo = null) {
   // 날짜변경 명령어 전용 로직.
   // 순서: 오늘 날짜에 $ 먼저 생성 → 어제 날짜의 $를 X로 변경.
   // 진행중 고객만 대상으로 하며, 숫자/X/메모 등 기존 값은 덮어쓰지 않는다.
-  for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
+  // 특정 시작 행(예: 1058행)으로 제한하지 않고 전체 시트에서 C열이 "진행중"인 고객 행을 모두 검사한다.
+  for (let i = 1; i < values.length; i += 1) {
     const topRow = values[i] || [];
     const bottomRow = values[i + 1] || [];
     const status = String(topRow[2] || "").trim(); // C열 상태
@@ -3917,13 +3918,17 @@ async function restoreLastManualDateChange() {
   const latestRunId = String(dataRows[dataRows.length - 1]?.[0] || "").trim();
   const restoreRows = dataRows.filter(row => String(row?.[0] || "").trim() === latestRunId);
   const updates = [];
+  const restoredRowNumbers = new Set();
 
+  // 날짜복구는 특정 시작 행(예: 1058행) 기준으로 다시 검색하지 않는다.
+  // 날짜변경 때 백업된 전체 행번호를 그대로 사용해 복구한다.
   for (const row of restoreRows) {
     const rowNumber = Number(row[1]);
     const yesterdayColumnIndex0 = columnLetterToIndex0(row[2]);
     const todayColumnIndex0 = columnLetterToIndex0(row[3]);
     if (!Number.isFinite(rowNumber) || !Number.isFinite(yesterdayColumnIndex0) || !Number.isFinite(todayColumnIndex0)) continue;
 
+    restoredRowNumbers.add(rowNumber);
     updates.push({ rowNumber, columnIndex0: yesterdayColumnIndex0, value: row[4] ?? "" });
     updates.push({ rowNumber, columnIndex0: todayColumnIndex0, value: row[5] ?? "" });
   }
@@ -3938,7 +3943,8 @@ async function restoreLastManualDateChange() {
   return [
     "✅ 날짜 복구 완료",
     "",
-    `복구 행 : ${restoreRows.length}건`
+    `복구 행 : ${restoredRowNumbers.size}건`,
+    `복구 셀 : ${updates.length}건`
   ].join("\n");
 }
 
