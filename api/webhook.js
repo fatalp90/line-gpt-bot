@@ -44,6 +44,7 @@ const RECEIPT_APPROVAL_GROUP_CODE = String(process.env.RECEIPT_APPROVAL_GROUP_CO
 const RECEIPT_APPROVAL_GROUP_ID = String(process.env.RECEIPT_APPROVAL_GROUP_ID || "").trim();
 const RECEIPT_PENDING_SHEET_NAME = process.env.RECEIPT_PENDING_SHEET_NAME || "LINE등록대기";
 const CHECKOVER_PENDING_SHEET_NAME = process.env.CHECKOVER_PENDING_SHEET_NAME || "체크오버등록대기";
+const DATE_CHANGE_BACKUP_SHEET_NAME = process.env.DATE_CHANGE_BACKUP_SHEET_NAME || "날짜변경백업";
 
 const RECEIPT_DUPLICATE_TTL_MS = Number(process.env.RECEIPT_DUPLICATE_TTL_MS || 24 * 60 * 60 * 1000);
 // 고객이 같은 송금내역을 위/아래 화면으로 나눠 2장 이상 연속 전송하는 경우
@@ -165,6 +166,17 @@ function columnNumberToLetter(columnNumber) {
     n = Math.floor((n - rem - 1) / 26);
   }
   return temp;
+}
+
+
+function columnLetterToIndex0(letter) {
+  const clean = String(letter || "").trim().toUpperCase();
+  if (!/^[A-Z]+$/.test(clean)) return NaN;
+  let n = 0;
+  for (const ch of clean) {
+    n = n * 26 + (ch.charCodeAt(0) - 64);
+  }
+  return n - 1;
 }
 
 function escapeSheetName(name) {
@@ -681,6 +693,70 @@ async function pushCheckOverConfirmToApprovalGroup(event, command) {
     const errorText = getLinePushErrorMessage(err);
     console.error(`[CHECKOVER APPROVAL PUSH FAIL] code=${command?.productCode || "-"} error=${errorText}`);
   }
+}
+
+
+function parseDateChangeCommand(text) {
+  const clean = normalizeText(text).replace(/\s+/g, "");
+  if (clean === "날짜변경") return { action: "change" };
+  if (clean === "날짜복구") return { action: "restore" };
+  return null;
+}
+
+function parseDateChangePostback(event) {
+  const data = String(event?.postback?.data || "");
+  const params = new URLSearchParams(data);
+  if (params.get("datechange") !== "1") return null;
+
+  const action = String(params.get("action") || "").trim();
+  if (!["change", "restore", "cancel"].includes(action)) return null;
+  return { action };
+}
+
+function buildDateChangeConfirmMessage(action) {
+  const isRestore = action === "restore";
+  return {
+    type: "template",
+    altText: isRestore ? "날짜복구 확인" : "날짜변경 확인",
+    template: {
+      type: "confirm",
+      text: isRestore
+        ? "⚠️ 마지막 날짜변경 작업을 복구하시겠습니까?"
+        : "⚠️ 날짜를 변경하시겠습니까?\n오늘($) 생성 후 어제($→X)를 변경합니다.",
+      actions: [
+        {
+          type: "postback",
+          label: isRestore ? "복구하기" : "변경하기",
+          data: `datechange=1&action=${isRestore ? "restore" : "change"}`,
+          displayText: isRestore ? "날짜복구 실행" : "날짜변경 실행"
+        },
+        {
+          type: "postback",
+          label: "취소",
+          data: "datechange=1&action=cancel",
+          displayText: "취소"
+        }
+      ]
+    }
+  };
+}
+
+async function handleDateChangePostback(event, command) {
+  if (!isAdmin(event)) {
+    await replyUnauthorized(event);
+    return;
+  }
+
+  if (command.action === "cancel") {
+    await replyToLine(event.replyToken, "취소되었습니다.");
+    return;
+  }
+
+  const reply = command.action === "restore"
+    ? await restoreLastManualDateChange()
+    : await runManualDateChange();
+
+  await replyToLine(event.replyToken, reply);
 }
 
 function parseCheckOverPostback(event) {
@@ -1472,6 +1548,63 @@ async function ensureCheckOverPendingSheet(accessToken) {
     ]] },
     { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
   );
+}
+
+
+async function ensureDateChangeBackupSheet(accessToken) {
+  const titles = await getSpreadsheetSheetTitles(accessToken);
+  if (titles.includes(DATE_CHANGE_BACKUP_SHEET_NAME)) return;
+
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}:batchUpdate`;
+  await axios.post(
+    url,
+    { requests: [{ addSheet: { properties: { title: DATE_CHANGE_BACKUP_SHEET_NAME } } }] },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+
+  const headerRange = `'${escapeSheetName(DATE_CHANGE_BACKUP_SHEET_NAME)}'!A1:H1`;
+  const headerUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(headerRange)}?valueInputOption=USER_ENTERED`;
+  await axios.put(
+    headerUrl,
+    { range: headerRange, majorDimension: "ROWS", values: [[
+      "실행ID", "행번호", "어제열", "오늘열", "어제값", "오늘값", "백업일시", "상태"
+    ]] },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+}
+
+async function clearDateChangeBackupSheet(accessToken) {
+  await ensureDateChangeBackupSheet(accessToken);
+  const range = `'${escapeSheetName(DATE_CHANGE_BACKUP_SHEET_NAME)}'!A2:H`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:clear`;
+  await axios.post(
+    url,
+    {},
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+}
+
+async function appendDateChangeBackupRows(accessToken, rows) {
+  await ensureDateChangeBackupSheet(accessToken);
+  if (!rows?.length) return;
+
+  const range = `'${escapeSheetName(DATE_CHANGE_BACKUP_SHEET_NAME)}'!A:H`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+  await axios.post(
+    url,
+    { range, majorDimension: "ROWS", values: rows },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+}
+
+async function getDateChangeBackupValues(accessToken) {
+  await ensureDateChangeBackupSheet(accessToken);
+  const range = `'${escapeSheetName(DATE_CHANGE_BACKUP_SHEET_NAME)}'!A:H`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`;
+  const response = await axios.get(url, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  return response.data.values || [];
 }
 
 function makeCheckOverPendingId(command, sourceGroupId) {
@@ -3637,6 +3770,178 @@ function buildRepaymentRolloverUpdates(values, todayInfo = null) {
   };
 }
 
+
+function buildManualDateChangePlan(values, todayInfo = null) {
+  const today = todayInfo || getKoreaToday();
+  const yesterday = getKoreaYesterdayInfo(today);
+  const todayColumnIndex0 = findTodayColumnIndex(values, today.day);
+  const yesterdayColumnIndex0 = findTodayColumnIndex(values, yesterday.day);
+  const updates = [];
+  const backupItems = [];
+  const backupSeenRows = new Set();
+  let activeCount = 0;
+  let yesterdayDollarTotal = 0;
+  let yesterdayXCount = 0;
+  let todayDollarCount = 0;
+
+  function addBackup(rowNumber, yesterdayValue, todayValue) {
+    if (backupSeenRows.has(rowNumber)) return;
+    backupSeenRows.add(rowNumber);
+    backupItems.push({
+      rowNumber,
+      yesterdayColumnIndex0,
+      todayColumnIndex0,
+      yesterdayValue,
+      todayValue
+    });
+  }
+
+  // 날짜변경 명령어 전용 로직.
+  // 순서: 오늘 날짜에 $ 먼저 생성 → 어제 날짜의 $를 X로 변경.
+  // 진행중 고객만 대상으로 하며, 숫자/X/메모 등 기존 값은 덮어쓰지 않는다.
+  for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
+    const topRow = values[i] || [];
+    const bottomRow = values[i + 1] || [];
+    const status = String(topRow[2] || "").trim(); // C열 상태
+    const productName = String(topRow[5] || "").trim(); // F열 상품명
+    const customerName = String(topRow[6] || "").trim(); // G열 고객명
+
+    if (status !== "진행중") continue;
+    if (!customerName && !extractCustomerCodeFromProductName(productName)) continue;
+
+    activeCount += 1;
+
+    for (const offset of [0, 1]) {
+      const rowIndex0 = i + offset;
+      const row = offset === 0 ? topRow : bottomRow;
+      const rowNumber = rowIndex0 + 1;
+      const yesterdayValueRaw = row[yesterdayColumnIndex0] ?? "";
+      const todayValueRaw = row[todayColumnIndex0] ?? "";
+      const yesterdayValue = String(yesterdayValueRaw).trim();
+      const todayValue = String(todayValueRaw).trim();
+      const shouldCreateTodayDollar = isBlankCell(todayValue) || todayValue === "-";
+      const shouldChangeYesterdayToX = yesterdayValue === "$";
+
+      if (shouldChangeYesterdayToX) yesterdayDollarTotal += 1;
+      if (!shouldCreateTodayDollar && !shouldChangeYesterdayToX) continue;
+
+      addBackup(rowNumber, yesterdayValueRaw, todayValueRaw);
+
+      if (shouldCreateTodayDollar) {
+        updates.push({ rowNumber, columnIndex0: todayColumnIndex0, value: "$" });
+        todayDollarCount += 1;
+      }
+
+      if (shouldChangeYesterdayToX) {
+        updates.push({ rowNumber, columnIndex0: yesterdayColumnIndex0, value: "X" });
+        yesterdayXCount += 1;
+      }
+    }
+  }
+
+  return {
+    today,
+    yesterday,
+    todayColumnIndex0,
+    yesterdayColumnIndex0,
+    activeCount,
+    yesterdayDollarTotal,
+    yesterdayXCount,
+    todayDollarCount,
+    updates,
+    backupItems
+  };
+}
+
+async function runManualDateChange() {
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const values = await getSheetValues(accessToken);
+  const result = buildManualDateChangePlan(values);
+  const runId = `datechange-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
+  const backupTime = getKoreaDateTimeText();
+
+  if (!result.updates.length) {
+    return [
+      "⚠️ 날짜 변경 대상이 없습니다.",
+      "",
+      `오늘($) 생성 : ${result.todayDollarCount}건`,
+      `어제($→X) 변경 : ${result.yesterdayXCount}건`,
+      `진행중 기준 어제 $ 전체 : ${result.yesterdayDollarTotal}건`,
+      "",
+      "※ 기존 날짜복구 백업은 유지했습니다."
+    ].join("\n");
+  }
+
+  await clearDateChangeBackupSheet(accessToken);
+  await appendDateChangeBackupRows(accessToken, result.backupItems.map(item => [
+    runId,
+    item.rowNumber,
+    columnNumberToLetter(item.yesterdayColumnIndex0 + 1),
+    columnNumberToLetter(item.todayColumnIndex0 + 1),
+    item.yesterdayValue ?? "",
+    item.todayValue ?? "",
+    backupTime,
+    "ready"
+  ]));
+
+  await batchUpdateSheetCells(accessToken, result.updates);
+
+  return [
+    "✅ 날짜 변경 완료",
+    "",
+    `오늘($) 생성 : ${result.todayDollarCount}건`,
+    `어제($→X) 변경 : ${result.yesterdayXCount}건`,
+    `진행중 기준 어제 $ 전체 : ${result.yesterdayDollarTotal}건`,
+    "",
+    "※ 필요 시 '날짜복구' 명령으로 이전 상태를 복원할 수 있습니다."
+  ].join("\n");
+}
+
+async function restoreLastManualDateChange() {
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const rows = await getDateChangeBackupValues(accessToken);
+  const dataRows = rows.slice(1).filter(row => String(row?.[0] || "").trim());
+
+  if (!dataRows.length) {
+    return "⚠️ 복구할 날짜변경 백업이 없습니다.";
+  }
+
+  const latestRunId = String(dataRows[dataRows.length - 1]?.[0] || "").trim();
+  const restoreRows = dataRows.filter(row => String(row?.[0] || "").trim() === latestRunId);
+  const updates = [];
+
+  for (const row of restoreRows) {
+    const rowNumber = Number(row[1]);
+    const yesterdayColumnIndex0 = columnLetterToIndex0(row[2]);
+    const todayColumnIndex0 = columnLetterToIndex0(row[3]);
+    if (!Number.isFinite(rowNumber) || !Number.isFinite(yesterdayColumnIndex0) || !Number.isFinite(todayColumnIndex0)) continue;
+
+    updates.push({ rowNumber, columnIndex0: yesterdayColumnIndex0, value: row[4] ?? "" });
+    updates.push({ rowNumber, columnIndex0: todayColumnIndex0, value: row[5] ?? "" });
+  }
+
+  if (!updates.length) {
+    return "⚠️ 날짜변경 백업을 읽었지만 복구할 셀을 찾지 못했습니다.";
+  }
+
+  await batchUpdateSheetCells(accessToken, updates);
+  await clearDateChangeBackupSheet(accessToken);
+
+  return [
+    "✅ 날짜 복구 완료",
+    "",
+    `복구 행 : ${restoreRows.length}건`
+  ].join("\n");
+}
+
 export async function runRepaymentRolloverCron() {
   if (!SHEET_ID) {
     return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
@@ -5002,6 +5307,12 @@ export default async function handler(req, res) {
   for (const event of sortedEvents) {
     try {
       if (event.type === "postback") {
+        const datechange = parseDateChangePostback(event);
+        if (datechange) {
+          await handleDateChangePostback(event, datechange);
+          continue;
+        }
+
         const checkover = parseCheckOverPostback(event);
         if (checkover) {
           await handleCheckOverPostback(event, checkover);
@@ -5074,6 +5385,17 @@ export default async function handler(req, res) {
 
         const registerReply = await registerGroupCode(registerGroupCommand, event);
         await replyToLine(event.replyToken, registerReply);
+        continue;
+      }
+
+      const dateChangeCommand = parseDateChangeCommand(text);
+      if (dateChangeCommand) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
+        await replyToLineMessages(event.replyToken, [buildDateChangeConfirmMessage(dateChangeCommand.action)]);
         continue;
       }
 
