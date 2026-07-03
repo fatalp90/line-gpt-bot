@@ -3559,6 +3559,164 @@ export async function runRepaymentRolloverCron() {
   };
 }
 
+
+function getKoreaHourNumber(date = new Date()) {
+  const hourText = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Seoul",
+    hour: "2-digit",
+    hour12: false
+  }).format(date);
+  const hour = Number(hourText);
+  return Number.isFinite(hour) ? hour : 0;
+}
+
+function isPendingRegistrationReminderAllowedNow(date = new Date()) {
+  const hour = getKoreaHourNumber(date);
+  // 00:00~08:59에는 알림을 보내지 않고, 09:00~23:59에만 동작한다.
+  return hour >= 9 && hour <= 23;
+}
+
+function isPendingRegistrationStatus(value) {
+  const status = String(value || "").trim().toLowerCase();
+  return ["pending", "processing"].includes(status);
+}
+
+function formatPendingAmount(value) {
+  const num = Number(String(value || "").replace(/[^0-9.-]/g, ""));
+  if (!Number.isFinite(num) || num === 0) return "";
+  return `${num.toLocaleString("ko-KR")}원`;
+}
+
+function compactPendingLine(parts = []) {
+  return parts
+    .map(v => String(v || "").trim())
+    .filter(Boolean)
+    .join(" / ");
+}
+
+async function getReceiptPendingReminderItems(accessToken) {
+  await ensureReceiptPendingSheet(accessToken);
+  const range = `'${escapeSheetName(RECEIPT_PENDING_SHEET_NAME)}'!A:O`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`;
+  const response = await axios.get(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const values = response.data.values || [];
+  const items = [];
+
+  for (let i = 1; i < values.length; i += 1) {
+    const pending = receiptPendingFromRow(values[i], i + 1);
+    if (!isPendingRegistrationStatus(pending.status)) continue;
+
+    items.push({
+      type: "receipt",
+      code: pending.code || "(코드없음)",
+      amountText: formatPendingAmount(pending.amountWon),
+      status: pending.status,
+      createdAt: pending.createdAt || ""
+    });
+  }
+
+  return items;
+}
+
+async function getCheckOverPendingReminderItems(accessToken) {
+  await ensureCheckOverPendingSheet(accessToken);
+  const range = `'${escapeSheetName(CHECKOVER_PENDING_SHEET_NAME)}'!A:L`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`;
+  const response = await axios.get(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const values = response.data.values || [];
+  const items = [];
+
+  for (let i = 1; i < values.length; i += 1) {
+    const pending = checkOverPendingFromRow(values[i], i + 1);
+    if (!isPendingRegistrationStatus(pending.status)) continue;
+
+    items.push({
+      type: "checkover",
+      code: pending.code || "(코드없음)",
+      productAmountText: formatPendingAmount(pending.productAmount),
+      customerName: pending.customerName || "",
+      status: pending.status
+    });
+  }
+
+  return items;
+}
+
+function buildPendingRegistrationReminderText(receiptItems, checkOverItems) {
+  const total = receiptItems.length + checkOverItems.length;
+  if (!total) return "";
+
+  const lines = [
+    "⚠️ 등록 미처리 알림",
+    "",
+    `아직 등록 처리되지 않은 항목이 ${total}건 있습니다.`,
+    ""
+  ];
+
+  if (receiptItems.length) {
+    lines.push("[입금사진]");
+    for (const item of receiptItems) {
+      lines.push(`• ${compactPendingLine([item.code, item.amountText])}`);
+    }
+    lines.push("");
+  }
+
+  if (checkOverItems.length) {
+    lines.push("[Check Over]");
+    for (const item of checkOverItems) {
+      lines.push(`• ${compactPendingLine([item.code, item.productAmountText, item.customerName])}`);
+    }
+    lines.push("");
+  }
+
+  lines.push("확인 후 등록 처리해 주세요.");
+  return lines.join("\n").trim();
+}
+
+// 1시간마다 트리거용 함수.
+// 실제 알림은 한국시간 09:00~23:59에만 발송하며, 00:00~08:59에는 아무 작업도 하지 않는다.
+export async function sendPendingRegistrationReminder() {
+  if (!SHEET_ID) {
+    return { ok: false, skipped: true, reason: "GOOGLE_SHEET_ID is empty" };
+  }
+
+  if (!isPendingRegistrationReminderAllowedNow()) {
+    return { ok: true, skipped: true, reason: "quiet_hours_00_09" };
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const approvalGroupId = await getReceiptApprovalGroupId(accessToken);
+
+  if (!approvalGroupId) {
+    return { ok: false, skipped: true, reason: "approval_group_not_found" };
+  }
+
+  const [receiptItems, checkOverItems] = await Promise.all([
+    getReceiptPendingReminderItems(accessToken),
+    getCheckOverPendingReminderItems(accessToken)
+  ]);
+
+  const text = buildPendingRegistrationReminderText(receiptItems, checkOverItems);
+  if (!text) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "no_pending_items",
+      receiptPending: 0,
+      checkOverPending: 0
+    };
+  }
+
+  await pushToLine(approvalGroupId, text, `pending-registration-reminder:${getKoreaDateTimeText().slice(0, 13)}`);
+
+  return {
+    ok: true,
+    sent: true,
+    receiptPending: receiptItems.length,
+    checkOverPending: checkOverItems.length
+  };
+}
+
 function chooseTargetRow(values, topIndex0, todayColumnIndex0) {
   const topRow = values[topIndex0] || [];
   const bottomRow = values[topIndex0 + 1] || [];
