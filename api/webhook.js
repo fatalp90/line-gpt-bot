@@ -626,6 +626,58 @@ function buildCheckOverAnalysisText(command) {
   ].join("\n");
 }
 
+
+function buildCheckOverCustomerAnalysisText(command) {
+  return [
+    "✅ Check Over 확인",
+    "",
+    `관리자 : ${command.adminName}`,
+    `코드 : ${command.productCode}`,
+    `고객명 : ${command.customerName || "-"}`,
+    `상품금액 : ${command.productAmount.toLocaleString("ko-KR")}`,
+    `대출금 : ${formatAmountValue(command.loanAmount)}`,
+    `공제 : ${formatAmountValue(command.cut)}`,
+    "",
+    "관리자 확인방으로 등록 요청을 보냈습니다."
+  ].join("\n");
+}
+
+function buildCheckOverApprovalFlexMessage(command, params, cancelParams) {
+  return {
+    type: "flex",
+    altText: `Check Over 등록 대기: ${command.productCode}`,
+    contents: {
+      type: "bubble",
+      size: "mega",
+      body: {
+        type: "box",
+        layout: "vertical",
+        spacing: "sm",
+        contents: [
+          { type: "text", text: `📥 ${RECEIPT_APPROVAL_GROUP_CODE} Check Over 등록 대기`, weight: "bold", size: "md", wrap: true },
+          { type: "separator", margin: "md" },
+          { type: "text", text: `관리자 : ${command.adminName}`, size: "sm", wrap: true, margin: "md" },
+          { type: "text", text: `코드 : ${command.productCode}`, size: "sm", wrap: true },
+          { type: "text", text: `고객명 : ${command.customerName || "-"}`, size: "sm", wrap: true },
+          { type: "text", text: `상품금액 : ${command.productAmount.toLocaleString("ko-KR")}`, size: "sm", wrap: true },
+          { type: "text", text: `대출금 : ${formatAmountValue(command.loanAmount)}`, size: "sm", wrap: true },
+          { type: "text", text: `공제 : ${formatAmountValue(command.cut)}`, size: "sm", wrap: true },
+          { type: "text", text: "등록하시겠습니까?", weight: "bold", size: "sm", wrap: true, margin: "md" }
+        ]
+      },
+      footer: {
+        type: "box",
+        layout: "horizontal",
+        spacing: "sm",
+        contents: [
+          { type: "button", style: "primary", height: "sm", action: { type: "postback", label: "등록", data: params.toString(), displayText: "등록" } },
+          { type: "button", style: "secondary", height: "sm", action: { type: "postback", label: "취소", data: cancelParams.toString(), displayText: "취소" } }
+        ]
+      }
+    }
+  };
+}
+
 function buildCheckOverConfirmMessages(command, options = {}) {
   const params = new URLSearchParams();
   params.set("checkover", "1");
@@ -645,35 +697,12 @@ function buildCheckOverConfirmMessages(command, options = {}) {
   const cancelParams = new URLSearchParams(params);
   cancelParams.set("action", "cancel");
 
-  const analysisText = options.approvalNotice
-    ? [`📥 ${RECEIPT_APPROVAL_GROUP_CODE} Check Over 등록 대기`, "", buildCheckOverAnalysisText(command)].join("\n")
-    : buildCheckOverAnalysisText(command);
+  if (options.approvalNotice) {
+    return [buildCheckOverApprovalFlexMessage(command, params, cancelParams)];
+  }
 
-  return [
-    buildTextMessage(analysisText),
-    {
-      type: "template",
-      altText: "Check Over 등록하시겠습니까?",
-      template: {
-        type: "buttons",
-        text: `⚠️ ลูกค้าไม่ต้องกด\n\n${command.productCode}(${command.productAmount.toLocaleString("ko-KR")}원)\nCheck Over 등록하시겠습니까?`,
-        actions: [
-          {
-            type: "postback",
-            label: "등록",
-            data: params.toString(),
-            displayText: "등록"
-          },
-          {
-            type: "postback",
-            label: "취소",
-            data: cancelParams.toString(),
-            displayText: "취소"
-          }
-        ]
-      }
-    }
-  ];
+  // 고객그룹방에는 등록/취소 버튼을 노출하지 않고 분석 결과만 보여준다.
+  return [buildTextMessage(buildCheckOverCustomerAnalysisText(command))];
 }
 
 async function pushCheckOverConfirmToApprovalGroup(event, command) {
@@ -2232,7 +2261,7 @@ function buildReceiptDuplicateText(item) {
   if (item?.status === "confirmed") return "⚠️ 이미 등록 완료된 동일한 이체사진/이체내역입니다.";
   if (item?.status === "processing") return "⚠️ 이미 등록 처리 중인 동일한 이체사진/이체내역입니다.";
   if (item?.status === "cancelled") return "⚠️ 이미 취소 처리된 동일한 이체사진/이체내역입니다.";
-  return "⚠️ 이미 분석된 동일한 이체사진/이체내역입니다. 기존 등록/취소 버튼을 사용해주세요.";
+  return "⚠️ 이미 분석된 동일한 이체사진/이체내역입니다. PP01 관리자 확인방의 기존 등록 요청을 확인해주세요.";
 }
 
 function buildReceiptAnalysisText({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, includePrompt = true }) {
@@ -2439,47 +2468,90 @@ async function analyzeReceiptImageAmount(messageId) {
   return result;
 }
 
+
+function buildReceiptCustomerAnalysisText({ code, amountWon, sheetValue, senderName, accountNumber, transferDate }) {
+  return [
+    buildReceiptAnalysisText({
+      code,
+      amountWon,
+      sheetValue,
+      senderName,
+      accountNumber,
+      transferDate,
+      includePrompt: false
+    }),
+    "",
+    "관리자 확인방으로 등록 요청을 보냈습니다."
+  ].join("\n");
+}
+
+function buildReceiptApprovalFlexMessage({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, dataBase }) {
+  const amountText = Number(amountWon).toLocaleString("ko-KR");
+  const fields = [
+    `코드 : ${code}`,
+    `입금액 : ${amountText}원`,
+    `시트값 : ${sheetValue}`,
+    `입금자 : ${senderName || "-"}`,
+    `계좌 : ${accountNumber || "-"}`,
+    `이체일시 : ${transferDate || "-"}`
+  ];
+
+  return {
+    type: "flex",
+    altText: `입금 등록 대기: ${code} / ${amountText}원`,
+    contents: {
+      type: "bubble",
+      size: "mega",
+      body: {
+        type: "box",
+        layout: "vertical",
+        spacing: "sm",
+        contents: [
+          { type: "text", text: `📥 ${RECEIPT_APPROVAL_GROUP_CODE} 입금 등록 대기`, weight: "bold", size: "md", wrap: true },
+          { type: "separator", margin: "md" },
+          ...fields.map((text, idx) => ({ type: "text", text, size: "sm", wrap: true, margin: idx === 0 ? "md" : "none" })),
+          { type: "text", text: "입금 등록하시겠습니까?", weight: "bold", size: "sm", wrap: true, margin: "md" }
+        ]
+      },
+      footer: {
+        type: "box",
+        layout: "horizontal",
+        spacing: "sm",
+        contents: [
+          { type: "button", style: "primary", height: "sm", action: { type: "postback", label: "등록", data: `${dataBase}&action=confirm`, displayText: "등록" } },
+          { type: "button", style: "secondary", height: "sm", action: { type: "postback", label: "취소", data: `${dataBase}&action=cancel`, displayText: "취소" } }
+        ]
+      }
+    }
+  };
+}
+
 function buildReceiptConfirmMessages({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, receiptKey, sourceGroupId, pendingId, approvalNotice = false }) {
   // LINE postback data는 길이 제한이 있어 입금자/계좌/날짜 같은 표시용 값은 버튼 data에서 제외한다.
   // 특히 PP01방에서 누를 때 원본 고객방 sourceGroupId가 잘리지 않도록 필수값만 담는다.
   const dataBase = `receipt=1&pid=${encodeURIComponent(pendingId || "")}&key=${encodeURIComponent(receiptKey || "")}&code=${encodeURIComponent(code)}&value=${encodeURIComponent(sheetValue)}&won=${encodeURIComponent(amountWon)}&source=${encodeURIComponent(sourceGroupId || "")}`;
-  const analysisText = buildReceiptAnalysisText({
+
+  if (approvalNotice) {
+    return [buildReceiptApprovalFlexMessage({
+      code,
+      amountWon,
+      sheetValue,
+      senderName,
+      accountNumber,
+      transferDate,
+      dataBase
+    })];
+  }
+
+  // 고객그룹방에는 등록/취소 버튼을 노출하지 않고 분석 결과만 보여준다.
+  return [buildTextMessage(buildReceiptCustomerAnalysisText({
     code,
     amountWon,
     sheetValue,
     senderName,
     accountNumber,
-    transferDate,
-    includePrompt: false
-  });
-
-  return [
-    buildTextMessage(approvalNotice ? `📥 ${RECEIPT_APPROVAL_GROUP_CODE} 등록 대기
-
-${analysisText}` : analysisText),
-    {
-      type: "template",
-      altText: "입금 등록하시겠습니까?",
-      template: {
-        type: "buttons",
-        text: `⚠️ ลูกค้าไม่ต้องกด\n\n${code} / ${Number(amountWon).toLocaleString("ko-KR")}원\n입금 등록하시겠습니까?`,
-        actions: [
-          {
-            type: "postback",
-            label: "등록",
-            data: `${dataBase}&action=confirm`,
-            displayText: "등록"
-          },
-          {
-            type: "postback",
-            label: "취소",
-            data: `${dataBase}&action=cancel`,
-            displayText: "취소"
-          }
-        ]
-      }
-    }
-  ];
+    transferDate
+  }))];
 }
 
 function parseReceiptPostback(event) {
@@ -2723,7 +2795,7 @@ async function handleReceiptImageMessage(event) {
 
   if (existing) {
     // 같은 송금내역을 스크롤해서 위/아래 2장으로 보낸 경우에는
-    // 등록 버튼과 PP01 푸시를 다시 만들지 않고 기존 버튼만 사용하게 한다.
+    // 등록 버튼과 PP01 푸시를 다시 만들지 않고 PP01에 이미 생성된 기존 요청만 사용하게 한다.
     await replyToLine(event.replyToken, buildReceiptDuplicateText(existing));
     return;
   }
@@ -2770,7 +2842,7 @@ async function handleReceiptImageMessage(event) {
     pendingId
   });
 
-  // 고객방에 등록 버튼이 생성되면 PP01 관리자 확인방에도 같은 버튼을 함께 보낸다.
+  // 고객방에는 분석 메시지만 보여주고, PP01 관리자 확인방에는 분석 내용과 등록 버튼이 합쳐진 카드 1개만 보낸다.
   // PP01방에서 등록을 눌러도 같은 receiptKey를 처리하므로 고객방과 동일하게 등록된다.
   let approvalPushError = "";
   if (approvalGroupId && approvalGroupId !== sourceGroupId) {
