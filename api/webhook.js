@@ -670,7 +670,7 @@ function buildCheckOverApprovalFlexMessage(command, params, cancelParams) {
         layout: "horizontal",
         spacing: "sm",
         contents: [
-          { type: "button", style: "primary", height: "sm", action: { type: "postback", label: "등록", data: params.toString(), displayText: "등록" } },
+          { type: "button", style: "primary", color: "#1E88E5", height: "sm", action: { type: "postback", label: "등록", data: params.toString(), displayText: "등록" } },
           { type: "button", style: "secondary", height: "sm", action: { type: "postback", label: "취소", data: cancelParams.toString(), displayText: "취소" } }
         ]
       }
@@ -2693,7 +2693,7 @@ async function pushReceiptDoneToRelatedGroups({ clickedGroupId, sourceGroupId, a
 }
 
 
-async function notifyReceiptAnalysisFailureToApprovalGroup({ accessToken, sourceGroupId, code, messageId, error }) {
+async function notifyReceiptAnalysisFailureToApprovalGroup({ accessToken, sourceGroupId, code, messageId, error, title, detail }) {
   try {
     const approvalGroupId = await getReceiptApprovalGroupId(accessToken);
     if (!approvalGroupId || approvalGroupId === sourceGroupId) {
@@ -2703,14 +2703,14 @@ async function notifyReceiptAnalysisFailureToApprovalGroup({ accessToken, source
 
     const safeError = String(error || "분석 결과를 확정하지 못했습니다.").slice(0, 500);
     const noticeText = [
-      "⚠️ 이체사진 분석 실패",
+      title || "⚠️ 이체사진 분석 실패",
       "",
       `고객방 코드: ${code || "-"}`,
       `고객방 ID: ${sourceGroupId || "-"}`,
       `메시지 ID: ${messageId || "-"}`,
       `사유: ${safeError}`,
       "",
-      "1차 분석 후 재분석까지 실패해서 등록 버튼을 만들지 못했습니다.",
+      detail || "1차 분석 후 재분석까지 실패해서 등록 버튼을 만들지 못했습니다.",
       "고객방의 원본 이미지를 직접 확인해주세요.",
       "",
       `(${getKoreaDateTimeText()})`
@@ -2726,127 +2726,125 @@ async function notifyReceiptAnalysisFailureToApprovalGroup({ accessToken, source
 async function handleReceiptImageMessage(event) {
   const sourceGroupId = getLineSourceGroupId(event);
   if (!sourceGroupId) return;
-  if (!SHEET_ID) {
-    await replyToLine(event.replyToken, "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.");
-    return;
-  }
 
-  const accessToken = await getGoogleAccessToken();
-  const code = await findMappedCodeByGroupId(accessToken, sourceGroupId);
-  if (!code) {
-    // 코드/등록이 되지 않은 그룹방에서는 아무 반응하지 않는다.
-    return;
-  }
+  let accessToken = null;
+  let code = "";
 
-  const result = await analyzeReceiptImageAmount(event.message.id);
-  if (!result.ok) {
-    if (result.ignored) return;
-    await notifyReceiptAnalysisFailureToApprovalGroup({
-      accessToken,
+  try {
+    if (!SHEET_ID) {
+      await replyToLine(event.replyToken, "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.");
+      return;
+    }
+
+    accessToken = await getGoogleAccessToken();
+    code = await findMappedCodeByGroupId(accessToken, sourceGroupId);
+    if (!code) {
+      // 코드/등록 누락 그룹방에서 사진이 조용히 무시되지 않도록 PP01 관리자방에만 알려준다.
+      await notifyReceiptAnalysisFailureToApprovalGroup({
+        accessToken,
+        sourceGroupId,
+        code: "-",
+        messageId: event.message?.id,
+        title: "⚠️ 이체사진 분석 불가",
+        error: "해당 고객방의 코드 매핑을 찾지 못했습니다.",
+        detail: "코드/등록이 안 된 고객방이거나 그룹 매핑이 삭제된 상태입니다. 고객방 매핑을 먼저 확인해주세요."
+      });
+      return;
+    }
+
+    const result = await analyzeReceiptImageAmount(event.message.id);
+    if (!result.ok) {
+      if (result.ignored) return;
+      await notifyReceiptAnalysisFailureToApprovalGroup({
+        accessToken,
+        sourceGroupId,
+        code,
+        messageId: event.message.id,
+        error: result.error || result.reason
+      });
+      await replyToLine(event.replyToken, result.error || "⚠️ 이체사진 분석에 실패했습니다. 이미지를 다시 올려주세요.");
+      return;
+    }
+
+    const imageKey = buildReceiptImageKey({ sourceGroupId, imageHash: result.imageHash });
+    const infoKey = buildReceiptInfoKey({
       sourceGroupId,
       code,
-      messageId: event.message.id,
-      error: result.error || result.reason
+      amountWon: result.amountWon,
+      senderName: result.senderName,
+      accountNumber: result.accountNumber,
+      transferDate: result.transferDate
     });
-    await replyToLine(event.replyToken, result.error || "⚠️ 이체사진 분석에 실패했습니다. 이미지를 다시 올려주세요.");
-    return;
-  }
 
-  const imageKey = buildReceiptImageKey({ sourceGroupId, imageHash: result.imageHash });
-  const infoKey = buildReceiptInfoKey({
-    sourceGroupId,
-    code,
-    amountWon: result.amountWon,
-    senderName: result.senderName,
-    accountNumber: result.accountNumber,
-    transferDate: result.transferDate
-  });
+    const nearDuplicateKey = buildReceiptNearDuplicateKey({
+      sourceGroupId,
+      code,
+      amountWon: result.amountWon,
+      senderName: result.senderName,
+      accountNumber: result.accountNumber
+    });
 
-  const nearDuplicateKey = buildReceiptNearDuplicateKey({
-    sourceGroupId,
-    code,
-    amountWon: result.amountWon,
-    senderName: result.senderName,
-    accountNumber: result.accountNumber
-  });
-
-  let existing = receiptCacheGet(imageKey) || receiptCacheGet(infoKey) || receiptCacheGet(nearDuplicateKey);
-  if (!existing) {
-    try {
-      // Vercel/서버리스 환경에서는 연속 이미지가 서로 다른 인스턴스에서 처리될 수 있어
-      // 메모리 캐시만으로는 같은 입금내역 중복 버튼을 막지 못한다.
-      // LINE등록대기 시트에 저장된 이미지키/정보키/유사키까지 확인해서
-      // 위/아래로 나눠 보낸 같은 입금 캡처는 버튼과 PP01 푸시를 다시 만들지 않는다.
-      existing = await findReceiptDuplicatePendingByKeys(accessToken, {
-        imageKey,
-        infoKey,
-        nearDuplicateKey
-      });
-      if (existing) {
-        receiptCacheSet(imageKey, existing);
-        receiptCacheSet(infoKey, existing);
-        receiptCacheSet(nearDuplicateKey, existing, RECEIPT_NEAR_DUPLICATE_TTL_MS);
-        receiptCacheSet(existing.pendingId, existing);
+    let existing = receiptCacheGet(imageKey) || receiptCacheGet(infoKey) || receiptCacheGet(nearDuplicateKey);
+    if (!existing) {
+      try {
+        // Vercel/서버리스 환경에서는 연속 이미지가 서로 다른 인스턴스에서 처리될 수 있어
+        // 메모리 캐시만으로는 같은 입금내역 중복 버튼을 막지 못한다.
+        // LINE등록대기 시트에 저장된 이미지키/정보키/유사키까지 확인해서
+        // 위/아래로 나눠 보낸 같은 입금 캡처는 버튼과 PP01 푸시를 다시 만들지 않는다.
+        existing = await findReceiptDuplicatePendingByKeys(accessToken, {
+          imageKey,
+          infoKey,
+          nearDuplicateKey
+        });
+        if (existing) {
+          receiptCacheSet(imageKey, existing);
+          receiptCacheSet(infoKey, existing);
+          receiptCacheSet(nearDuplicateKey, existing, RECEIPT_NEAR_DUPLICATE_TTL_MS);
+          receiptCacheSet(existing.pendingId, existing);
+        }
+      } catch (err) {
+        console.error(`[RECEIPT DUPLICATE SHEET CHECK FAIL] code=${code} error=${err?.response?.data?.error?.message || err?.message || err}`);
       }
-    } catch (err) {
-      console.error(`[RECEIPT DUPLICATE SHEET CHECK FAIL] code=${code} error=${err?.response?.data?.error?.message || err?.message || err}`);
     }
-  }
 
-  if (existing) {
-    // 같은 송금내역을 스크롤해서 위/아래 2장으로 보낸 경우에는
-    // 등록 버튼과 PP01 푸시를 다시 만들지 않고 PP01에 이미 생성된 기존 요청만 사용하게 한다.
-    await replyToLine(event.replyToken, buildReceiptDuplicateText(existing));
-    return;
-  }
+    if (existing) {
+      // 같은 송금내역을 스크롤해서 위/아래 2장으로 보낸 경우에는
+      // 등록 버튼과 PP01 푸시를 다시 만들지 않고 PP01에 이미 생성된 기존 요청만 사용하게 한다.
+      await replyToLine(event.replyToken, buildReceiptDuplicateText(existing));
+      return;
+    }
 
-  const receiptKey = infoKey || imageKey || nearDuplicateKey;
-  const pendingId = makeReceiptPendingId(receiptKey, sourceGroupId);
-  const accessGroupToken = accessToken;
-  const approvalGroupId = await getReceiptApprovalGroupId(accessGroupToken);
+    const receiptKey = infoKey || imageKey || nearDuplicateKey;
+    const pendingId = makeReceiptPendingId(receiptKey, sourceGroupId);
+    const accessGroupToken = accessToken;
+    const approvalGroupId = await getReceiptApprovalGroupId(accessGroupToken);
 
-  const cacheItem = {
-    status: "pending",
-    pendingId,
-    imageKey,
-    infoKey,
-    nearDuplicateKey,
-    sourceGroupId,
-    approvalGroupId,
-    code,
-    amountWon: result.amountWon,
-    sheetValue: result.sheetValue,
-    senderName: result.senderName,
-    accountNumber: result.accountNumber,
-    transferDate: result.transferDate
-  };
-  receiptCacheSet(imageKey, cacheItem);
-  receiptCacheSet(infoKey, cacheItem);
-  receiptCacheSet(nearDuplicateKey, cacheItem, RECEIPT_NEAR_DUPLICATE_TTL_MS);
-  receiptCacheSet(pendingId, cacheItem);
-  try {
-    await appendReceiptPending(accessToken, cacheItem);
-  } catch (err) {
-    console.error(`[RECEIPT PENDING APPEND FAIL] pendingId=${pendingId} error=${err?.response?.data?.error?.message || err?.message || err}`);
-  }
+    const cacheItem = {
+      status: "pending",
+      pendingId,
+      imageKey,
+      infoKey,
+      nearDuplicateKey,
+      sourceGroupId,
+      approvalGroupId,
+      code,
+      amountWon: result.amountWon,
+      sheetValue: result.sheetValue,
+      senderName: result.senderName,
+      accountNumber: result.accountNumber,
+      transferDate: result.transferDate
+    };
+    receiptCacheSet(imageKey, cacheItem);
+    receiptCacheSet(infoKey, cacheItem);
+    receiptCacheSet(nearDuplicateKey, cacheItem, RECEIPT_NEAR_DUPLICATE_TTL_MS);
+    receiptCacheSet(pendingId, cacheItem);
+    try {
+      await appendReceiptPending(accessToken, cacheItem);
+    } catch (err) {
+      console.error(`[RECEIPT PENDING APPEND FAIL] pendingId=${pendingId} error=${err?.response?.data?.error?.message || err?.message || err}`);
+    }
 
-  const confirmMessages = buildReceiptConfirmMessages({
-    code,
-    amountWon: result.amountWon,
-    sheetValue: result.sheetValue,
-    senderName: result.senderName,
-    accountNumber: result.accountNumber,
-    transferDate: result.transferDate,
-    receiptKey,
-    sourceGroupId,
-    pendingId
-  });
-
-  // 고객방에는 분석 메시지만 보여주고, PP01 관리자 확인방에는 분석 내용과 등록 버튼이 합쳐진 카드 1개만 보낸다.
-  // PP01방에서 등록을 눌러도 같은 receiptKey를 처리하므로 고객방과 동일하게 등록된다.
-  let approvalPushError = "";
-  if (approvalGroupId && approvalGroupId !== sourceGroupId) {
-    const approvalMessages = buildReceiptConfirmMessages({
+    const confirmMessages = buildReceiptConfirmMessages({
       code,
       amountWon: result.amountWon,
       sheetValue: result.sheetValue,
@@ -2855,26 +2853,67 @@ async function handleReceiptImageMessage(event) {
       transferDate: result.transferDate,
       receiptKey,
       sourceGroupId,
-      pendingId,
-      approvalNotice: true
+      pendingId
     });
+
+    // 고객방에는 분석 메시지만 보여주고, PP01 관리자 확인방에는 분석 내용과 등록 버튼이 합쳐진 카드 1개만 보낸다.
+    // PP01방에서 등록을 눌러도 같은 receiptKey를 처리하므로 고객방과 동일하게 등록된다.
+    let approvalPushError = "";
+    if (approvalGroupId && approvalGroupId !== sourceGroupId) {
+      const approvalMessages = buildReceiptConfirmMessages({
+        code,
+        amountWon: result.amountWon,
+        sheetValue: result.sheetValue,
+        senderName: result.senderName,
+        accountNumber: result.accountNumber,
+        transferDate: result.transferDate,
+        receiptKey,
+        sourceGroupId,
+        pendingId,
+        approvalNotice: true
+      });
+      try {
+        await pushToLineMessages(approvalGroupId, approvalMessages);
+      } catch (err) {
+        approvalPushError = getLinePushErrorMessage(err);
+        console.error(`[RECEIPT APPROVAL PUSH FAIL] code=${code} approvalGroupId=${approvalGroupId} error=${approvalPushError}`);
+      }
+    }
+
+    // 관리자방 동시 푸시 실패는 고객방에 노출하지 않고 서버 로그에만 남긴다.
+    // LINE 월 한도(429)처럼 고객에게 보여줄 필요 없는 오류가 고객방에 뜨지 않도록 한다.
+    if (!approvalGroupId) {
+      console.warn(`[RECEIPT APPROVAL PUSH SKIP] ${RECEIPT_APPROVAL_GROUP_CODE} approval groupId not found`);
+    } else if (approvalPushError) {
+      console.warn(`[RECEIPT APPROVAL PUSH ERROR HIDDEN] ${RECEIPT_APPROVAL_GROUP_CODE} error=${approvalPushError}`);
+    }
+
+    await replyToLineMessages(event.replyToken, confirmMessages);
+  } catch (err) {
+    const errorText = getLinePushErrorMessage(err);
+    console.error(`[RECEIPT IMAGE HANDLE FAIL] code=${code || "-"} sourceGroupId=${sourceGroupId || "-"} messageId=${event.message?.id || "-"} error=${errorText}`);
+
     try {
-      await pushToLineMessages(approvalGroupId, approvalMessages);
-    } catch (err) {
-      approvalPushError = getLinePushErrorMessage(err);
-      console.error(`[RECEIPT APPROVAL PUSH FAIL] code=${code} approvalGroupId=${approvalGroupId} error=${approvalPushError}`);
+      if (!accessToken) accessToken = await getGoogleAccessToken();
+      await notifyReceiptAnalysisFailureToApprovalGroup({
+        accessToken,
+        sourceGroupId,
+        code: code || "-",
+        messageId: event.message?.id,
+        title: "⚠️ 이체사진 처리 오류",
+        error: errorText,
+        detail: "이미지 수신/OCR/등록대기 생성 과정에서 오류가 발생해서 등록 버튼을 만들지 못했습니다."
+      });
+    } catch (noticeErr) {
+      console.error(`[RECEIPT IMAGE HANDLE FAIL NOTICE ERROR] ${noticeErr?.message || noticeErr}`);
+    }
+
+    try {
+      await replyToLine(event.replyToken, "⚠️ 이체사진 처리 중 오류가 발생했습니다. 관리자 확인방에 실패 알림을 보냈습니다.");
+    } catch (replyErr) {
+      console.error(`[RECEIPT IMAGE HANDLE FAIL REPLY ERROR] ${replyErr?.message || replyErr}`);
     }
   }
-
-  // 관리자방 동시 푸시 실패는 고객방에 노출하지 않고 서버 로그에만 남긴다.
-  // LINE 월 한도(429)처럼 고객에게 보여줄 필요 없는 오류가 고객방에 뜨지 않도록 한다.
-  if (!approvalGroupId) {
-    console.warn(`[RECEIPT APPROVAL PUSH SKIP] ${RECEIPT_APPROVAL_GROUP_CODE} approval groupId not found`);
-  } else if (approvalPushError) {
-    console.warn(`[RECEIPT APPROVAL PUSH ERROR HIDDEN] ${RECEIPT_APPROVAL_GROUP_CODE} error=${approvalPushError}`);
-  }
-
-  await replyToLineMessages(event.replyToken, confirmMessages);
 }
 
 async function handleReceiptPostback(event, receipt) {
