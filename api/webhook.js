@@ -2453,12 +2453,20 @@ async function analyzeReceiptImageAmount(messageId) {
 
   let result = await callReceiptOcrOpenAI(image, false);
 
-  // 1차 분석에서 등록 버튼을 만들지 못하면 같은 이미지를 한 번 더 재검토한다.
+  // 일반 생활사진/상품사진/채팅 캡처처럼 이체사진이 아니라고 판별된 이미지는
+  // 재분석하지 않고 조용히 무시한다. 관리자방 알림 도배를 막기 위한 처리.
+  if (!result.ok && result.ignored) {
+    return result;
+  }
+
+  // 이체사진으로 보이지만 금액/필드가 불명확해서 등록 버튼을 만들지 못한 경우만 재검토한다.
   // 흐릿함/회전/금액 표기 분리/KRW 표기 문제로 1차가 흔들리는 경우 등록 버튼 누락을 줄이기 위한 처리.
   if (!result.ok) {
     console.log(`[RECEIPT OCR RETRY] messageId=${messageId} reason=${result.reason || result.error || "unknown"}`);
     const retryResult = await callReceiptOcrOpenAI(image, true);
     if (retryResult.ok) {
+      result = retryResult;
+    } else if (retryResult.ignored) {
       result = retryResult;
     } else if (!result.error && retryResult.error) {
       result = retryResult;
@@ -2732,14 +2740,34 @@ async function handleReceiptImageMessage(event) {
 
   try {
     if (!SHEET_ID) {
-      await replyToLine(event.replyToken, "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.");
+      console.error("[RECEIPT IMAGE SKIP] GOOGLE_SHEET_ID is not set");
+      return;
+    }
+
+    // 사진이 올라오면 먼저 이체/입금 슬립인지 판별한다.
+    // 일반 생활사진/상품사진/캡처는 result.ignored=true로 끝내고, 고객방/관리자방 모두 아무 메시지도 보내지 않는다.
+    const result = await analyzeReceiptImageAmount(event.message.id);
+    if (!result.ok) {
+      if (result.ignored) return;
+
+      accessToken = await getGoogleAccessToken();
+      code = await findMappedCodeByGroupId(accessToken, sourceGroupId);
+      await notifyReceiptAnalysisFailureToApprovalGroup({
+        accessToken,
+        sourceGroupId,
+        code: code || "-",
+        messageId: event.message.id,
+        error: result.error || result.reason
+      });
+      // 고객방에는 실패 메시지를 보내지 않는다. 관리자방 알림만 남긴다.
       return;
     }
 
     accessToken = await getGoogleAccessToken();
     code = await findMappedCodeByGroupId(accessToken, sourceGroupId);
     if (!code) {
-      // 코드/등록 누락 그룹방에서 사진이 조용히 무시되지 않도록 PP01 관리자방에만 알려준다.
+      // 실제 이체사진으로 판별된 경우에만 코드 매핑 누락을 PP01 관리자방에 알린다.
+      // 일반 사진은 위에서 이미 조용히 무시된다.
       await notifyReceiptAnalysisFailureToApprovalGroup({
         accessToken,
         sourceGroupId,
@@ -2747,22 +2775,8 @@ async function handleReceiptImageMessage(event) {
         messageId: event.message?.id,
         title: "⚠️ 이체사진 분석 불가",
         error: "해당 고객방의 코드 매핑을 찾지 못했습니다.",
-        detail: "코드/등록이 안 된 고객방이거나 그룹 매핑이 삭제된 상태입니다. 고객방 매핑을 먼저 확인해주세요."
+        detail: "이체사진으로 보이지만 코드/등록이 안 된 고객방이거나 그룹 매핑이 삭제된 상태입니다. 고객방 매핑을 먼저 확인해주세요."
       });
-      return;
-    }
-
-    const result = await analyzeReceiptImageAmount(event.message.id);
-    if (!result.ok) {
-      if (result.ignored) return;
-      await notifyReceiptAnalysisFailureToApprovalGroup({
-        accessToken,
-        sourceGroupId,
-        code,
-        messageId: event.message.id,
-        error: result.error || result.reason
-      });
-      await replyToLine(event.replyToken, result.error || "⚠️ 이체사진 분석에 실패했습니다. 이미지를 다시 올려주세요.");
       return;
     }
 
@@ -2908,11 +2922,7 @@ async function handleReceiptImageMessage(event) {
       console.error(`[RECEIPT IMAGE HANDLE FAIL NOTICE ERROR] ${noticeErr?.message || noticeErr}`);
     }
 
-    try {
-      await replyToLine(event.replyToken, "⚠️ 이체사진 처리 중 오류가 발생했습니다. 관리자 확인방에 실패 알림을 보냈습니다.");
-    } catch (replyErr) {
-      console.error(`[RECEIPT IMAGE HANDLE FAIL REPLY ERROR] ${replyErr?.message || replyErr}`);
-    }
+    // 고객방에는 실패 메시지를 보내지 않는다.
   }
 }
 
