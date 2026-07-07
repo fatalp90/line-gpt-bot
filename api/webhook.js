@@ -4818,7 +4818,12 @@ function containsNoTranslateAmount(text) {
   const compactNumberText = clean.replace(/[,\s]/g, "");
 
   // 2,000,000 또는 2000000 이 포함된 메시지는 번역하지 않음
-  return clean.includes("2,000,000") || compactNumberText.includes("2000000");
+  return (
+    clean.includes("1,000,000") ||
+    compactNumberText.includes("1000000") ||
+    clean.includes("2,000,000") ||
+    compactNumberText.includes("2000000")
+  );
 }
 
 function shouldIgnoreMessage(text) {
