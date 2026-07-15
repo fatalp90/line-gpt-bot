@@ -1670,7 +1670,7 @@ async function appendCheckOverPending(accessToken, item) {
       item.cut || "",
       nowText,
       nowText,
-      item.doneText || ""
+      item.doneText || (item.adminName ? `admin:${item.adminName}` : "")
     ]] },
     { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
   );
@@ -1688,7 +1688,12 @@ function checkOverPendingFromRow(row, rowNumber) {
     customerName: String(row?.[6] || "").trim(),
     loanAmount: Number(row?.[7]),
     cut: Number(row?.[8]),
-    doneText: String(row?.[11] || "").trim()
+    adminName: String(row?.[11] || "").trim().startsWith("admin:")
+      ? String(row?.[11] || "").trim().slice(6).trim()
+      : "",
+    doneText: String(row?.[11] || "").trim().startsWith("admin:")
+      ? ""
+      : String(row?.[11] || "").trim()
   };
 }
 
@@ -5382,6 +5387,87 @@ function buildPendingRegistrationReminderText(receiptItems = [], checkOverItems 
   return lines.join("\n").trim();
 }
 
+
+function chunkLineMessages(messages, size = 5) {
+  const chunks = [];
+  for (let i = 0; i < messages.length; i += size) chunks.push(messages.slice(i, i + size));
+  return chunks;
+}
+
+function buildPendingRegistrationButtonMessages(receiptItems = [], checkOverItems = []) {
+  const messages = [];
+
+  for (const item of receiptItems) {
+    if (!item.pendingId || !item.code || !item.amountWon || !item.sheetValue) continue;
+    messages.push(...buildReceiptConfirmMessages({
+      code: item.code,
+      amountWon: item.amountWon,
+      sheetValue: item.sheetValue,
+      senderName: item.senderName,
+      accountNumber: item.accountNumber,
+      transferDate: item.transferDate,
+      receiptKey: item.infoKey || item.imageKey || item.nearDuplicateKey,
+      sourceGroupId: item.sourceGroupId,
+      pendingId: item.pendingId,
+      approvalNotice: true
+    }));
+  }
+
+  for (const item of checkOverItems) {
+    if (!item.pendingId || !item.code || !Number.isFinite(item.productAmount) || !Number.isFinite(item.loanAmount) || !Number.isFinite(item.cut)) continue;
+    const command = {
+      adminName: item.adminName || "관리자",
+      productCode: item.code,
+      productName: `${item.code}(${Number(item.productAmount).toLocaleString("ko-KR")})`,
+      productAmount: item.productAmount,
+      customerName: item.customerName,
+      loanAmount: item.loanAmount,
+      cut: item.cut,
+      checkoverPendingId: item.pendingId
+    };
+    messages.push(...buildCheckOverConfirmMessages(command, {
+      approvalNotice: true,
+      sourceGroupId: item.sourceGroupId,
+      pendingId: item.pendingId
+    }));
+  }
+
+  return messages;
+}
+
+async function resendPendingRegistrationButtons(event) {
+  if (!SHEET_ID) {
+    await replyToLine(event.replyToken, "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.");
+    return;
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const approvalGroupId = await getReceiptApprovalGroupId(accessToken);
+  const sourceGroupId = getLineSourceGroupId(event);
+  if (!approvalGroupId || !sourceGroupId || sourceGroupId !== approvalGroupId) {
+    await replyToLine(event.replyToken, `⚠️ /미등록확인은 ${RECEIPT_APPROVAL_GROUP_CODE} 그룹에서만 사용할 수 있습니다.`);
+    return;
+  }
+
+  const [receiptItems, checkOverItems] = await Promise.all([
+    getReceiptPendingItems(accessToken),
+    getCheckOverPendingItems(accessToken)
+  ]);
+
+  const messages = buildPendingRegistrationButtonMessages(receiptItems, checkOverItems);
+  if (!messages.length) {
+    await replyToLine(event.replyToken, "✅ 등록하지 않은 항목이 없습니다.");
+    return;
+  }
+
+  const summary = buildTextMessage(`📋 미등록 ${messages.length}건의 등록/취소 버튼을 다시 생성했습니다.\n이미 처리된 버튼을 누르면 중복 반영하지 않고 처리 완료 상태를 안내합니다.`);
+  const chunks = chunkLineMessages([summary, ...messages], 5);
+  await replyToLineMessages(event.replyToken, chunks[0]);
+  for (const chunk of chunks.slice(1)) {
+    await pushToLineMessages(approvalGroupId, chunk);
+  }
+}
+
 export async function checkPendingRegistrations(event) {
   if (!SHEET_ID) {
     return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
@@ -5564,8 +5650,7 @@ export default async function handler(req, res) {
           continue;
         }
 
-        const pendingReply = await checkPendingRegistrations(event);
-        await replyToLine(event.replyToken, pendingReply);
+        await resendPendingRegistrationButtons(event);
         continue;
       }
 
@@ -5642,7 +5727,8 @@ export default async function handler(req, res) {
             productAmount: checkOverCommand.productAmount,
             customerName: checkOverCommand.customerName,
             loanAmount: checkOverCommand.loanAmount,
-            cut: checkOverCommand.cut
+            cut: checkOverCommand.cut,
+            adminName: checkOverCommand.adminName
           });
         }
         const confirmMessages = buildCheckOverConfirmMessages(checkOverCommand, { sourceGroupId });
