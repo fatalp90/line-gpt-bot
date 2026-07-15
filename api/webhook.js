@@ -3151,6 +3151,12 @@ function parseUnregisteredCheckCommand(text) {
   return clean === "미등록확인";
 }
 
+// PP01 관리자 확인방에서 등록 버튼을 아직 누르지 않은 대기 항목 조회
+function parsePendingRegistrationCheckCommand(text) {
+  const clean = normalizeText(text).replace(/\s+/g, "");
+  return clean === "/미등록확인";
+}
+
 function parseMyIdCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
   return clean === "내아이디" || clean === "관리자아이디확인";
@@ -5376,7 +5382,30 @@ function buildPendingRegistrationReminderText(receiptItems = [], checkOverItems 
   return lines.join("\n").trim();
 }
 
-export async function sendPendingRegistrationReminder() {
+export async function checkPendingRegistrations(event) {
+  if (!SHEET_ID) {
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const approvalGroupId = await getReceiptApprovalGroupId(accessToken);
+  const sourceGroupId = getLineSourceGroupId(event);
+
+  // 명령어는 등록 확인방(PP01)에서만 실행한다.
+  if (!approvalGroupId || !sourceGroupId || sourceGroupId !== approvalGroupId) {
+    return `⚠️ /미등록확인은 ${RECEIPT_APPROVAL_GROUP_CODE} 그룹에서만 사용할 수 있습니다.`;
+  }
+
+  const [receiptItems, checkOverItems] = await Promise.all([
+    getReceiptPendingItems(accessToken),
+    getCheckOverPendingItems(accessToken)
+  ]);
+
+  return buildPendingRegistrationReminderText(receiptItems, checkOverItems)
+    || "✅ 등록하지 않은 항목이 없습니다.";
+}
+
+async function sendPendingRegistrationReminder() {
   if (!isPendingRegistrationReminderHour()) {
     return { ok: true, skipped: true, reason: "outside_allowed_hours" };
   }
@@ -5526,6 +5555,17 @@ export default async function handler(req, res) {
         }
 
         await replyToLineMessages(event.replyToken, [buildDateChangeConfirmMessage(dateChangeCommand.action)]);
+        continue;
+      }
+
+      if (parsePendingRegistrationCheckCommand(text)) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
+        const pendingReply = await checkPendingRegistrations(event);
+        await replyToLine(event.replyToken, pendingReply);
         continue;
       }
 
