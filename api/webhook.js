@@ -824,6 +824,17 @@ function parseCheckOverPostback(event) {
   };
 }
 
+async function retryPendingStatusUpdate(updateFn, label, attempts = 3) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try { await updateFn(); return true; }
+    catch (err) {
+      console.error(`[${label}] attempt=${attempt}/${attempts} error=${err?.response?.data?.error?.message || err?.message || err}`);
+      if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, 250 * attempt));
+    }
+  }
+  return false;
+}
+
 async function handleCheckOverPostback(event, checkover) {
   if (checkover.error) {
     await replyToLine(event.replyToken, checkover.error);
@@ -878,7 +889,7 @@ async function handleCheckOverPostback(event, checkover) {
 
   if (pending && accessToken) {
     if (String(reply || "").startsWith("✅")) {
-      await updateCheckOverPendingStatus(accessToken, pending, "completed", reply);
+      await retryPendingStatusUpdate(() => updateCheckOverPendingStatus(accessToken, pending, "completed", reply), `CHECKOVER PENDING COMPLETE FAIL pendingId=${pending.pendingId}`);
     } else {
       await updateCheckOverPendingStatus(accessToken, pending, "pending");
     }
@@ -2984,7 +2995,7 @@ async function handleReceiptPostback(event, receipt) {
       });
     }
     if (pending) {
-      try { await updateReceiptPendingStatus(accessToken, pending, status); } catch (err) { console.error(`[RECEIPT PENDING STATUS FAIL] pendingId=${receipt.pendingId} error=${err?.response?.data?.error?.message || err?.message || err}`); }
+      await retryPendingStatusUpdate(() => updateReceiptPendingStatus(accessToken, pending, status), `RECEIPT PENDING STATUS FAIL pendingId=${receipt.pendingId} status=${status}`);
     }
   };
 
@@ -5334,7 +5345,7 @@ function isPendingRegistrationReminderHour(date = new Date()) {
   return hour >= 9 && hour <= 23;
 }
 
-async function getReceiptPendingItems(accessToken) {
+async function getReceiptPendingItems(accessToken, statuses = ["pending"]) {
   await ensureReceiptPendingSheet(accessToken);
   const range = `'${escapeSheetName(RECEIPT_PENDING_SHEET_NAME)}'!A:O`;
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`;
@@ -5343,10 +5354,10 @@ async function getReceiptPendingItems(accessToken) {
   return values
     .slice(1)
     .map((row, idx) => receiptPendingFromRow(row, idx + 2))
-    .filter(item => ["pending", "processing"].includes(String(item.status || "").toLowerCase()));
+    .filter(item => statuses.includes(String(item.status || "").toLowerCase()));
 }
 
-async function getCheckOverPendingItems(accessToken) {
+async function getCheckOverPendingItems(accessToken, statuses = ["pending"]) {
   await ensureCheckOverPendingSheet(accessToken);
   const range = `'${escapeSheetName(CHECKOVER_PENDING_SHEET_NAME)}'!A:L`;
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`;
@@ -5355,7 +5366,7 @@ async function getCheckOverPendingItems(accessToken) {
   return values
     .slice(1)
     .map((row, idx) => checkOverPendingFromRow(row, idx + 2))
-    .filter(item => ["pending", "processing"].includes(String(item.status || "").toLowerCase()));
+    .filter(item => statuses.includes(String(item.status || "").toLowerCase()));
 }
 
 function uniquePendingCodes(items) {
@@ -5387,6 +5398,14 @@ function buildPendingRegistrationReminderText(receiptItems = [], checkOverItems 
   return lines.join("\n").trim();
 }
 
+
+function buildProcessingReviewText(receiptItems = [], checkOverItems = []) {
+  const lines = [];
+  for (const item of receiptItems) lines.push(`• 입금사진 ${item.code || "-"}${item.updatedAt ? ` / ${item.updatedAt}` : ""}`);
+  for (const item of checkOverItems) lines.push(`• Check Over ${item.code || "-"}${item.customerName ? ` / ${item.customerName}` : ""}`);
+  if (!lines.length) return "";
+  return ["⚠️ 처리 상태 확인 필요", "아래 항목은 processing 상태라 재등록 버튼을 생성하지 않았습니다.", "통합 시트 반영 여부를 확인해주세요.", "", ...lines].join("\n");
+}
 
 function chunkLineMessages(messages, size = 5) {
   const chunks = [];
@@ -5449,23 +5468,33 @@ async function resendPendingRegistrationButtons(event) {
     return;
   }
 
-  const [receiptItems, checkOverItems] = await Promise.all([
-    getReceiptPendingItems(accessToken),
-    getCheckOverPendingItems(accessToken)
+  const [receiptItems, checkOverItems, processingReceipts, processingCheckOvers] = await Promise.all([
+    getReceiptPendingItems(accessToken, ["pending"]),
+    getCheckOverPendingItems(accessToken, ["pending"]),
+    getReceiptPendingItems(accessToken, ["processing"]),
+    getCheckOverPendingItems(accessToken, ["processing"])
   ]);
 
-  const messages = buildPendingRegistrationButtonMessages(receiptItems, checkOverItems);
-  if (!messages.length) {
+  const buttonMessages = buildPendingRegistrationButtonMessages(receiptItems, checkOverItems);
+  const pendingCount = receiptItems.length + checkOverItems.length;
+  const processingText = buildProcessingReviewText(processingReceipts, processingCheckOvers);
+  const outgoing = [];
+
+  if (pendingCount > 0) {
+    outgoing.push(buildTextMessage(`📋 미등록 ${pendingCount}건의 등록/취소 버튼을 다시 생성했습니다.
+순수 pending 상태인 항목만 표시됩니다.`));
+    outgoing.push(...buttonMessages);
+  }
+  if (processingText) outgoing.push(buildTextMessage(processingText));
+
+  if (!outgoing.length) {
     await replyToLine(event.replyToken, "✅ 등록하지 않은 항목이 없습니다.");
     return;
   }
 
-  const summary = buildTextMessage(`📋 미등록 ${messages.length}건의 등록/취소 버튼을 다시 생성했습니다.\n이미 처리된 버튼을 누르면 중복 반영하지 않고 처리 완료 상태를 안내합니다.`);
-  const chunks = chunkLineMessages([summary, ...messages], 5);
+  const chunks = chunkLineMessages(outgoing, 5);
   await replyToLineMessages(event.replyToken, chunks[0]);
-  for (const chunk of chunks.slice(1)) {
-    await pushToLineMessages(approvalGroupId, chunk);
-  }
+  for (const chunk of chunks.slice(1)) await pushToLineMessages(approvalGroupId, chunk);
 }
 
 export async function checkPendingRegistrations(event) {
