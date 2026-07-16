@@ -2159,19 +2159,28 @@ function maskAccountNumber(value) {
 }
 
 function buildReceiptMatchText({ senderName, accountNumber }) {
-  const expectedName = normalizeSenderName(RECEIPT_EXPECTED_SENDER_NAME);
-  const expectedAccount = normalizeAccountNumber(RECEIPT_EXPECTED_ACCOUNT_NUMBER);
   const actualName = normalizeSenderName(senderName);
   const actualAccount = normalizeAccountNumber(accountNumber);
 
-  const nameStatus = actualName
-    ? (expectedName && actualName.toUpperCase() === expectedName.toUpperCase() ? "✅ 일치" : "❌ 불일치")
-    : "△ 확인 불가";
-  const accountStatus = actualAccount
-    ? (expectedAccount && actualAccount === expectedAccount ? "✅ 일치" : "❌ 불일치")
-    : "△ 확인 불가";
+  // 불일치라고 단정하지 않고 관리자가 사진을 다시 볼 수 있도록 안내한다.
+  const nameStatus = actualName && isExpectedReceiptSender(actualName)
+    ? "✅ 일치"
+    : "⚠️ 확인 필요";
+  const accountStatus = actualAccount && isExpectedReceiptAccount(actualAccount)
+    ? "✅ 일치"
+    : "⚠️ 확인 필요";
 
-  return `입금자명 확인 : ${nameStatus}\n계좌번호 확인 : ${accountStatus}`;
+  return [
+    `입금자명 확인 : ${nameStatus}`,
+    `계좌번호 확인 : ${accountStatus}`
+  ].join("\n");
+}
+
+function isExpectedReceiptAccount(accountNumber) {
+  const expected = normalizeAccountNumber(RECEIPT_EXPECTED_ACCOUNT_NUMBER);
+  const actual = normalizeAccountNumber(accountNumber);
+  if (!expected || !actual) return false;
+  return actual === expected;
 }
 
 function normalizeReceiptNameForCompare(value) {
@@ -2285,19 +2294,13 @@ function buildReceiptNearDuplicateKey({ sourceGroupId, code, amountWon, senderNa
   const amount = normalizeWonAmount(amountWon) || "";
   if (!sourceGroupId || !code || !amount) return "";
 
-  const expectedSender = normalizeSenderName(RECEIPT_EXPECTED_SENDER_NAME);
-  const expectedAccount = normalizeAccountNumber(RECEIPT_EXPECTED_ACCOUNT_NUMBER);
   const actualSender = normalizeSenderName(senderName);
   const actualAccount = normalizeAccountNumber(accountNumber);
+  const senderMatched = actualSender && isExpectedReceiptSender(actualSender);
 
-  const senderMatched = expectedSender && actualSender && actualSender.toUpperCase() === expectedSender.toUpperCase();
-  const accountMatched = expectedAccount && actualAccount && (
-    actualAccount.includes(expectedAccount) || expectedAccount.includes(actualAccount)
-  );
-
-  // 기대 수취인/계좌로 확인되는 입금사진이면, 같은 그룹/코드/금액만 같아도
-  // 같은 송금내역을 위/아래로 나눠 보낸 것으로 보고 버튼 중복 생성을 막는다.
-  const matchPart = senderMatched || accountMatched ? "expected" : `${actualSender || ""}|${actualAccount || ""}`;
+  // 계좌번호는 은행마다 고객/당사/출금계좌 등 의미가 달라질 수 있으므로
+  // 기대 계좌 일치 여부로 판단하지 않는다. 입금자명이 일치할 때만 동일 입금 단서로 사용한다.
+  const matchPart = senderMatched ? "expected" : `${actualSender || ""}|${actualAccount || ""}`;
   return crypto.createHash("sha256").update(`${sourceGroupId}|${String(code).toUpperCase()}|${amount}|${matchPart}`, "utf8").digest("hex");
 }
 
@@ -2311,7 +2314,7 @@ function buildReceiptDuplicateText(item) {
 function buildReceiptAnalysisText({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, includePrompt = true }) {
   const matchText = buildReceiptMatchText({ senderName, accountNumber });
   const promptText = includePrompt ? "\n\n💛 등록하시겠습니까?" : "";
-  return `💛이체사진 분석완료\n\n고객코드 : ${code}\n이체날짜 : ${formatTransferDate(transferDate)}\n입금금액 : ${formatWon(amountWon)}\n입력값 : ${sheetValue}\n입금자명 : ${formatOptionalReceiptField(senderName)}\n계좌번호 : ${maskAccountNumber(accountNumber)}\n\n${matchText}${promptText}`;
+  return `💛이체사진 분석완료\n\n고객코드 : ${code}\n이체날짜 : ${formatTransferDate(transferDate)}\n입금금액 : ${formatWon(amountWon)}\n입력값 : ${sheetValue}\n입금자명 : ${formatOptionalReceiptField(senderName)}\n\n${matchText}${promptText}`;
 }
 
 function buildTextMessage(text, quickReply) {
@@ -2432,11 +2435,9 @@ async function callReceiptOcrOpenAI(image, retry = false) {
     ? rawReceiptScore
     : (Number.isFinite(confidence) ? confidence * 100 : 0);
 
-  const expectedAccountMatched = accountNumber && RECEIPT_EXPECTED_ACCOUNT_NUMBER
-    ? accountNumber.includes(RECEIPT_EXPECTED_ACCOUNT_NUMBER) || RECEIPT_EXPECTED_ACCOUNT_NUMBER.includes(accountNumber)
-    : false;
   const expectedSenderMatched = allNames.some(name => isExpectedReceiptSender(name));
-  const hasExpectedReceiptClue = Boolean(expectedAccountMatched || expectedSenderMatched);
+  // 계좌번호의 주체는 은행 화면마다 다르므로 기대 계좌 일치 여부를 정상 입금 판단에 사용하지 않는다.
+  const hasExpectedReceiptClue = Boolean(expectedSenderMatched);
 
   // 모니터 재촬영/반사/기울어짐 사진은 OCR 점수가 낮게 나올 수 있으므로
   // 실제 이체화면으로 판단되고 기대 계좌/예금주 단서가 있으면 점수 기준을 보정한다.
@@ -2444,13 +2445,15 @@ async function callReceiptOcrOpenAI(image, retry = false) {
     return { ok: false, ignored: true, reason: retry ? "retry_not_receipt" : "not_receipt" };
   }
 
-  if (RECEIPT_REQUIRE_EXPECTED_SENDER && allNames.length > 0 && !expectedSenderMatched && !expectedAccountMatched) {
-    return { ok: false, ignored: true, reason: "unexpected_sender" };
+  // 이름이 기대값과 다르더라도 자동으로 탈락시키지 않는다.
+  // 등록 메시지에서 "⚠️ 확인 필요"로 표시하여 관리자가 사진을 직접 확인한다.
+  if (RECEIPT_REQUIRE_EXPECTED_SENDER && allNames.length > 0 && !expectedSenderMatched) {
+    console.log(`[RECEIPT OCR REVIEW] unexpected sender names=${allNames.join(", ")}`);
   }
 
   const hasStrongReceiptClue = Boolean(allNames.length || accountNumber || transferDate);
   const effectiveConfidence = Number.isFinite(confidence) ? confidence : 0;
-  const retryPassByClue = retry && amountWon && (expectedAccountMatched || expectedSenderMatched || accountNumber || allNames.length);
+  const retryPassByClue = retry && amountWon && (expectedSenderMatched || accountNumber || allNames.length);
 
   if (/fee|charge|수수료|total|pay|합계|총|ชำระ|ค่าธรรมเนียม|balance|remaining|available|잔액|남은|คงเหลือ|ยอดเงินคงเหลือ/.test(amountRole)) {
     return { ok: false, error: "⚠️ 잔액/수수료/총액으로 보이는 금액은 자동 등록하지 않습니다. 실제 입금액을 확인 후 직접 코드/금액으로 등록해주세요.", reason: "amount_role_not_transfer" };
@@ -2545,13 +2548,15 @@ function buildReceiptCustomerAnalysisText({ code, amountWon, sheetValue, senderN
 
 function buildReceiptApprovalFlexMessage({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, dataBase }) {
   const amountText = Number(amountWon).toLocaleString("ko-KR");
+  const reviewText = buildReceiptMatchText({ senderName, accountNumber }).split("\n");
   const fields = [
     `코드 : ${code}`,
     `입금액 : ${amountText}원`,
     `시트값 : ${sheetValue}`,
     `입금자 : ${senderName || "-"}`,
     `계좌 : ${accountNumber || "-"}`,
-    `이체일시 : ${transferDate || "-"}`
+    `이체일시 : ${transferDate || "-"}`,
+    ...reviewText
   ];
 
   return {
