@@ -22,6 +22,11 @@ const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "")
   .filter(Boolean);
 
 const RECEIPT_OCR_MODEL = process.env.RECEIPT_OCR_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-4.1-mini";
+const PASSPORT_OCR_MODEL = process.env.PASSPORT_OCR_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-4.1-mini";
+const PASSPORT_BATCH_WAIT_MS = Number(process.env.PASSPORT_BATCH_WAIT_MS || 5000);
+const PASSPORT_BATCH_TTL_MS = Number(process.env.PASSPORT_BATCH_TTL_MS || 60 * 1000);
+const passportBatchCache = globalThis.__passportBatchCache || new Map();
+globalThis.__passportBatchCache = passportBatchCache;
 const RECEIPT_MIN_CONFIDENCE = Number(process.env.RECEIPT_MIN_CONFIDENCE || 0.50);
 const RECEIPT_MIN_RECEIPT_SCORE = Number(process.env.RECEIPT_MIN_RECEIPT_SCORE || 70);
 const RECEIPT_EXPECTED_SENDER_NAME = process.env.RECEIPT_EXPECTED_SENDER_NAME || "CHAYAPONE";
@@ -2783,6 +2788,127 @@ async function notifyReceiptAnalysisFailureToApprovalGroup({ accessToken, source
   } catch (err) {
     const errorText = getLinePushErrorMessage(err);
     console.error(`[RECEIPT OCR FAIL NOTICE PUSH FAIL] code=${code || "-"} sourceGroupId=${sourceGroupId || "-"} error=${errorText}`);
+  }
+}
+
+
+function normalizePassportNamePart(value) {
+  return String(value || "")
+    .toUpperCase()
+    .replace(/[^A-Z' -]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildPassportFullName(givenNames, surname) {
+  const given = normalizePassportNamePart(givenNames);
+  const family = normalizePassportNamePart(surname);
+  if (!given || !family) return "";
+  return `${given} ${family}`.replace(/\s+/g, " ").trim();
+}
+
+async function callPassportOcrOpenAI(image) {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: PASSPORT_OCR_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: "너는 여권 이미지 판별 및 영문 성명 OCR 분석기다. 실제 여권의 인적사항면 또는 여권 하단 MRZ가 확인되는 경우에만 is_passport=true로 판단한다. 오직 Surname(성)과 Given names(이름)만 읽고, 여권번호·생년월일·국적·성별·만료일 등 다른 개인정보는 추출하거나 출력하지 않는다. 인적사항의 Surname/Given names와 MRZ를 함께 확인해 교차검증한다. MRZ에서는 << 앞이 성, 뒤가 이름이다. 결과 이름은 여권 표기 철자 그대로 대문자로 반환한다. 이미지가 여권이 아니거나 이름을 확실히 읽을 수 없으면 빈 값으로 둔다. 반드시 JSON만 출력한다."
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "이 이미지가 여권인지 판별하고 성과 이름만 추출해줘. 최종 표시는 Given names + 공백 1개 + Surname 순서다. JSON 형식: {\"is_passport\":true,\"surname\":\"KOBKHUNTHOD\",\"given_names\":\"LAMDUAN\",\"confidence\":0.98}."
+            },
+            {
+              type: "image_url",
+              image_url: { url: `data:${image.contentType};base64,${image.base64}` }
+            }
+          ]
+        }
+      ],
+      max_completion_tokens: 180
+    })
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    console.error("[PASSPORT OCR OPENAI FAIL]", data);
+    return { ok: false, isPassport: false };
+  }
+
+  const parsed = parseJsonObjectLoose(data?.choices?.[0]?.message?.content || "");
+  const isPassport = parsed?.is_passport === true || parsed?.is_passport === "true";
+  const surname = normalizePassportNamePart(parsed?.surname);
+  const givenNames = normalizePassportNamePart(parsed?.given_names ?? parsed?.given_name);
+  const confidence = Number(parsed?.confidence || 0);
+  const fullName = buildPassportFullName(givenNames, surname);
+
+  if (!isPassport || !fullName || confidence < 0.55) {
+    return { ok: true, isPassport: false };
+  }
+
+  return { ok: true, isPassport: true, surname, givenNames, fullName, confidence };
+}
+
+function cleanupPassportBatchCache(now = Date.now()) {
+  for (const [key, item] of passportBatchCache.entries()) {
+    if (Number(item?.expiresAt || 0) <= now) passportBatchCache.delete(key);
+  }
+}
+
+async function queuePassportNameReply(event, passportResult) {
+  const sourceId = getLineSourceGroupId(event) || event?.source?.userId || "";
+  if (!sourceId) return;
+
+  const now = Date.now();
+  cleanupPassportBatchCache(now);
+  const previous = passportBatchCache.get(sourceId) || { generation: 0, candidates: [] };
+  const generation = Number(previous.generation || 0) + 1;
+  const candidates = [...(previous.candidates || []), passportResult]
+    .filter(item => item?.fullName)
+    .slice(-2);
+
+  passportBatchCache.set(sourceId, {
+    generation,
+    candidates,
+    expiresAt: now + PASSPORT_BATCH_TTL_MS
+  });
+
+  // 고객이 여권을 1장 또는 2장 연속으로 보낼 수 있으므로 잠깐 모은 뒤,
+  // 가장 신뢰도가 높은 영문 이름 하나만 최종 메시지로 보낸다.
+  await new Promise(resolve => setTimeout(resolve, PASSPORT_BATCH_WAIT_MS));
+
+  const latest = passportBatchCache.get(sourceId);
+  if (!latest || latest.generation !== generation) return;
+
+  const best = [...latest.candidates].sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))[0];
+  passportBatchCache.delete(sourceId);
+  if (!best?.fullName) return;
+
+  await pushToLine(sourceId, best.fullName);
+}
+
+async function tryHandlePassportImage(event) {
+  if (!process.env.OPENAI_API_KEY) return false;
+
+  try {
+    const image = await downloadLineMessageContent(event.message.id);
+    const result = await callPassportOcrOpenAI(image);
+    if (!result?.isPassport) return false;
+    await queuePassportNameReply(event, result);
+    return true;
+  } catch (err) {
+    console.error(`[PASSPORT IMAGE HANDLE FAIL] messageId=${event.message?.id || "-"} error=${err?.message || err}`);
+    return false;
   }
 }
 
@@ -5662,7 +5788,12 @@ export default async function handler(req, res) {
       }
 
       if (event.message.type === "image") {
-        await handleReceiptImageMessage(event);
+        // 누구든 여권 이미지를 올리면 성/이름만 추출해 "이름 성" 형식으로 한 번만 답한다.
+        // 여권이 아닌 이미지는 기존 이체사진 분석 흐름으로 넘긴다.
+        const passportHandled = await tryHandlePassportImage(event);
+        if (!passportHandled) {
+          await handleReceiptImageMessage(event);
+        }
         continue;
       }
 
