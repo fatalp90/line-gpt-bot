@@ -1149,7 +1149,9 @@ function buildRepaymentCells(command) {
 
   cells[startIndex] = formatAmountValue(command.cut);
 
-  const isNoCut = String(command.cut).trim() === "-";
+  const cutRaw = String(command.cut).trim();
+  const cutNumber = cutRaw === "-" ? 0 : Number(cutRaw);
+  const isNoCut = cutRaw === "-" || (Number.isFinite(cutNumber) && cutNumber <= 0);
 
   if (isNoCut && plan.intervalDays === 1) {
     // Cut이 없는 매일상환 상품은 당일 칸에 '-'만 표시하고,
@@ -1218,9 +1220,18 @@ function buildRegistrationRepaymentRows(command, todayInfo = null) {
     // 예: 25,000원 상품 + /5 => 5만원 선공제 => 2.5, 2.5 두 칸 선카운트
     const prepaidCount = hasCut ? Math.min(plan.repaymentCount, Math.round(cutNumber / repaymentUnit)) : 0;
 
-    for (let i = 0; i < plan.repaymentCount; i += 1) {
-      const value = i < prepaidCount ? repaymentValueText : "$";
-      placeRegistrationCell(topCells, bottomCells, today, i, value);
+    if (!hasCut) {
+      // 30만/40만/50만의 모든 매일상환 상품 공통:
+      // 공제가 없으면 등록 당일은 '-'로 표시하고, 다음날부터 정해진 횟수만큼 '$'를 카운트한다.
+      placeRegistrationCell(topCells, bottomCells, today, 0, "-");
+      for (let i = 0; i < plan.repaymentCount; i += 1) {
+        placeRegistrationCell(topCells, bottomCells, today, i + 1, "$");
+      }
+    } else {
+      for (let i = 0; i < plan.repaymentCount; i += 1) {
+        const value = i < prepaidCount ? repaymentValueText : "$";
+        placeRegistrationCell(topCells, bottomCells, today, i, value);
+      }
     }
 
     return { topCells, bottomCells, plan, prepaidCount };
