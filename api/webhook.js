@@ -2857,14 +2857,14 @@ async function callPassportOcrOpenAI(image) {
       messages: [
         {
           role: "system",
-          content: "너는 여권 이미지 판별 및 영문 성명 OCR 분석기다. 실제 여권의 인적사항면 또는 여권 하단 MRZ가 확인되는 경우에만 is_passport=true로 판단한다. 오직 Surname(성)과 Given names(이름)만 읽고, 여권번호·생년월일·국적·성별·만료일 등 다른 개인정보는 추출하거나 출력하지 않는다. 반드시 인적사항의 Surname/Given names와 여권 하단 MRZ 첫 줄을 함께 확인해 교차검증하고, 서로 다르면 MRZ를 우선한다. TD3 MRZ 첫 줄 형식은 P<국가코드3글자성<<이름이다. 태국 여권은 P<THA로 시작하며 THA는 태국 발급국 코드이지 성 또는 이름의 일부가 절대 아니다. 따라서 P<THATHAMWONGSRI<<PANNAPA라면 성은 THAMWONGSRI, 이름은 PANNAPA이다. P<와 그 직후 국가코드 3글자를 제거한 다음, 첫 번째 << 앞을 성, 뒤를 이름으로 읽는다. mrz_line1에는 보이는 MRZ 첫 줄만 공백 없이 그대로 대문자로 반환한다. 결과 이름은 여권 표기 철자 그대로 대문자로 반환한다. 이미지가 여권이 아니거나 이름을 확실히 읽을 수 없으면 빈 값으로 둔다. 반드시 JSON만 출력한다."
+          content: "너는 여권 이미지 판별 및 영문 성명 OCR 분석기다. 실제 여권의 인적사항면 또는 여권 하단 MRZ가 확인되는 경우에만 is_passport=true로 판단한다. 오직 Surname(성)과 Given names(이름)만 읽고, 여권번호·생년월일·국적·성별·만료일 등 다른 개인정보는 추출하거나 출력하지 않는다. 반드시 여권 하단 MRZ 첫 줄을 가장 먼저 글자 단위로 그대로 읽고, 그 결과를 인적사항의 Surname/Given names와 교차검증한다. 두 영역이 다르면 MRZ를 절대 우선한다. 이름을 자연스러운 철자나 실제 존재할 법한 이름으로 추측·보정·확장하지 말고, 이미지에 인쇄된 문자만 그대로 옮긴다. TD3 MRZ 첫 줄 형식은 P<국가코드3글자성<<이름이다. 태국 여권은 P<THA로 시작하며 THA는 태국 발급국 코드이지 성 또는 이름의 일부가 절대 아니다. P<와 그 직후 국가코드 3글자를 제거한 다음 첫 번째 << 앞을 성, 뒤를 이름으로 읽는다. 예시 1: P<THATHAMWONGSRI<<PANNAPA이면 성 THAMWONGSRI, 이름 PANNAPA다. 예시 2: P<THAKADTA<<PATCHARIN이면 성 KADTA, 이름 PATCHARIN이며 KHADATA처럼 임의로 글자를 추가하면 안 된다. mrz_line1에는 보이는 MRZ 첫 줄을 공백 없이, 누락·추가·자동교정 없이 대문자로 그대로 반환한다. MRZ가 보이는데 첫 줄을 확실히 읽지 못하면 mrz_line1과 이름 값을 빈 문자열로 반환한다. 결과 이름은 여권 표기 철자 그대로 대문자로 반환한다. 이미지가 여권이 아니거나 이름을 확실히 읽을 수 없으면 빈 값으로 둔다. 반드시 JSON만 출력한다."
         },
         {
           role: "user",
           content: [
             {
               type: "text",
-              text: "이 이미지가 여권인지 판별하고 성과 이름만 추출해줘. MRZ가 보이면 반드시 첫 줄의 P< 다음 국가코드 3글자(태국은 THA)를 이름에서 제외해라. 최종 표시는 Given names + 공백 1개 + Surname 순서다. JSON 형식: {\"is_passport\":true,\"mrz_line1\":\"P<THAKOBKHUNTHOD<<LAMDUAN<<<<<<<<<<<<\",\"surname\":\"KOBKHUNTHOD\",\"given_names\":\"LAMDUAN\",\"confidence\":0.98}."
+              text: "이 이미지가 여권인지 판별하고 성과 이름만 추출해줘. MRZ 첫 줄이 보이면 반드시 그 줄을 먼저 문자 그대로 읽고, P< 다음 국가코드 3글자(태국은 THA)를 이름에서 제외해라. 본문 이름과 MRZ가 다르면 MRZ를 사용하고, 철자를 추측하거나 글자를 추가하지 마라. 예: P<THAKADTA<<PATCHARIN이면 최종 이름은 PATCHARIN KADTA다. 최종 표시는 Given names + 공백 1개 + Surname 순서다. JSON 형식: {\"is_passport\":true,\"mrz_line1\":\"P<THAKOBKHUNTHOD<<LAMDUAN<<<<<<<<<<<<\",\"surname\":\"KOBKHUNTHOD\",\"given_names\":\"LAMDUAN\",\"confidence\":0.98}."
             },
             {
               type: "image_url",
