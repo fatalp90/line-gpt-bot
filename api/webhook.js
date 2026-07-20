@@ -5257,7 +5257,10 @@ Natural Thai rules:
 
 - Preserve teasing, soft joking, worry, frustration, apology, firmness, and affection naturally.
 - Understand Korean casual expressions like ㅋㅋ, ㅎㅎ, ㅠㅠ, TT, 아/오/어/응/네.
-- ㅋㅋ or ㅎㅎ may become 555 only when natural. Do not force it.
+- When the entire input consists only of laughter such as ㅋㅋ, ㅎㅎ, lol, lmao, or 555, output laughter only.
+- Never add ครับ, ค่ะ, นะ, จ้า, or any other ending particle to a laughter-only message.
+- Examples: ㅋㅋ -> 555 / ㅋㅋㅋㅋ -> 55555 / ㅎㅎㅎㅎ -> 55555 / lol -> 555
+- When laughter appears together with a real sentence, translate the sentence naturally and render the laughter as 555 when appropriate.
 - Avoid robotic dictionary-style Thai.
 
 - For mixed Korean + English phrases:
@@ -5434,8 +5437,37 @@ function normalizeShortKoreanResponse(text) {
   return replacements[clean] || clean;
 }
 
+function getLaughterOnlyTranslation(text) {
+  const clean = String(text || "").trim();
+  const compact = clean.replace(/\s+/g, "");
+
+  // 웃음만 있는 메시지는 모델에 보내지 않고 직접 처리한다.
+  // 종결어(ครับ/ค่ะ/นะ/จ้า 등)를 절대 덧붙이지 않는다.
+  const koreanLaugh = compact.match(/^([ㅋㅎ]{2,})([!?~～…]*)$/u);
+  if (koreanLaugh) {
+    const laughCount = koreanLaugh[1].length;
+    const suffix = koreanLaugh[2] || "";
+    return `${"5".repeat(Math.max(3, laughCount + 1))}${suffix}`;
+  }
+
+  const englishLaugh = compact.match(/^(lol+|lmao+|rofl+)([!?~～…]*)$/iu);
+  if (englishLaugh) {
+    return `555${englishLaugh[2] || ""}`;
+  }
+
+  const thaiLaugh = compact.match(/^(5{3,})([!?~～…]*)$/u);
+  if (thaiLaugh) {
+    return `${thaiLaugh[1]}${thaiLaugh[2] || ""}`;
+  }
+
+  return null;
+}
+
 async function translateKoToTh(text, history = []) {
   const clean = normalizeText(text);
+  const laughterOnly = getLaughterOnlyTranslation(clean);
+  if (laughterOnly) return laughterOnly;
+
   const direct = shortDictionary[clean];
   if (direct) return direct;
 
