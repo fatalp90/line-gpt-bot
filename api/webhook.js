@@ -21,8 +21,8 @@ const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "")
   .map(v => v.trim())
   .filter(Boolean);
 
-const RECEIPT_OCR_MODEL = process.env.RECEIPT_OCR_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-4.1-mini";
-const PASSPORT_OCR_MODEL = process.env.PASSPORT_OCR_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-4.1-mini";
+const RECEIPT_OCR_MODEL = process.env.RECEIPT_OCR_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-5.4";
+const PASSPORT_OCR_MODEL = process.env.PASSPORT_OCR_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-5.4";
 const PASSPORT_BATCH_WAIT_MS = Number(process.env.PASSPORT_BATCH_WAIT_MS || 5000);
 const PASSPORT_BATCH_TTL_MS = Number(process.env.PASSPORT_BATCH_TTL_MS || 60 * 1000);
 const passportBatchCache = globalThis.__passportBatchCache || new Map();
