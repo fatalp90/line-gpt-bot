@@ -3364,13 +3364,13 @@ function parseTodayRepaymentBroadcastCommand(text) {
 
 function parseUnregisteredCheckCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
-  return clean === "미등록확인";
+  return clean === "미등록";
 }
 
 // PP01 관리자 확인방에서 등록 버튼을 아직 누르지 않은 대기 항목 조회
 function parsePendingRegistrationCheckCommand(text) {
   const clean = normalizeText(text).replace(/\s+/g, "");
-  return clean === "/미등록확인";
+  return clean === "/미등록";
 }
 
 function parseMyIdCommand(text) {
@@ -3860,7 +3860,7 @@ function findActiveLineCustomerCodes(values) {
   const codes = [];
   const seen = new Set();
 
-  // 미등록확인은 라인 그룹 고객 구간인 1058행부터, 고객 1명당 2행씩 검색
+  // 미등록은 라인 그룹 고객 구간인 1058행부터, 고객 1명당 2행씩 검색
   for (let i = LINE_CUSTOMER_START_INDEX0; i < values.length; i += 2) {
     const row = values[i] || [];
     const status = String(row[2] || "").trim(); // C열 상태
@@ -5696,7 +5696,7 @@ async function resendPendingRegistrationButtons(event) {
   const approvalGroupId = await getReceiptApprovalGroupId(accessToken);
   const sourceGroupId = getLineSourceGroupId(event);
   if (!approvalGroupId || !sourceGroupId || sourceGroupId !== approvalGroupId) {
-    await replyToLine(event.replyToken, `⚠️ /미등록확인은 ${RECEIPT_APPROVAL_GROUP_CODE} 그룹에서만 사용할 수 있습니다.`);
+    await replyToLine(event.replyToken, `⚠️ /미등록은 ${RECEIPT_APPROVAL_GROUP_CODE} 그룹에서만 사용할 수 있습니다.`);
     return;
   }
 
@@ -5740,7 +5740,7 @@ export async function checkPendingRegistrations(event) {
 
   // 명령어는 등록 확인방(PP01)에서만 실행한다.
   if (!approvalGroupId || !sourceGroupId || sourceGroupId !== approvalGroupId) {
-    return `⚠️ /미등록확인은 ${RECEIPT_APPROVAL_GROUP_CODE} 그룹에서만 사용할 수 있습니다.`;
+    return `⚠️ /미등록은 ${RECEIPT_APPROVAL_GROUP_CODE} 그룹에서만 사용할 수 있습니다.`;
   }
 
   const [receiptItems, checkOverItems] = await Promise.all([
