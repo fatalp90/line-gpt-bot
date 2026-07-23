@@ -2806,8 +2806,14 @@ function normalizePassportNamePart(value) {
     .trim();
 }
 
+function removePassportNameTitle(value) {
+  return normalizePassportNamePart(value)
+    .replace(/^(?:MR|MRS|MISS|MS|MASTER|DR)\.?\s+/i, "")
+    .trim();
+}
+
 function buildPassportFullName(givenNames, surname) {
-  const given = normalizePassportNamePart(givenNames);
+  const given = removePassportNameTitle(givenNames);
   const family = normalizePassportNamePart(surname);
   if (!given || !family) return "";
   return `${given} ${family}`.replace(/\s+/g, " ").trim();
@@ -2852,23 +2858,45 @@ async function callPassportOcrOpenAI(image) {
       messages: [
         {
           role: "system",
-          content: "너는 여권 이미지 판별 및 영문 성명 OCR 분석기다. 실제 여권의 인적사항면 또는 여권 하단 MRZ가 확인되는 경우에만 is_passport=true로 판단한다. 오직 Surname(성)과 Given names(이름)만 읽고, 여권번호·생년월일·국적·성별·만료일 등 다른 개인정보는 추출하거나 출력하지 않는다. 반드시 여권 하단 MRZ 첫 줄을 가장 먼저 글자 단위로 그대로 읽고, 그 결과를 인적사항의 Surname/Given names와 교차검증한다. 두 영역이 다르면 MRZ를 절대 우선한다. 이름을 자연스러운 철자나 실제 존재할 법한 이름으로 추측·보정·확장하지 말고, 이미지에 인쇄된 문자만 그대로 옮긴다. TD3 MRZ 첫 줄 형식은 P<국가코드3글자성<<이름이다. 태국 여권은 P<THA로 시작하며 THA는 태국 발급국 코드이지 성 또는 이름의 일부가 절대 아니다. P<와 그 직후 국가코드 3글자를 제거한 다음 첫 번째 << 앞을 성, 뒤를 이름으로 읽는다. 예시 1: P<THATHAMWONGSRI<<PANNAPA이면 성 THAMWONGSRI, 이름 PANNAPA다. 예시 2: P<THAKADTA<<PATCHARIN이면 성 KADTA, 이름 PATCHARIN이며 KHADATA처럼 임의로 글자를 추가하면 안 된다. mrz_line1에는 보이는 MRZ 첫 줄을 공백 없이, 누락·추가·자동교정 없이 대문자로 그대로 반환한다. MRZ가 보이는데 첫 줄을 확실히 읽지 못하면 mrz_line1과 이름 값을 빈 문자열로 반환한다. 결과 이름은 여권 표기 철자 그대로 대문자로 반환한다. 이미지가 여권이 아니거나 이름을 확실히 읽을 수 없으면 빈 값으로 둔다. 반드시 JSON만 출력한다."
+          content: "너는 여권 이미지 판별 및 영문 성명 OCR 분석기다. 실제 여권의 인적사항면 또는 여권 하단 MRZ가 확인되면 is_passport=true로 판단한다. 오직 Surname(성)과 Given names(이름)만 읽고, 여권번호·생년월일·국적·성별·만료일 등 다른 개인정보는 추출하거나 출력하지 않는다. 먼저 MRZ가 이미지에 실제로 포함되어 있고 충분히 선명한지 확인한다. MRZ 첫 줄을 선명하게 읽을 수 있으면 글자 단위로 읽고 인적사항의 Surname/Given names와 교차검증하며, 두 영역이 다르면 MRZ를 우선한다. MRZ가 사진 밖으로 잘렸거나 가려졌거나 흐려서 확실히 읽을 수 없는 경우에는 mrz_line1을 빈 문자열로 두고, 인적사항 영역에 인쇄된 Surname과 Given names 또는 Name을 직접 읽는다. MRZ가 없다는 이유만으로 읽을 수 있는 인적사항 이름을 빈 값으로 만들거나 is_passport=false로 판단하지 않는다. MR, MRS, MISS, MS, MASTER, DR 같은 호칭은 이름이 아니므로 given_names에서 반드시 제외한다. 이름을 자연스러운 철자나 실제 존재할 법한 이름으로 추측·보정·확장하지 말고 이미지에 인쇄된 영문자만 그대로 옮긴다. TD3 MRZ 첫 줄 형식은 P<국가코드3글자성<<이름이다. 태국 여권은 P<THA로 시작하며 THA는 발급국 코드이지 성명의 일부가 아니다. P<와 그 직후 국가코드 3글자를 제거한 다음 첫 번째 << 앞을 성, 뒤를 이름으로 읽는다. mrz_line1에는 선명하게 보이는 경우에만 MRZ 첫 줄을 공백 없이 대문자로 그대로 반환한다. 결과 이름은 여권 표기 철자 그대로 대문자로 반환한다. 이미지가 여권이 아니거나 인적사항과 MRZ 양쪽 모두에서 이름을 확실히 읽을 수 없을 때만 이름을 빈 값으로 둔다."
         },
         {
           role: "user",
           content: [
             {
               type: "text",
-              text: "이 이미지가 여권인지 판별하고 성과 이름만 추출해줘. MRZ 첫 줄이 보이면 반드시 그 줄을 먼저 문자 그대로 읽고, P< 다음 국가코드 3글자(태국은 THA)를 이름에서 제외해라. 본문 이름과 MRZ가 다르면 MRZ를 사용하고, 철자를 추측하거나 글자를 추가하지 마라. 예: P<THAKADTA<<PATCHARIN이면 최종 이름은 PATCHARIN KADTA다. 최종 표시는 Given names + 공백 1개 + Surname 순서다. JSON 형식: {\"is_passport\":true,\"mrz_line1\":\"P<THAKOBKHUNTHOD<<LAMDUAN<<<<<<<<<<<<\",\"surname\":\"KOBKHUNTHOD\",\"given_names\":\"LAMDUAN\",\"confidence\":0.98}."
+              text: "이 이미지가 여권인지 판별하고 성과 이름만 추출해줘. 선명한 MRZ 첫 줄이 있으면 우선 사용하되, MRZ가 잘렸거나 없으면 인적사항의 Surname과 Given names/Name을 사용해라. MR/MRS/MISS/MS 등의 호칭은 제외하고 철자를 추측하지 마라. 최종 표시는 Given names + 공백 1개 + Surname 순서다."
             },
             {
               type: "image_url",
-              image_url: { url: `data:${image.contentType};base64,${image.base64}` }
+              image_url: {
+                url: `data:${image.contentType};base64,${image.base64}`,
+                detail: "high"
+              }
             }
           ]
         }
       ],
-      max_completion_tokens: 180
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "passport_name_result",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              is_passport: { type: "boolean" },
+              mrz_line1: { type: "string" },
+              surname: { type: "string" },
+              given_names: { type: "string" },
+              confidence: { type: "number", minimum: 0, maximum: 1 }
+            },
+            required: ["is_passport", "mrz_line1", "surname", "given_names", "confidence"],
+            additionalProperties: false
+          }
+        }
+      },
+      max_completion_tokens: 800
     })
   });
 
@@ -2883,7 +2911,9 @@ async function callPassportOcrOpenAI(image) {
   const mrzName = parsePassportMrzNameLine(parsed?.mrz_line1 ?? parsed?.mrz_first_line);
   // MRZ가 정상 파싱되면 인쇄 영역 OCR보다 우선하여 국가코드(예: THA) 혼입을 방지한다.
   const surname = mrzName?.surname || normalizePassportNamePart(parsed?.surname);
-  const givenNames = mrzName?.givenNames || normalizePassportNamePart(parsed?.given_names ?? parsed?.given_name);
+  const givenNames = removePassportNameTitle(
+    mrzName?.givenNames || parsed?.given_names || parsed?.given_name
+  );
   const confidence = Number(parsed?.confidence || 0);
   const fullName = buildPassportFullName(givenNames, surname);
 
