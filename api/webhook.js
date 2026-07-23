@@ -2,7 +2,7 @@ import axios from "axios";
 import crypto from "crypto";
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4";
-const MAX_HISTORY_ITEMS = 8;
+const MAX_HISTORY_ITEMS = 4;
 const MAX_HISTORY_SESSIONS = 500;
 
 
@@ -22,7 +22,7 @@ const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "")
   .filter(Boolean);
 
 const RECEIPT_OCR_MODEL = process.env.RECEIPT_OCR_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-5.4";
-const PASSPORT_OCR_MODEL = process.env.PASSPORT_OCR_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-5.4";
+const PASSPORT_OCR_MODEL = process.env.PASSPORT_OCR_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-5.4-mini";
 const PASSPORT_BATCH_WAIT_MS = Number(process.env.PASSPORT_BATCH_WAIT_MS || 5000);
 const PASSPORT_BATCH_TTL_MS = Number(process.env.PASSPORT_BATCH_TTL_MS || 60 * 1000);
 const passportBatchCache = globalThis.__passportBatchCache || new Map();
@@ -2458,7 +2458,15 @@ async function callReceiptOcrOpenAI(image, retry = false) {
   // 모니터 재촬영/반사/기울어짐 사진은 OCR 점수가 낮게 나올 수 있으므로
   // 실제 이체화면으로 판단되고 기대 계좌/예금주 단서가 있으면 점수 기준을 보정한다.
   if (!isTransferReceipt || !Number.isFinite(receiptScore) || (receiptScore < RECEIPT_MIN_RECEIPT_SCORE && !hasExpectedReceiptClue)) {
-    return { ok: false, ignored: true, reason: retry ? "retry_not_receipt" : "not_receipt" };
+    return {
+      ok: false,
+      ignored: true,
+      reason: retry ? "retry_not_receipt" : "not_receipt",
+      isTransferReceipt,
+      receiptScore: Number.isFinite(receiptScore) ? receiptScore : 0,
+      confidence: Number.isFinite(confidence) ? confidence : 0,
+      hasReceiptClue: Boolean(rawAmountWon || allNames.length || accountNumber || transferDate || hasExpectedReceiptClue)
+    };
   }
 
   // 이름이 기대값과 다르더라도 자동으로 탈락시키지 않는다.
@@ -2522,10 +2530,24 @@ async function analyzeReceiptImageAmount(messageId) {
 
   let result = await callReceiptOcrOpenAI(image, false);
 
-  // 1차에서 일반 이미지로 오인했더라도 송금 완료 애니메이션, 상단 알림 겹침,
-  // 태국어 UI처럼 형태가 낯선 금융앱 화면일 수 있으므로 모든 1차 실패를 한 번 재검토한다.
-  // 재검토까지 이체사진이 아니면 최종적으로 조용히 무시한다.
-  if (!result.ok) {
+  // 정확도를 보호하면서 불필요한 2차 이미지 호출을 줄인다.
+  // 금액 판독이 애매하거나, 금융화면 가능성/금액·이름·계좌·날짜 단서가 있는 경우만 재검토한다.
+  // 잔액·수수료·총액으로 판정된 경우나 변환/API 오류, 단서 없는 명백한 일반 이미지는 재시도하지 않는다.
+  const retryableReasons = new Set(["amount_unclear", "not_receipt"]);
+  const shouldRetry = !result.ok && (
+    result.reason === "amount_unclear"
+    || (
+      result.reason === "not_receipt"
+      && (
+        result.isTransferReceipt
+        || result.hasReceiptClue
+        || Number(result.receiptScore || 0) >= 20
+        || Number(result.confidence || 0) >= 0.2
+      )
+    )
+  );
+
+  if (shouldRetry && retryableReasons.has(result.reason)) {
     console.log(`[RECEIPT OCR RETRY] messageId=${messageId} reason=${result.reason || result.error || "unknown"}`);
     const retryResult = await callReceiptOcrOpenAI(image, true);
     if (retryResult.ok) {
@@ -2871,7 +2893,7 @@ async function callPassportOcrOpenAI(image) {
               type: "image_url",
               image_url: {
                 url: `data:${image.contentType};base64,${image.base64}`,
-                detail: "high"
+                detail: "auto"
               }
             }
           ]
@@ -2896,7 +2918,7 @@ async function callPassportOcrOpenAI(image) {
           }
         }
       },
-      max_completion_tokens: 800
+      max_completion_tokens: 220
     })
   });
 
