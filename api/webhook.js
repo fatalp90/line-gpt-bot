@@ -2400,6 +2400,8 @@ async function callReceiptOcrOpenAI(image, retry = false) {
 은행/금융앱 이체 화면이면 document_type="receipt", is_passport=false로 둔다.
 둘 다 아니면 document_type="other", is_passport=false, is_transfer_receipt=false로 둔다.
 모든 결과는 document_type, is_passport, is_transfer_receipt, surname, given_names, mrz_line1 필드를 포함한 JSON 하나로만 출력한다.
+해당되지 않거나 화면에서 확인할 수 없는 문자열은 빈 문자열 또는 null, 금액은 null, all_names는 빈 배열, 점수는 0으로 반환한다.
+passport이면 여권 이름 필드만 채우고 입금 관련 필드는 비운다. receipt이면 입금 관련 필드를 채우고 여권 이름 필드는 빈 문자열로 둔다. other이면 두 종류의 추출 필드를 모두 비운다.
 
 ${receiptSystemPrompt}`;
 
@@ -2428,7 +2430,69 @@ ${receiptSystemPrompt}`;
           ]
         }
       ],
-      max_completion_tokens: 300
+      max_completion_tokens: 300,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "line_image_analysis",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              document_type: { type: "string", enum: ["passport", "receipt", "other"] },
+              is_passport: { type: "boolean" },
+              is_transfer_receipt: { type: "boolean" },
+              mrz_line1: { type: "string" },
+              surname: { type: "string" },
+              given_names: { type: "string" },
+              amount_won: { type: ["number", "null"] },
+              fee_won: { type: ["number", "null"] },
+              balance_won: { type: ["number", "null"] },
+              amount_role: { type: "string" },
+              transfer_date: { type: ["string", "null"] },
+              sender_name: { type: ["string", "null"] },
+              recipient_name: { type: ["string", "null"] },
+              displayed_self_name: { type: ["string", "null"] },
+              displayed_recipient_name: { type: ["string", "null"] },
+              account_owner_name: { type: ["string", "null"] },
+              all_names: {
+                type: "array",
+                items: { type: "string" }
+              },
+              account_number: { type: ["string", "null"] },
+              confidence: { type: "number", minimum: 0, maximum: 1 },
+              receipt_score: { type: "number", minimum: 0, maximum: 100 },
+              receipt_kind: { type: "string" },
+              reason: { type: "string" }
+            },
+            required: [
+              "document_type",
+              "is_passport",
+              "is_transfer_receipt",
+              "mrz_line1",
+              "surname",
+              "given_names",
+              "amount_won",
+              "fee_won",
+              "balance_won",
+              "amount_role",
+              "transfer_date",
+              "sender_name",
+              "recipient_name",
+              "displayed_self_name",
+              "displayed_recipient_name",
+              "account_owner_name",
+              "all_names",
+              "account_number",
+              "confidence",
+              "receipt_score",
+              "receipt_kind",
+              "reason"
+            ],
+            additionalProperties: false
+          }
+        }
+      }
     })
   });
 
@@ -2823,7 +2887,7 @@ async function notifyReceiptAnalysisFailureToApprovalGroup({ accessToken, source
       `메시지 ID: ${messageId || "-"}`,
       `사유: ${safeError}`,
       "",
-      detail || "1차 분석 후 재분석까지 실패해서 등록 버튼을 만들지 못했습니다.",
+      detail || "1회 분석으로 내용을 확정하지 못해 등록 버튼을 만들지 않았습니다.",
       "고객방의 원본 이미지를 직접 확인해주세요.",
       "",
       `(${getKoreaDateTimeText()})`
