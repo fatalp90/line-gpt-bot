@@ -21,8 +21,10 @@ const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "")
   .map(v => v.trim())
   .filter(Boolean);
 
-const RECEIPT_OCR_MODEL = process.env.RECEIPT_OCR_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-5.4";
-const PASSPORT_OCR_MODEL = process.env.PASSPORT_OCR_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-5.4-mini";
+// 번역은 정확도를 위해 OPENAI_MODEL(gpt-5.4)을 그대로 사용한다.
+// 이미지 OCR만 mini 모델을 기본값으로 사용해 비용을 줄인다.
+const RECEIPT_OCR_MODEL = process.env.RECEIPT_OCR_MODEL || "gpt-5.4-mini";
+const PASSPORT_OCR_MODEL = process.env.PASSPORT_OCR_MODEL || "gpt-5.4-mini";
 const PASSPORT_BATCH_WAIT_MS = Number(process.env.PASSPORT_BATCH_WAIT_MS || 5000);
 const PASSPORT_BATCH_TTL_MS = Number(process.env.PASSPORT_BATCH_TTL_MS || 60 * 1000);
 const passportBatchCache = globalThis.__passportBatchCache || new Map();
@@ -2389,9 +2391,17 @@ function buildTransferCompleteFlexMessage() {
 }
 
 async function callReceiptOcrOpenAI(image, retry = false) {
-  const systemPrompt = retry
+  const receiptSystemPrompt = retry
     ? "너는 한국 은행/간편송금 이체 캡처 이미지 재검토 OCR 분석기다. 1차 분석에서 등록 버튼을 만들지 못한 이미지를 다시 확인한다. 이미지는 모니터/ATM/휴대폰 화면을 다시 촬영한 사진일 수 있고, 반사광/유리빛/기울어짐/부분 가림/흐림/흔들림이 있거나, 화면이 가로/세로/90도/180도/270도 회전되어 있을 수 있으므로 반드시 가능한 모든 방향으로 돌려 읽는다고 가정한다. 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 먼저 판별한다. 단, 금액이 보인다고 해서 안내 포스터, 광고, 이벤트, 연체/벌금/납부 안내, 채팅 캡처, 일반 스크린샷이면 is_transfer_receipt=false로 둔다. 실제 금융앱 거래 화면으로 보이고 송금 금액이 사람 눈으로 읽히면 confidence를 과도하게 낮추지 마라. 금액은 KRW 55,000 / KRW55,000 / 55,000 KRW / ₩55,000 / 55000 / 55.000처럼 붙거나 줄이 나뉘거나 구분자가 달라도 같은 금액으로 인식한다. amount_won은 실제 상대방에게 송금/입금되는 순수 입금액만 넣는다. 수수료, 잔액, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 송금액과 잔액을 특히 구분한다. 절대 잔액/남은금액/Remaining Balance/Available Balance/Balance/ยอดเงินคงเหลือ/คงเหลือ 옆 숫자를 amount_won으로 선택하지 마라. 태국어 영수증 예시: ยอดเงินที่โอน -80,500 / ค่าธรรมเนียม 0 / ยอดเงินคงเหลือ KRW 55,358 이면 amount_won=80500, fee_won=0, balance_won=55358 이다. 또 다른 예시: จำนวนเงินโอน 130,900 이면 amount_won=130900으로 읽고 후처리에서 130,000원으로 내림될 수 있다. 특히 화면에 송금액과 수수료가 따로 있고 총 결제금액/납부금액/합계가 크게 표시되는 경우, 총액이 더 크게 보이더라도 amount_won에는 송금액만 넣고 수수료 포함 총액은 제외한다. 금액 후보가 여러 개이면 Transfer amount / Amount to transfer / Sent amount / 송금액 / 이체금액 / 입금액 / จำนวนเงินที่ต้องการโอน / จำนวนเงินโอน / ยอดเงินที่โอน 같은 라벨 옆 금액을 우선하고, Fee / Charge / 수수료 / ค่าธรรมเนียม 및 Total / Amount to pay / 총 결제금액 / 합계 / จำนวนที่ต้องชำระ / Balance / Remaining Balance / 잔액 / 남은금액 / ยอดเงินคงเหลือ / คงเหลือ 라벨 옆 금액은 제외한다. 계좌번호에 하이픈/공백이 있어도 숫자만 기준으로 읽는다. 화면의 모든 이름 후보 또는 계좌번호 중 하나라도 기대값과 강하게 일치하고 금액이 확실하면, 화면 일부가 가려져도 등록 가능한 이체사진으로 판단한다. 특히 계좌번호 110551366954 또는 CHAYAPONE 계열 이름이 보이면 receipt_score와 confidence를 과도하게 낮추지 마라. 또한 검은 배경의 송금 완료 화면에서 중앙에 영문 이름(예: CHAYAPONE)과 “50,000 KRW”처럼 금액이 크게 표시되고, 태국어 “การส่งเงิน”, “กำลังดำเนินการ”, “เสร็จสิ้น”, “ดูรายละเอียด”, “ดำเนินการโอนเงินต่อ”, “ยืนยัน” 문구 또는 카카오톡/MMS 공유 버튼이 보이는 화면은 실제 금융앱 송금 완료 화면으로 판단한다. 완료 애니메이션 때문에 “กำลังดำเนินการ”와 “เสร็จสิ้น” 문구가 겹쳐 보여도, 이름과 KRW 금액이 명확하면 is_transfer_receipt=true로 두고 amount_won을 추출한다. 화면 상단의 은행 입출금 알림 배너는 다른 앱 알림이므로 송금 화면 판별과 금액 추출을 방해하는 요소로 보지 말고 무시한다. 한 이미지 안에 같은 송금내역의 상단/하단 화면이 나란히 붙어 있거나, 같은 송금내역이 여러 장 캡처로 보이더라도 하나의 이체로만 판단하고 가장 명확한 송금금액 1개만 amount_won에 넣는다. 반드시 JSON만 출력한다."
     : "너는 한국 은행/간편송금 이체 캡처 이미지 판별 및 OCR 분석기다. 이미지는 모니터/ATM/휴대폰 화면을 다시 촬영한 사진일 수 있고, 반사광/유리빛/기울어짐/부분 가림/흐림/흔들림이 있거나, 세로/가로/90도/180도/270도 회전 상태일 수 있으므로 반드시 가능한 모든 방향으로 돌려 읽는다고 가정하고 분석한다. 가장 먼저 이미지가 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 엄격하게 판별한다. 금액 숫자가 있어도 안내 포스터, 광고 이미지, 이벤트 배너, 연체/벌금/납부 안내 이미지, 채팅 캡처, 일반 스크린샷, 인물/풍경/상품/문서 사진이면 반드시 is_transfer_receipt=false, receipt_score는 낮게 둔다. 실제 금융앱 거래 완료/확인 화면이라는 증거가 강할 때만 is_transfer_receipt=true로 둔다. 이체 캡처라면 실제 이체/송금/입금 금액, 이체 날짜/시간, 계좌번호를 추출하고, 화면에 보이는 모든 영문 이름을 역할별로 분리한다. sender_name 하나로 임의 단정하지 말고 recipient_name, account_owner_name, displayed_self_name, displayed_recipient_name 및 all_names 배열에 보이는 이름을 빠짐없이 넣는다. 태국어 라벨 แสดงให้ผู้รับเห็น 옆 이름은 displayed_recipient_name, แสดงต่อตนเอง 옆 이름은 displayed_self_name으로 분류한다. KRW 55,000 / KRW55,000 / 55,000 KRW / ₩55,000 / 55000 처럼 붙어있거나 줄이 나뉜 금액도 같은 금액으로 인식한다. amount_won은 실제 상대방에게 송금/입금되는 순수 입금액만 넣는다. 수수료, 잔액, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 송금액과 잔액을 특히 구분한다. 절대 잔액/남은금액/Remaining Balance/Available Balance/Balance/ยอดเงินคงเหลือ/คงเหลือ 옆 숫자를 amount_won으로 선택하지 마라. 태국어 영수증 예시: ยอดเงินที่โอน -80,500 / ค่าธรรมเนียม 0 / ยอดเงินคงเหลือ KRW 55,358 이면 amount_won=80500, fee_won=0, balance_won=55358 이다. 또 다른 예시: จำนวนเงินโอน 130,900 이면 amount_won=130900으로 읽고 후처리에서 130,000원으로 내림될 수 있다. 특히 화면에 송금액과 수수료가 따로 있고 총 결제금액/납부금액/합계가 크게 표시되는 경우, 총액이 더 크게 보이더라도 amount_won에는 송금액만 넣고 수수료 포함 총액은 제외한다. 금액 후보가 여러 개이면 Transfer amount / Amount to transfer / Sent amount / 송금액 / 이체금액 / 입금액 / จำนวนเงินที่ต้องการโอน / จำนวนเงินโอน / ยอดเงินที่โอน 같은 라벨 옆 금액을 우선하고, Fee / Charge / 수수료 / ค่าธรรมเนียม 및 Total / Amount to pay / 총 결제금액 / 합계 / จำนวนที่ต้องชำระ / Balance / Remaining Balance / 잔액 / 남은금액 / ยอดเงินคงเหลือ / คงเหลือ 라벨 옆 금액은 제외한다. 계좌번호에 하이픈이나 공백이 있어도 숫자만 기준으로 읽는다. 흐리거나 화면에 없는 값은 null로 둔다. 금액이 사람 눈으로 충분히 읽히거나 계좌번호 110551366954 또는 CHAYAPONE 계열 이름이 보이면 confidence를 과도하게 낮추지 마라. 또한 검은 배경의 송금 완료 화면에서 중앙에 영문 이름(예: CHAYAPONE)과 “50,000 KRW”처럼 금액이 크게 표시되고, 태국어 “การส่งเงิน”, “กำลังดำเนินการ”, “เสร็จสิ้น”, “ดูรายละเอียด”, “ดำเนินการโอนเงินต่อ”, “ยืนยัน” 문구 또는 카카오톡/MMS 공유 버튼이 보이는 화면은 실제 금융앱 송금 완료 화면으로 판단한다. 완료 애니메이션 때문에 “กำลังดำเนินการ”와 “เสร็จสิ้น” 문구가 겹쳐 보여도, 이름과 KRW 금액이 명확하면 is_transfer_receipt=true로 두고 amount_won을 추출한다. 화면 상단의 은행 입출금 알림 배너는 다른 앱 알림이므로 송금 화면 판별과 금액 추출을 방해하는 요소로 보지 말고 무시한다. 한 이미지 안에 같은 송금내역의 상단/하단 화면이 나란히 붙어 있거나, 같은 송금내역이 여러 장 캡처로 보이더라도 하나의 이체로만 판단하고 가장 명확한 송금금액 1개만 amount_won에 넣는다. 반드시 JSON만 출력한다.";
+
+  const systemPrompt = `이미지를 한 번만 분석하여 document_type을 passport, receipt, other 중 하나로 분류한다.
+실제 여권 인적사항면 또는 MRZ가 보이면 document_type="passport", is_passport=true, is_transfer_receipt=false로 두고 surname, given_names, mrz_line1을 추출한다. 여권번호, 생년월일 등 다른 개인정보는 출력하지 않는다. MRZ의 P< 다음 국가코드 3글자는 이름에서 제외한다.
+은행/금융앱 이체 화면이면 document_type="receipt", is_passport=false로 둔다.
+둘 다 아니면 document_type="other", is_passport=false, is_transfer_receipt=false로 둔다.
+모든 결과는 document_type, is_passport, is_transfer_receipt, surname, given_names, mrz_line1 필드를 포함한 JSON 하나로만 출력한다.
+
+${receiptSystemPrompt}`;
 
   const userPrompt = retry
     ? "같은 이미지를 한 번 더 재검토해줘. 1차에서 애매했더라도 실제 은행/간편송금 이체 완료 화면으로 보이고 실제 송금 금액이 읽히면 등록 버튼을 만들 수 있게 값을 추출해줘. 단, 일반 사진/공지/광고/연체 안내/채팅 캡처는 절대 통과시키지 마라. amount_won은 실제 상대방에게 송금/입금되는 순수 입금액만 넣고, 수수료/잔액/한도/날짜/연체료/수수료 포함 총 결제금액은 제외해줘. 송금액과 수수료/잔액이 따로 보이면 송금액만 amount_won으로 선택해줘. 잔액(ยอดเงินคงเหลือ/Balance/KRW 남은금액)은 절대 amount_won으로 쓰지 말고 balance_won에만 넣어줘. 화면에 보이는 모든 영문 이름을 역할과 관계없이 all_names에도 반드시 넣어줘. JSON 형식: {\"is_transfer_receipt\":true,\"amount_won\":60000,\"transfer_date\":\"2026-06-26 18:30\",\"sender_name\":null,\"recipient_name\":\"PUNNAPA KEEMNARAK\",\"displayed_self_name\":\"CHAYAPONE\",\"displayed_recipient_name\":\"PUNNAPA KEEMNARAK\",\"account_owner_name\":null,\"all_names\":[\"PUNNAPA KEEMNARAK\",\"CHAYAPONE\"],\"account_number\":\"110551366954\",\"confidence\":0.82,\"receipt_score\":85,\"reason\":\"재검토 근거\"}"
@@ -2430,6 +2440,38 @@ async function callReceiptOcrOpenAI(image, retry = false) {
 
   const content = data?.choices?.[0]?.message?.content || "";
   const parsed = parseJsonObjectLoose(content);
+  const documentType = String(parsed?.document_type || "").trim().toLowerCase();
+  const isPassport = documentType === "passport"
+    || parsed?.is_passport === true
+    || parsed?.is_passport === "true";
+
+  if (isPassport) {
+    const mrzName = parsePassportMrzNameLine(parsed?.mrz_line1 ?? parsed?.mrz_first_line);
+    const surname = mrzName?.surname || normalizePassportNamePart(parsed?.surname);
+    const givenNames = mrzName?.givenNames || normalizePassportNamePart(parsed?.given_names ?? parsed?.givenNames);
+    const confidence = Number(parsed?.confidence ?? 0);
+
+    if (surname && givenNames) {
+      return {
+        ok: true,
+        kind: "passport",
+        isPassport: true,
+        surname,
+        givenNames,
+        fullName: `${givenNames} ${surname}`.replace(/\s+/g, " ").trim(),
+        confidence: Number.isFinite(confidence) ? confidence : 0
+      };
+    }
+
+    return {
+      ok: false,
+      kind: "passport",
+      isPassport: true,
+      reason: "passport_name_unclear",
+      error: "⚠️ 여권 영문 이름을 확실하게 확인하지 못했습니다."
+    };
+  }
+
   const isTransferReceipt = parsed?.is_transfer_receipt === true || parsed?.is_transfer_receipt === "true";
   const amountRole = String(parsed?.amount_role || parsed?.amount_type || "").trim().toLowerCase();
   const rawAmountWon = normalizeWonAmount(
@@ -2461,6 +2503,7 @@ async function callReceiptOcrOpenAI(image, retry = false) {
     return {
       ok: false,
       ignored: true,
+      kind: documentType === "other" ? "other" : "unknown",
       reason: retry ? "retry_not_receipt" : "not_receipt",
       isTransferReceipt,
       receiptScore: Number.isFinite(receiptScore) ? receiptScore : 0,
@@ -2502,6 +2545,7 @@ async function callReceiptOcrOpenAI(image, retry = false) {
 
   return {
     ok: true,
+    kind: "receipt",
     amountWon,
     sheetValue,
     senderName,
@@ -2530,35 +2574,8 @@ async function analyzeReceiptImageAmount(messageId) {
 
   let result = await callReceiptOcrOpenAI(image, false);
 
-  // 정확도를 보호하면서 불필요한 2차 이미지 호출을 줄인다.
-  // 금액 판독이 애매하거나, 금융화면 가능성/금액·이름·계좌·날짜 단서가 있는 경우만 재검토한다.
-  // 잔액·수수료·총액으로 판정된 경우나 변환/API 오류, 단서 없는 명백한 일반 이미지는 재시도하지 않는다.
-  const retryableReasons = new Set(["amount_unclear", "not_receipt"]);
-  const shouldRetry = !result.ok && (
-    result.reason === "amount_unclear"
-    || (
-      result.reason === "not_receipt"
-      && (
-        result.isTransferReceipt
-        || result.hasReceiptClue
-        || Number(result.receiptScore || 0) >= 20
-        || Number(result.confidence || 0) >= 0.2
-      )
-    )
-  );
-
-  if (shouldRetry && retryableReasons.has(result.reason)) {
-    console.log(`[RECEIPT OCR RETRY] messageId=${messageId} reason=${result.reason || result.error || "unknown"}`);
-    const retryResult = await callReceiptOcrOpenAI(image, true);
-    if (retryResult.ok) {
-      result = retryResult;
-    } else if (retryResult.ignored) {
-      result = retryResult;
-    } else if (!result.error && retryResult.error) {
-      result = retryResult;
-    }
-  }
-
+  // 비용 예측이 가능하도록 이미지당 OpenAI 호출은 항상 1회로 제한한다.
+  // 판독이 어려운 여권/입금사진은 호출을 반복하지 않고 PP01 관리자방에 알린다.
   return result;
 }
 
@@ -2999,7 +3016,7 @@ async function tryHandlePassportImage(event) {
   }
 }
 
-async function handleReceiptImageMessage(event) {
+async function handleReceiptImageMessage(event, analyzedResult = null) {
   const sourceGroupId = getLineSourceGroupId(event);
   if (!sourceGroupId) return;
 
@@ -3014,7 +3031,7 @@ async function handleReceiptImageMessage(event) {
 
     // 사진이 올라오면 먼저 이체/입금 슬립인지 판별한다.
     // 일반 생활사진/상품사진/캡처는 result.ignored=true로 끝내고, 고객방/관리자방 모두 아무 메시지도 보내지 않는다.
-    const result = await analyzeReceiptImageAmount(event.message.id);
+    const result = analyzedResult || await analyzeReceiptImageAmount(event.message.id);
     if (!result.ok) {
       if (result.ignored) return;
 
@@ -5921,11 +5938,12 @@ export default async function handler(req, res) {
       }
 
       if (event.message.type === "image") {
-        // 누구든 여권 이미지를 올리면 성/이름만 추출해 "이름 성" 형식으로 한 번만 답한다.
-        // 여권이 아닌 이미지는 기존 이체사진 분석 흐름으로 넘긴다.
-        const passportHandled = await tryHandlePassportImage(event);
-        if (!passportHandled) {
-          await handleReceiptImageMessage(event);
+        // 한 번의 이미지 호출로 여권/입금사진/기타를 자동 분류하고 필요한 값까지 추출한다.
+        const imageResult = await analyzeReceiptImageAmount(event.message.id);
+        if (imageResult.ok && imageResult.kind === "passport") {
+          await queuePassportNameReply(event, imageResult);
+        } else {
+          await handleReceiptImageMessage(event, imageResult);
         }
         continue;
       }
