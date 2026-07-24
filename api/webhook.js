@@ -4860,7 +4860,12 @@ const shortDictionary = {
   "잠시만요": "เดี๋ยวก่อนครับ",
   "잠깐만요": "เดี๋ยวก่อนครับ",
   "잠시": "เดี๋ยวก่อนครับ",
-  "잠깐": "เดี๋ยวก่อนครับ"
+  "잠깐": "เดี๋ยวก่อนครับ",
+  "수고하셨습니다": "ขอบคุณที่ทำงานหนักครับ",
+  "수고하셨어요": "ขอบคุณที่ทำงานหนักครับ",
+  "수고했어요": "ขอบคุณที่ทำงานหนักครับ",
+  "수고 많으셨습니다": "ขอบคุณที่ทำงานหนักมากครับ",
+  "수고 많으셨어요": "ขอบคุณที่ทำงานหนักมากครับ"
 };
 
 
@@ -4943,8 +4948,10 @@ function isBadKoToThOutput(sourceText, translatedText) {
   if (!output) return true;
   if (source && output === source) return true;
 
-  // Korean -> Thai 결과에 한글이 남고 태국어가 없으면 실패로 판단
-  if (containsKorean(translatedText) && !containsThai(translatedText)) return true;
+  // Korean -> Thai 결과에는 한글이 한 글자라도 남으면 안 된다.
+  // 예: "수고 많으셨습니다ครับ"처럼 태국어 종결어만 붙은 혼합 결과도 실패 처리한다.
+  if (containsKorean(translatedText)) return true;
+  if (!containsThai(translatedText)) return true;
 
   // 짧은 한국어 원문이 거의 그대로 반복되는 경우 방지
   if (source.length <= 20 && output.includes(source)) return true;
@@ -5543,6 +5550,13 @@ Translate the exact message into natural Thai.`,
       history: [],
       convertWonToThai: true
     });
+  }
+
+  // 재시도 결과도 검증한다. 두 번째 결과까지 잘못된 경우 한국어가 섞인 문장을
+  // 고객에게 보내지 않고, 안전한 태국어 안내문만 반환한다.
+  if (isBadKoToThOutput(clean, translated)) {
+    console.error("Korean-to-Thai translation validation failed after retry");
+    return "ขออภัย ไม่สามารถแปลข้อความนี้ได้ กรุณาลองส่งอีกครั้งครับ";
   }
 
   return translated;
