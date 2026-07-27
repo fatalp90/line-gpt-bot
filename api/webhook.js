@@ -5404,6 +5404,17 @@ Core rules:
 - Never add new money, dates, times, promises, threats, or legal/police wording.
 - Use the recent context only to understand tone and implied meaning, not to add new facts.
 
+Tone inference rules:
+- Infer the tone primarily from the current message itself: vocabulary, sentence endings, command forms, honorifics, emotional expressions, punctuation, and degree of directness.
+- Use recent conversation only as secondary evidence for familiarity, hierarchy, tension, and the speaker's usual style.
+- Do not require explicit identification of whether the speaker or listener is an owner, manager, or customer.
+- Translate a soft message softly and a strong message strongly.
+- Preserve the original level of politeness, friendliness, authority, irritation, pressure, coldness, sarcasm, anger, and intimidation as closely as natural Thai allows.
+- Do not automatically soften commands, warnings, demands, or pressure into gentle requests merely to sound polite or natural.
+- Polite wording and ครับ may coexist with a firm command. Judge the whole sentence and preserve both its politeness and its force.
+- Do not intensify the message beyond the original or invent threats, insults, or hostile intent.
+- When the relationship is uncertain, stay close to the tone and force of the current sentence instead of guessing a role.
+
 Male speech rules:
 - The speaker is male by default.
 - Use polite male Thai naturally.
@@ -5503,6 +5514,18 @@ Core rules:
 - Never answer the message.
 - Never invent context that is not written or strongly implied.
 - Use the recent context only to understand tone and implied meaning, not to add new facts.
+
+Tone inference rules:
+- Infer the tone primarily from the current message itself: vocabulary, sentence endings, command forms, honorifics, emotional expressions, punctuation, and degree of directness.
+- Use recent conversation only as secondary evidence for familiarity, hierarchy, tension, and the speaker's usual style.
+- Do not require explicit identification of whether the speaker or listener is an owner, manager, or customer.
+- Translate a soft message softly and a strong message strongly.
+- Preserve the original level of politeness, friendliness, authority, irritation, pressure, coldness, sarcasm, anger, and intimidation as closely as natural Korean allows.
+- Do not automatically soften commands, warnings, demands, or pressure into gentle requests merely to sound polite or natural.
+- Thai particles such as ครับ and ค่ะ may coexist with a firm command. Judge the whole sentence rather than treating these particles as proof of a gentle tone.
+- Preserve both layers when a sentence is grammatically polite but functionally direct, commanding, pressuring, or intimidating.
+- Do not intensify the message beyond the original or invent threats, insults, or hostile intent.
+- When the relationship is uncertain, stay close to the tone and force of the current sentence instead of guessing a role.
 
 Thai understanding rules:
 - Thai LINE messages often contain typos, slang, missing spaces, repeated letters, particles, or informal wording.
