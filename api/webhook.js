@@ -4322,21 +4322,41 @@ function buildManualDateChangePlan(values, todayInfo = null) {
       const row = offset === 0 ? topRow : bottomRow;
       const rowNumber = rowIndex0 + 1;
       const yesterdayValueRaw = row[yesterdayColumnIndex0] ?? "";
-      const todayValueRaw = row[todayColumnIndex0] ?? "";
       const yesterdayValue = String(yesterdayValueRaw).trim();
-      const todayValue = String(todayValueRaw).trim();
 
       // 날짜변경 대상은 "어제 $"인 진행중 고객만이다.
       // 오늘 칸이 비어있는 진행중 전체에 $를 찍지 않는다.
       if (yesterdayValue !== "$") continue;
 
+      // 월말 -> 다음달 1일 전환에서는 상/하 행을 교차한다.
+      // 예: 아래 행 31일 $ -> 위 행 1일 $, 위 행 31일 $ -> 아래 행 1일 $.
+      // 평소 날짜변경은 기존처럼 같은 행의 다음 날짜를 사용한다.
+      const isMonthRollover = yesterday.month !== today.month;
+      const targetRowIndex0 = isMonthRollover
+        ? (offset === 0 ? i + 1 : i)
+        : rowIndex0;
+      const targetRowNumber = targetRowIndex0 + 1;
+      const targetRow = values[targetRowIndex0] || [];
+      const todayValueRaw = targetRow[todayColumnIndex0] ?? "";
+      const todayValue = String(todayValueRaw).trim();
+
       yesterdayDollarTotal += 1;
-      addBackup(rowNumber, yesterdayValueRaw, todayValueRaw);
+
+      // 날짜복구가 월말 교차 이동도 정확히 되돌릴 수 있도록
+      // 출발 행과 도착 행을 각각 백업한다.
+      addBackup(rowNumber, yesterdayValueRaw, row[todayColumnIndex0] ?? "");
+      if (targetRowNumber !== rowNumber) {
+        addBackup(
+          targetRowNumber,
+          targetRow[yesterdayColumnIndex0] ?? "",
+          todayValueRaw
+        );
+      }
 
       // 실행 순서: 오늘 $ 생성 → 어제 $를 X로 변경.
       // 단, 오늘 칸에 이미 값이 있으면 덮어쓰지 않는다.
       if (isBlankCell(todayValue) || todayValue === "-") {
-        updates.push({ rowNumber, columnIndex0: todayColumnIndex0, value: "$" });
+        updates.push({ rowNumber: targetRowNumber, columnIndex0: todayColumnIndex0, value: "$" });
         todayDollarCount += 1;
       }
 
