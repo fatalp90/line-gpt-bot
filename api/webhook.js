@@ -975,7 +975,8 @@ function parseCloseCommand(text) {
   if (!match) return null;
 
   return {
-    code: match[1].toUpperCase()
+    code: match[1].toUpperCase(),
+    status: match[2] === "블랙" ? "블랙" : "종료"
   };
 }
 
