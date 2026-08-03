@@ -229,7 +229,7 @@ function parseSheetCommand(text) {
 }
 
 function parseCountCommand(text) {
-  const clean = normalizeText(text).replace(/\s+/g, "");
+  const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
   const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/카운트(\d+)$/i);
   if (!match) return null;
 
@@ -733,7 +733,7 @@ async function pushCheckOverConfirmToApprovalGroup(event, command) {
 
 
 function parseDateChangeCommand(text) {
-  const clean = normalizeText(text).replace(/\s+/g, "");
+  const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
   if (clean === "날짜변경") return { action: "change" };
   if (clean === "날짜복구") return { action: "restore" };
   return null;
@@ -958,7 +958,7 @@ function extractProductAmount(productName) {
 }
 
 function parseRegisterGroupCommand(text) {
-  const clean = normalizeText(text).replace(/\s+/g, "");
+  const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
   const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/등록$/i);
   if (!match) return null;
 
@@ -970,7 +970,7 @@ function parseRegisterGroupCommand(text) {
 
 
 function parseCloseCommand(text) {
-  const clean = normalizeText(text).replace(/\s+/g, "");
+  const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
   const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/(종료|종결|블랙)$/i);
   if (!match) return null;
 
@@ -981,7 +981,7 @@ function parseCloseCommand(text) {
 }
 
 function parseCreditCheckCommand(text) {
-  const clean = normalizeText(text);
+  const clean = normalizeText(normalizeEnglishKeyboardCommand(text));
   const match = clean.match(/^(.+?)\/조회$/i);
   if (!match) return null;
 
@@ -2346,7 +2346,7 @@ function buildTextMessage(text, quickReply) {
 }
 
 function isTransferCompleteCommand(text) {
-  const clean = normalizeText(text).replace(/\s+/g, "");
+  const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
   return clean === "송금완료";
 }
 
@@ -3501,7 +3501,7 @@ async function pushToLineWithRetry(code, groupId, text) {
 }
 
 function parseTodayRepaymentBroadcastCommand(text) {
-  const clean = normalizeText(text).replace(/\s+/g, "");
+  const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
   const match = clean.match(/^(오늘상환요청|오늘상환오전|오늘상환오후)(?:\/([A-Za-z0-9가-힣_-]{1,10}))?$/);
 
   if (!match) {
@@ -3527,18 +3527,18 @@ function parseTodayRepaymentBroadcastCommand(text) {
 }
 
 function parseUnregisteredCheckCommand(text) {
-  const clean = normalizeText(text).replace(/\s+/g, "");
+  const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
   return clean === "미등록";
 }
 
 // PP01 관리자 확인방에서 등록 버튼을 아직 누르지 않은 대기 항목 조회
 function parsePendingRegistrationCheckCommand(text) {
-  const clean = normalizeText(text).replace(/\s+/g, "");
+  const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
   return clean === "/미등록";
 }
 
 function parseMyIdCommand(text) {
-  const clean = normalizeText(text).replace(/\s+/g, "");
+  const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
   return clean === "내아이디" || clean === "관리자아이디확인";
 }
 
