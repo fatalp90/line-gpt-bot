@@ -5060,6 +5060,79 @@ function normalizeText(text) {
     .trim();
 }
 
+// 한글 명령어를 영문 두벌식 자판 상태로 입력한 경우에도 같은 명령으로 처리한다.
+// 일반 대화나 고객명은 바꾸지 않고, 아래에 등록된 명령어 형태만 정확히 복원한다.
+function koreanToEnglishKeyboard(text) {
+  const initials = ["r", "R", "s", "e", "E", "f", "a", "q", "Q", "t", "T", "d", "w", "W", "c", "z", "x", "v", "g"];
+  const medials = ["k", "o", "i", "O", "j", "p", "u", "P", "h", "hk", "ho", "hl", "y", "n", "nj", "np", "nl", "b", "m", "ml", "l"];
+  const finals = ["", "r", "R", "rt", "s", "sw", "sg", "e", "f", "fr", "fa", "fq", "ft", "fx", "fv", "fg", "a", "q", "qt", "t", "T", "d", "w", "c", "z", "x", "v", "g"];
+
+  return Array.from(String(text || "")).map(char => {
+    const code = char.charCodeAt(0) - 0xAC00;
+    if (code < 0 || code > 11171) return char;
+    const initial = Math.floor(code / 588);
+    const medial = Math.floor((code % 588) / 28);
+    const final = code % 28;
+    return initials[initial] + medials[medial] + finals[final];
+  }).join("");
+}
+
+const KOREAN_COMMAND_WORDS = [
+  "등록", "종료", "종결", "블랙", "조회", "카운트",
+  "날짜변경", "날짜복구", "미등록", "내아이디", "관리자아이디확인",
+  "송금완료", "오늘상환요청", "오늘상환오전", "오늘상환오후"
+];
+const ENGLISH_KEYBOARD_COMMAND_ALIASES = new Map(
+  KOREAN_COMMAND_WORDS.map(word => [koreanToEnglishKeyboard(word), word])
+);
+
+function normalizeDubeolsikKeyCase(text) {
+  // 두벌식에서 Shift가 별도 자모를 만드는 R/E/Q/T/W/O/P는 보존한다.
+  // 나머지 키는 사용자가 Shift/Caps Lock을 섞어 눌러도 같은 명령으로 본다.
+  return String(text || "").replace(/[ASDFGHJKLZXCVBNM]/g, char => char.toLowerCase());
+}
+
+function normalizeEnglishKeyboardCommand(text) {
+  const clean = normalizeText(text);
+  if (!clean) return clean;
+
+  // 단독 명령어. /미등록은 기존의 별도 기능 구분을 그대로 유지한다.
+  const hasLeadingSlash = clean.startsWith("/");
+  const standalone = hasLeadingSlash ? clean.slice(1) : clean;
+  const standaloneWord = ENGLISH_KEYBOARD_COMMAND_ALIASES.get(normalizeDubeolsikKeyCase(standalone))
+    || (KOREAN_COMMAND_WORDS.includes(standalone) ? standalone : null);
+  if (standaloneWord) {
+    if (standaloneWord === "미등록") return hasLeadingSlash ? "/미등록" : "미등록";
+    return standaloneWord;
+  }
+
+  // 코드/종료, 이름/조회, 코드/카운트3 같은 접미 명령어.
+  for (const word of ["등록", "종료", "종결", "블랙", "조회"]) {
+    const alias = koreanToEnglishKeyboard(word);
+    const tail = clean.slice(-alias.length);
+    if (clean.charAt(clean.length - alias.length - 1) === "/" && normalizeDubeolsikKeyCase(tail) === alias) {
+      return `${clean.slice(0, -alias.length)}${word}`;
+    }
+  }
+
+  const countAlias = koreanToEnglishKeyboard("카운트");
+  const countMatch = clean.match(/\/([^/]+?)(\d+)$/);
+  if (countMatch && normalizeDubeolsikKeyCase(countMatch[1]) === countAlias) {
+    return `${clean.slice(0, -countMatch[0].length)}/카운트${countMatch[2]}`;
+  }
+
+  // 오늘상환... 명령어 뒤의 선택 코드(/KN 등)는 그대로 둔다.
+  for (const word of ["오늘상환요청", "오늘상환오전", "오늘상환오후"]) {
+    const alias = koreanToEnglishKeyboard(word);
+    const head = clean.slice(0, alias.length);
+    if (normalizeDubeolsikKeyCase(head) === alias && (clean.length === alias.length || clean.charAt(alias.length) === "/")) {
+      return word + clean.slice(alias.length);
+    }
+  }
+
+  return clean;
+}
+
 function containsKorean(text) {
   return /[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(text || "");
 }
@@ -6091,8 +6164,9 @@ export default async function handler(req, res) {
 
       const text = normalizeText(event.message.text);
       if (!text) continue;
+      const commandText = normalizeEnglishKeyboardCommand(text);
 
-      if (isTransferCompleteCommand(text)) {
+      if (isTransferCompleteCommand(commandText)) {
         // 송금완료 카드는 관리자만 실행 가능.
         // 고객이 같은 문구를 입력해도 카드가 뜨지 않도록 Check Over 관리자 권한을 재사용한다.
         if (!canManageCheckOver(event)) {
@@ -6104,13 +6178,13 @@ export default async function handler(req, res) {
         continue;
       }
 
-      if (parseMyIdCommand(text)) {
+      if (parseMyIdCommand(commandText)) {
         const userId = getLineUserId(event);
         await replyToLine(event.replyToken, userId ? `내아이디\n${userId}` : "⚠️ userId를 확인할 수 없습니다.");
         continue;
       }
 
-      const registerGroupCommand = parseRegisterGroupCommand(text);
+      const registerGroupCommand = parseRegisterGroupCommand(commandText);
       if (registerGroupCommand) {
         if (!isAdmin(event)) {
           await replyUnauthorized(event);
@@ -6122,7 +6196,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const dateChangeCommand = parseDateChangeCommand(text);
+      const dateChangeCommand = parseDateChangeCommand(commandText);
       if (dateChangeCommand) {
         if (!isAdmin(event)) {
           await replyUnauthorized(event);
@@ -6133,7 +6207,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      if (parsePendingRegistrationCheckCommand(text)) {
+      if (parsePendingRegistrationCheckCommand(commandText)) {
         if (!isAdmin(event)) {
           await replyUnauthorized(event);
           continue;
@@ -6143,7 +6217,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      if (parseUnregisteredCheckCommand(text)) {
+      if (parseUnregisteredCheckCommand(commandText)) {
         if (!isAdmin(event)) {
           await replyUnauthorized(event);
           continue;
@@ -6154,7 +6228,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const todayRepaymentBroadcastCommand = parseTodayRepaymentBroadcastCommand(text);
+      const todayRepaymentBroadcastCommand = parseTodayRepaymentBroadcastCommand(commandText);
       if (todayRepaymentBroadcastCommand) {
         if (!isAdmin(event)) {
           await replyUnauthorized(event);
@@ -6171,7 +6245,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const creditCheckCommand = parseCreditCheckCommand(text);
+      const creditCheckCommand = parseCreditCheckCommand(commandText);
       if (creditCheckCommand) {
         if (!isAdmin(event)) {
           await replyUnauthorized(event);
@@ -6246,7 +6320,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const closeCommand = parseCloseCommand(text);
+      const closeCommand = parseCloseCommand(commandText);
       if (closeCommand) {
         if (!isAdmin(event)) {
           await replyUnauthorized(event);
@@ -6258,7 +6332,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const countCommand = parseCountCommand(text);
+      const countCommand = parseCountCommand(commandText);
       if (countCommand) {
         if (!isAdmin(event)) {
           await replyUnauthorized(event);
