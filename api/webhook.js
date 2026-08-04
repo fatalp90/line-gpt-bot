@@ -4972,6 +4972,138 @@ const ignoreKeywords = [
   "Commission"
 ];
 
+const COMMISSION_ACCOUNT_LABEL_PATTERN = /^(?:관리자\s*)?(?:계좌\s*정보|bank\s*information|payment\s*information|name|family\s*name|bank|phone(?:\s*(?:no\.?|number))?|account(?:\s*(?:no\.?|number|name))?|beneficiary|swift|iban|ชื่อ(?:บัญชี)?|นามสกุล|ธนาคาร|เบอร์(?:โทร)?|เลข(?:ที่)?บัญชี|예금주|은행|계좌(?:번호)?|전화(?:번호)?|휴대폰)(?=\s|[:：-]|$)/iu;
+const COMMISSION_BONUS_LABEL_PATTERN = /(?:보너스|bonus|โบนัส)/iu;
+const COMMISSION_CODE_PATTERN = /^[\s*•·▪▫▶▷►→👉📌📍-]*([a-z]{1,10}\s*[-_]?\s*\d{1,6})\s*(?:[-–—:：/|]|\s)\s*(.+?)\s*$/i;
+const COMMISSION_AMOUNT_PATTERN = /^(?:₩\s*)?([+-]?\d{1,3}(?:[,.\s]\d{3})*|[+-]?\d+)(?:\.00)?\s*(?:원|won|วอน|บาท|baht|thb)?$/iu;
+
+function isCommissionSeparatorLine(line) {
+  return !line || /^[\s\-=—–_.*•·📍📌]+$/u.test(line);
+}
+
+function parseCommissionAmount(value) {
+  const match = String(value || "").trim().match(COMMISSION_AMOUNT_PATTERN);
+  if (!match) return null;
+
+  const normalized = match[1].replace(/[,.\s]/g, "");
+  if (!/^[+-]?\d+$/.test(normalized)) return null;
+
+  const amount = Number(normalized);
+  return Number.isSafeInteger(amount) && amount >= 0 ? amount : null;
+}
+
+function extractCommissionItem(line) {
+  const clean = String(line || "").trim();
+  if (!clean || clean.includes("=") || /[+×*]/.test(clean)) return null;
+
+  if (COMMISSION_BONUS_LABEL_PATTERN.test(clean)) {
+    const amountText = clean
+      .replace(/^\s*[\s*•·▪▫▶▷►→👉📌📍-]*/u, "")
+      .replace(/^.*?(?:보너스|bonus|โบนัส)\s*(?:[-–—:：/|]|\s)\s*/iu, "");
+    const amount = parseCommissionAmount(amountText);
+    return amount === null ? null : { type: "bonus", amount };
+  }
+
+  const codeMatch = clean.match(COMMISSION_CODE_PATTERN);
+  if (!codeMatch) return null;
+
+  const amount = parseCommissionAmount(codeMatch[2]);
+  return amount === null ? null : { type: "code", code: codeMatch[1].replace(/\s+/g, "").toUpperCase(), amount };
+}
+
+function cleanCommissionManagerName(line) {
+  return String(line || "")
+    .trim()
+    .replace(/^[\s*•·▪▫▶▷►→👉📌📍💸💰👑✅]+/u, "")
+    .replace(/^(?:관리자|manager|admin)\s*[:：-]?\s*/i, "")
+    .trim();
+}
+
+function parseCommissionSummary(text) {
+  const lines = String(text || "").replace(/\r/g, "").split("\n").map(line => line.trim());
+  const commissionIndex = lines.findIndex(line => /\bcommission\b/i.test(line));
+  if (commissionIndex < 0) return null;
+
+  let managerName = "";
+  for (let i = commissionIndex - 1; i >= 0; i -= 1) {
+    if (isCommissionSeparatorLine(lines[i])) continue;
+    managerName = cleanCommissionManagerName(lines[i]);
+    if (managerName) break;
+  }
+  if (!managerName) return null;
+
+  const items = [];
+  let accountStartIndex = -1;
+  for (let i = commissionIndex + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (COMMISSION_ACCOUNT_LABEL_PATTERN.test(line)) {
+      accountStartIndex = i;
+      break;
+    }
+    const item = extractCommissionItem(line);
+    if (item) items.push(item);
+  }
+
+  // 일반 대화나 단일 코드 명령을 Commission 양식으로 오인하지 않도록
+  // 실제 정산 항목이 둘 이상 있는 공지만 자동 계산한다.
+  if (items.length < 2 || !items.some(item => item.type === "code")) return null;
+
+  const total = items.reduce((sum, item) => sum + item.amount, 0);
+  if (!Number.isSafeInteger(total)) return null;
+
+  const accountLines = accountStartIndex < 0
+    ? []
+    : lines.slice(accountStartIndex).filter(line => line && !isCommissionSeparatorLine(line));
+
+  return { managerName, total, items, accountLines };
+}
+
+function buildCommissionSummaryReply(summary) {
+  const lines = [summary.managerName, `총 합계금액 : ${summary.total.toLocaleString("en-US")}`];
+  if (summary.accountLines?.length) {
+    lines.push("---------------------------", ...summary.accountLines);
+  }
+  return lines.join("\n");
+}
+
+function buildCommissionSummaryMessage(summary) {
+  const copyText = buildCommissionSummaryReply(summary).slice(0, 1000);
+  return {
+    type: "flex",
+    altText: copyText.slice(0, 1500),
+    contents: {
+      type: "bubble",
+      size: "mega",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "text", text: copyText, size: "md", wrap: true }
+        ]
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          {
+            type: "button",
+            style: "primary",
+            color: "#06C755",
+            height: "sm",
+            action: {
+              type: "clipboard",
+              label: "텍스트 복사",
+              clipboardText: copyText
+            }
+          }
+        ]
+      }
+    }
+  };
+}
+
+export { parseCommissionSummary, buildCommissionSummaryReply, buildCommissionSummaryMessage };
+
 const shortDictionary = {
   "오": "โอ",
   "아": "อา",
@@ -6165,6 +6297,12 @@ export default async function handler(req, res) {
       const text = normalizeText(event.message.text);
       if (!text) continue;
       const commandText = normalizeEnglishKeyboardCommand(text);
+
+      const commissionSummary = parseCommissionSummary(text);
+      if (commissionSummary) {
+        await replyToLineMessages(event.replyToken, [buildCommissionSummaryMessage(commissionSummary)]);
+        continue;
+      }
 
       if (isTransferCompleteCommand(commandText)) {
         // 송금완료 카드는 관리자만 실행 가능.
