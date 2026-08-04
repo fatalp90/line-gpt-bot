@@ -5022,31 +5022,47 @@ function cleanCommissionManagerName(line) {
 function parseCommissionSummary(text) {
   const lines = String(text || "").replace(/\r/g, "").split("\n").map(line => line.trim());
   const commissionIndex = lines.findIndex(line => /\bcommission\b/i.test(line));
-  if (commissionIndex < 0) return null;
+  const accountStartIndex = lines.findIndex((line, index) =>
+    index > Math.max(commissionIndex, 0) && COMMISSION_ACCOUNT_LABEL_PATTERN.test(line)
+  );
 
-  let managerName = "";
-  for (let i = commissionIndex - 1; i >= 0; i -= 1) {
-    if (isCommissionSeparatorLine(lines[i])) continue;
-    managerName = cleanCommissionManagerName(lines[i]);
-    if (managerName) break;
-  }
-  if (!managerName) return null;
+  // Commission 제목이 없는 양식은 하단 계좌정보가 있어야 정산 공지로 인식한다.
+  // 이 조건으로 일반 채팅 속 코드/금액 문장을 잘못 합산하는 것을 막는다.
+  if (commissionIndex < 0 && accountStartIndex < 0) return null;
 
   const items = [];
-  let accountStartIndex = -1;
-  for (let i = commissionIndex + 1; i < lines.length; i += 1) {
+  const itemStartIndex = commissionIndex >= 0 ? commissionIndex + 1 : 0;
+  const itemEndIndex = accountStartIndex >= 0 ? accountStartIndex : lines.length;
+  let firstItemIndex = -1;
+  for (let i = itemStartIndex; i < itemEndIndex; i += 1) {
     const line = lines[i];
-    if (COMMISSION_ACCOUNT_LABEL_PATTERN.test(line)) {
-      accountStartIndex = i;
-      break;
-    }
     const item = extractCommissionItem(line);
-    if (item) items.push(item);
+    if (item) {
+      if (firstItemIndex < 0) firstItemIndex = i;
+      items.push(item);
+    }
   }
 
   // 일반 대화나 단일 코드 명령을 Commission 양식으로 오인하지 않도록
   // 실제 정산 항목이 둘 이상 있는 공지만 자동 계산한다.
   if (items.length < 2 || !items.some(item => item.type === "code")) return null;
+
+  let managerName = "";
+  if (commissionIndex >= 0) {
+    for (let i = commissionIndex - 1; i >= 0; i -= 1) {
+      if (isCommissionSeparatorLine(lines[i])) continue;
+      managerName = cleanCommissionManagerName(lines[i]);
+      if (managerName) break;
+    }
+  } else {
+    // 제목이 없는 양식에서는 사용자가 정한 규칙대로 맨 위의 첫 내용줄을 관리자명으로 사용한다.
+    for (let i = 0; i < firstItemIndex; i += 1) {
+      if (isCommissionSeparatorLine(lines[i])) continue;
+      managerName = cleanCommissionManagerName(lines[i]);
+      if (managerName) break;
+    }
+  }
+  if (!managerName) return null;
 
   const total = items.reduce((sum, item) => sum + item.amount, 0);
   if (!Number.isSafeInteger(total)) return null;
