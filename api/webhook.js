@@ -5022,23 +5022,21 @@ function cleanCommissionManagerName(line) {
 function parseCommissionSummary(text) {
   const lines = String(text || "").replace(/\r/g, "").split("\n").map(line => line.trim());
   const commissionIndex = lines.findIndex(line => /\bcommission\b/i.test(line));
-  const accountStartIndex = lines.findIndex((line, index) =>
+  let accountStartIndex = lines.findIndex((line, index) =>
     index > Math.max(commissionIndex, 0) && COMMISSION_ACCOUNT_LABEL_PATTERN.test(line)
   );
-
-  // Commission 제목이 없는 양식은 하단 계좌정보가 있어야 정산 공지로 인식한다.
-  // 이 조건으로 일반 채팅 속 코드/금액 문장을 잘못 합산하는 것을 막는다.
-  if (commissionIndex < 0 && accountStartIndex < 0) return null;
 
   const items = [];
   const itemStartIndex = commissionIndex >= 0 ? commissionIndex + 1 : 0;
   const itemEndIndex = accountStartIndex >= 0 ? accountStartIndex : lines.length;
   let firstItemIndex = -1;
+  let lastItemIndex = -1;
   for (let i = itemStartIndex; i < itemEndIndex; i += 1) {
     const line = lines[i];
     const item = extractCommissionItem(line);
     if (item) {
       if (firstItemIndex < 0) firstItemIndex = i;
+      lastItemIndex = i;
       items.push(item);
     }
   }
@@ -5046,6 +5044,24 @@ function parseCommissionSummary(text) {
   // Commission 제목 또는 하단 계좌정보로 정산 양식임을 이미 확인했으므로
   // 코드가 한 건뿐인 관리자도 자동 계산한다.
   if (items.length < 1 || !items.some(item => item.type === "code")) return null;
+
+  // 라벨 없는 계좌정보도 지원한다.
+  // 마지막 정산 항목 뒤에 구분선이 나오면 그 아래의 모든 내용줄을 계좌정보로 본다.
+  if (accountStartIndex < 0 && lastItemIndex >= 0) {
+    const separatorIndex = lines.findIndex((line, index) =>
+      index > lastItemIndex && isCommissionSeparatorLine(line) && Boolean(line)
+    );
+    if (separatorIndex >= 0) {
+      const firstTrailingContentIndex = lines.findIndex((line, index) =>
+        index > separatorIndex && Boolean(line) && !isCommissionSeparatorLine(line)
+      );
+      if (firstTrailingContentIndex >= 0) accountStartIndex = firstTrailingContentIndex;
+    }
+  }
+
+  // Commission 제목이 없는 양식은 라벨 유무와 관계없이 하단 계좌정보 블록이
+  // 확인되어야 정산 공지로 인식한다. 일반 채팅 속 숫자 오인을 막기 위한 조건이다.
+  if (commissionIndex < 0 && accountStartIndex < 0) return null;
 
   let managerName = "";
   if (commissionIndex >= 0) {
