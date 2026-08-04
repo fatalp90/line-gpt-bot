@@ -5041,9 +5041,9 @@ function parseCommissionSummary(text) {
     }
   }
 
-  // Commission 제목 또는 하단 계좌정보로 정산 양식임을 이미 확인했으므로
-  // 코드가 한 건뿐인 관리자도 자동 계산한다.
-  if (items.length < 1 || !items.some(item => item.type === "code")) return null;
+  // Commission 제목 또는 하단 계좌정보로 정산 양식임을 확인하므로
+  // 코드 없이 보너스 한 건만 있는 관리자도 자동 계산한다.
+  if (items.length < 1) return null;
 
   // 라벨 없는 계좌정보도 지원한다.
   // 마지막 정산 항목 뒤에 구분선이 나오면 그 아래의 모든 내용줄을 계좌정보로 본다.
