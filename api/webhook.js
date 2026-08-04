@@ -5082,43 +5082,7 @@ function buildCommissionSummaryReply(summary) {
   return lines.join("\n");
 }
 
-function buildCommissionSummaryMessage(summary) {
-  const copyText = buildCommissionSummaryReply(summary).slice(0, 1000);
-  return {
-    type: "flex",
-    altText: copyText.slice(0, 1500),
-    contents: {
-      type: "bubble",
-      size: "mega",
-      body: {
-        type: "box",
-        layout: "vertical",
-        contents: [
-          { type: "text", text: copyText, size: "md", wrap: true }
-        ]
-      },
-      footer: {
-        type: "box",
-        layout: "vertical",
-        contents: [
-          {
-            type: "button",
-            style: "primary",
-            color: "#06C755",
-            height: "sm",
-            action: {
-              type: "clipboard",
-              label: "텍스트 복사",
-              clipboardText: copyText
-            }
-          }
-        ]
-      }
-    }
-  };
-}
-
-export { parseCommissionSummary, buildCommissionSummaryReply, buildCommissionSummaryMessage };
+export { parseCommissionSummary, buildCommissionSummaryReply };
 
 const shortDictionary = {
   "오": "โอ",
@@ -6316,7 +6280,9 @@ export default async function handler(req, res) {
 
       const commissionSummary = parseCommissionSummary(text);
       if (commissionSummary) {
-        await replyToLineMessages(event.replyToken, [buildCommissionSummaryMessage(commissionSummary)]);
+        // 일반 텍스트로 보내야 LINE PC에서는 우클릭 복사,
+        // 모바일에서는 길게 눌러 복사를 모두 사용할 수 있다.
+        await replyToLine(event.replyToken, buildCommissionSummaryReply(commissionSummary));
         continue;
       }
 
