@@ -5060,8 +5060,23 @@ function parseCommissionSummary(text) {
   }
 
   // Commission 제목이 없는 양식은 라벨 유무와 관계없이 하단 계좌정보 블록이
-  // 확인되어야 정산 공지로 인식한다. 일반 채팅 속 숫자 오인을 막기 위한 조건이다.
-  if (commissionIndex < 0 && accountStartIndex < 0) return null;
+  // 확인되어야 정산 공지로 인식한다. 단, 계좌정보도 없는 간단 정산 양식은
+  // 첫 내용줄 하나만 관리자명이고 이후 모든 내용줄이 정산 항목일 때만 허용한다.
+  // 이렇게 하면 일반 채팅 속 코드/숫자를 정산으로 오인하지 않으면서 아래 형식도 계산할 수 있다.
+  // 오이
+  // O06 - 120,000
+  // OI05 - 132,900
+  const bareSummaryContentIndexes = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => Boolean(line) && !isCommissionSeparatorLine(line));
+  const isBareItemsOnlySummary = commissionIndex < 0
+    && accountStartIndex < 0
+    && firstItemIndex > 0
+    && bareSummaryContentIndexes.length === items.length + 1
+    && bareSummaryContentIndexes[0].index < firstItemIndex
+    && bareSummaryContentIndexes.slice(1).every(({ line }) => Boolean(extractCommissionItem(line)));
+
+  if (commissionIndex < 0 && accountStartIndex < 0 && !isBareItemsOnlySummary) return null;
 
   let managerName = "";
   if (commissionIndex >= 0) {
