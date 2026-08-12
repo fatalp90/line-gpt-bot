@@ -1296,6 +1296,18 @@ function formatAmountValue(value) {
   return String(Math.round((n + Number.EPSILON) * 1000) / 1000).replace(/\.0+$/, "");
 }
 
+function formatSettlementWonAmount(value) {
+  if (value === null || value === undefined || value === "") return null;
+
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+
+  // 시트의 관리자수익은 만 원 단위로 저장된다.
+  // 예: 10 -> 100,000원
+  const wonAmount = Math.round(n * 10000);
+  return wonAmount.toLocaleString("en-US");
+}
+
 async function getGoogleAccessToken() {
   if (!GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_PRIVATE_KEY) {
     throw new Error("Google service account environment variables are missing.");
@@ -4923,7 +4935,7 @@ async function applyClosedCustomerStyle(accessToken, topRowNumber) {
 
 async function closeSheetCustomer(command) {
   if (!SHEET_ID) {
-    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+    return [buildTextMessage("⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.")];
   }
 
   const accessToken = await getGoogleAccessToken();
@@ -4946,11 +4958,11 @@ async function closeSheetCustomer(command) {
   }
 
   if (matches.length === 0) {
-    return `⚠️ ${command.code} 진행중 고객을 찾지 못했습니다.`;
+    return [buildTextMessage(`⚠️ ${command.code} 진행중 고객을 찾지 못했습니다.`)];
   }
 
   if (matches.length > 1) {
-    return `⚠️ ${command.code} 진행중 항목이 ${matches.length}개입니다. 중복 확인이 필요합니다.`;
+    return [buildTextMessage(`⚠️ ${command.code} 진행중 항목이 ${matches.length}개입니다. 중복 확인이 필요합니다.`)];
   }
 
   const topRowNumber = matches[0].rowIndex0 + 1;
@@ -4961,7 +4973,15 @@ async function closeSheetCustomer(command) {
   await updateSheetCell(accessToken, topRowNumber, 2, targetStatus);
   await applyClosedCustomerStyle(accessToken, topRowNumber);
 
-  return `✅ ${command.code} ${targetStatus} 처리완료\n${managerProfitText}`;
+  const messages = [buildTextMessage(`✅ ${command.code} ${targetStatus} 처리완료\n${managerProfitText}`)];
+  const settlementWonAmount = formatSettlementWonAmount(managerProfit);
+
+  // 정상 종료일 때만 기존 안내 뒤에 원 단위 정산금을 별도 말풍선으로 전송한다.
+  if (targetStatus === "종료" && settlementWonAmount !== null) {
+    messages.push(buildTextMessage(`${command.code} - ${settlementWonAmount}`));
+  }
+
+  return messages;
 }
 
 const ignoreKeywords = [
@@ -6478,8 +6498,8 @@ export default async function handler(req, res) {
           continue;
         }
 
-        const closeReply = await closeSheetCustomer(closeCommand);
-        await replyToLine(event.replyToken, closeReply);
+        const closeReplyMessages = await closeSheetCustomer(closeCommand);
+        await replyToLineMessages(event.replyToken, closeReplyMessages);
         continue;
       }
 
