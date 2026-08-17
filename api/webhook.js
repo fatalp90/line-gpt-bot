@@ -126,6 +126,10 @@ function markMessageProcessing(event) {
 const LINE_CUSTOMER_START_ROW = 1058;
 const LINE_CUSTOMER_START_INDEX0 = LINE_CUSTOMER_START_ROW - 1;
 const REPAYMENT_IGNORE_NOTICE = "(※ หากโอนเงินแล้ว หรือวันนี้ไม่ใช่วันชำระของคุณ กรุณาไม่ต้องสนใจข้อความนี้)";
+const SHINHAN_LOGO_URL = String(
+  process.env.SHINHAN_LOGO_URL
+  || "https://www.shinhangroup.com/resources/publish/kr/images/common/favicon_192_192.png"
+).trim();
 
 const REPAYMENT_MORNING_MESSAGE = `📌 วันนี้เป็นวันชำระ
 โอนภายในเวลา 20:00 น.
@@ -145,15 +149,129 @@ const REPAYMENT_AFTERNOON_MESSAGE = `📌 เวลา 20:00 น. แล้ว
 
 ${REPAYMENT_IGNORE_NOTICE}`;
 
-const PAYMENT_REQUEST_MESSAGE = `📌 ยังไม่พบยอดโอน
-
-กรุณาโอนเงินโดยเร็ว
-
-👉ธนาคาร SHINHAN BANK
-👉เลขบัญชี 110551366954
-👉ชื่อบัญชี CHAYAPONE
-
-${REPAYMENT_IGNORE_NOTICE}`;
+function buildPaymentRequestFlexMessage() {
+  return {
+    type: "flex",
+    altText: "แจ้งเตือนการชำระเงิน: ยังไม่พบยอดโอน",
+    contents: {
+      type: "bubble",
+      size: "mega",
+      header: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: "#00236E",
+        paddingAll: "20px",
+        spacing: "xs",
+        contents: [
+          { type: "text", text: "PAYMENT NOTICE", color: "#DCE6FF", size: "xs", weight: "bold" },
+          { type: "text", text: "แจ้งเตือนการชำระเงิน", color: "#FFFFFF", size: "lg", weight: "bold", wrap: true }
+        ]
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        paddingAll: "20px",
+        spacing: "md",
+        contents: [
+          {
+            type: "text",
+            text: "ยังไม่พบรายการโอน",
+            color: "#B42318",
+            size: "md",
+            weight: "bold",
+            wrap: true
+          },
+          {
+            type: "text",
+            text: "ขณะนี้ยังไม่พบรายการโอนสำหรับยอดที่ครบกำหนดชำระวันนี้ กรุณาดำเนินการโอนโดยเร็ว",
+            color: "#344054",
+            size: "sm",
+            wrap: true
+          },
+          { type: "separator", color: "#E4E7EC", margin: "md" },
+          {
+            type: "text",
+            text: "ข้อมูลสำหรับการโอน",
+            color: "#101828",
+            size: "sm",
+            weight: "bold",
+            margin: "md"
+          },
+          {
+            type: "box",
+            layout: "vertical",
+            backgroundColor: "#F5F7FA",
+            cornerRadius: "md",
+            paddingAll: "16px",
+            spacing: "sm",
+            contents: [
+              {
+                type: "box",
+                layout: "baseline",
+                spacing: "sm",
+                contents: [
+                  { type: "icon", url: SHINHAN_LOGO_URL, size: "sm" },
+                  { type: "text", text: "SHINHAN BANK", color: "#0046FF", size: "sm", weight: "bold", flex: 1 }
+                ]
+              },
+              {
+                type: "box",
+                layout: "baseline",
+                spacing: "sm",
+                contents: [
+                  { type: "text", text: "เลขที่บัญชี", color: "#667085", size: "xs", flex: 2 },
+                  { type: "text", text: "110551366954", color: "#101828", size: "sm", weight: "bold", align: "end", flex: 3 }
+                ]
+              },
+              {
+                type: "box",
+                layout: "baseline",
+                spacing: "sm",
+                contents: [
+                  { type: "text", text: "ชื่อบัญชี", color: "#667085", size: "xs", flex: 2 },
+                  { type: "text", text: "CHAYAPONE", color: "#101828", size: "sm", weight: "bold", align: "end", flex: 3 }
+                ]
+              }
+            ]
+          },
+          {
+            type: "text",
+            text: "หากท่านชำระเงินแล้ว หรือวันนี้ไม่ใช่วันครบกำหนดชำระ กรุณาไม่ต้องดำเนินการใด ๆ",
+            color: "#667085",
+            size: "xs",
+            wrap: true,
+            margin: "md"
+          },
+          {
+            type: "text",
+            text: "ขอบคุณสำหรับความร่วมมือ",
+            color: "#475467",
+            size: "xs",
+            wrap: true
+          }
+        ]
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        paddingAll: "16px",
+        contents: [
+          {
+            type: "button",
+            style: "primary",
+            color: "#0046FF",
+            height: "sm",
+            action: {
+              type: "clipboard",
+              label: "คัดลอกเลขบัญชี",
+              clipboardText: "110551366954"
+            }
+          }
+        ]
+      }
+    }
+  };
+}
 
 
 function base64Url(input) {
@@ -1294,18 +1412,6 @@ function formatAmountValue(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return String(value ?? "");
   return String(Math.round((n + Number.EPSILON) * 1000) / 1000).replace(/\.0+$/, "");
-}
-
-function formatSettlementWonAmount(value) {
-  if (value === null || value === undefined || value === "") return null;
-
-  const n = Number(value);
-  if (!Number.isFinite(n)) return null;
-
-  // 시트의 관리자수익은 만 원 단위로 저장된다.
-  // 예: 10 -> 100,000원
-  const wonAmount = Math.round(n * 10000);
-  return wonAmount.toLocaleString("en-US");
 }
 
 async function getGoogleAccessToken() {
@@ -3484,15 +3590,20 @@ function getLinePushErrorMessage(err) {
   return status ? `${status} ${message}` : message;
 }
 
-async function pushToLineWithRetry(code, groupId, text) {
+async function pushToLineWithRetry(code, groupId, message) {
   let lastError = null;
+  const retrySource = typeof message === "string" ? message : JSON.stringify(message);
   const retryKey = typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
-    : crypto.createHash("sha256").update(`${Date.now()}:${code}:${groupId}:${text}`).digest("hex").slice(0, 36);
+    : crypto.createHash("sha256").update(`${Date.now()}:${code}:${groupId}:${retrySource}`).digest("hex").slice(0, 36);
 
   for (let attempt = 1; attempt <= LINE_PUSH_RETRY_COUNT + 1; attempt += 1) {
     try {
-      await pushToLine(groupId, text, retryKey);
+      if (typeof message === "string") {
+        await pushToLine(groupId, message, retryKey);
+      } else {
+        await pushToLineMessages(groupId, [message], retryKey);
+      }
       return { ok: true, attempt };
     } catch (err) {
       lastError = err;
@@ -3524,7 +3635,7 @@ function parseTodayRepaymentBroadcastCommand(text) {
   const codePrefix = match[2] ? match[2].trim().toUpperCase() : "";
 
   if (command === "오늘상환요청") {
-    return { type: "payment", message: PAYMENT_REQUEST_MESSAGE, codePrefix };
+    return { type: "payment", message: buildPaymentRequestFlexMessage(), codePrefix };
   }
 
   if (command === "오늘상환오전") {
@@ -3536,6 +3647,50 @@ function parseTodayRepaymentBroadcastCommand(text) {
   }
 
   return null;
+}
+
+function parseTodayRepaymentTestCommand(text) {
+  const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
+  return clean === "오늘상환요청테스트";
+}
+
+function buildRepaymentAdminResultFlexMessage(resultText) {
+  const lines = String(resultText || "").split("\n");
+  const title = lines.shift() || "상환 요청 발송 결과";
+  const rawDetail = lines.join("\n").trim() || "처리 결과가 없습니다.";
+  const detail = rawDetail.length > 1900 ? `${rawDetail.slice(0, 1880)}\n…(일부 생략)` : rawDetail;
+  const isFailure = title.startsWith("❌");
+  const isWarning = title.startsWith("⚠️");
+  const headerColor = isFailure ? "#B42318" : isWarning ? "#B54708" : "#027A48";
+
+  return {
+    type: "flex",
+    altText: String(resultText || "상환 요청 발송 결과").slice(0, 1500),
+    contents: {
+      type: "bubble",
+      size: "kilo",
+      header: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: headerColor,
+        paddingAll: "18px",
+        contents: [
+          { type: "text", text: title, color: "#FFFFFF", size: "md", weight: "bold", wrap: true }
+        ]
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        paddingAll: "18px",
+        spacing: "md",
+        contents: [
+          { type: "text", text: detail, color: "#344054", size: "sm", wrap: true },
+          { type: "separator", color: "#E4E7EC", margin: "md" },
+          { type: "text", text: `처리 시각  ${getKoreaDateTimeText()}`, color: "#667085", size: "xs", wrap: true, margin: "md" }
+        ]
+      }
+    }
+  };
 }
 
 function parseUnregisteredCheckCommand(text) {
@@ -4935,7 +5090,7 @@ async function applyClosedCustomerStyle(accessToken, topRowNumber) {
 
 async function closeSheetCustomer(command) {
   if (!SHEET_ID) {
-    return [buildTextMessage("⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.")];
+    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
   }
 
   const accessToken = await getGoogleAccessToken();
@@ -4958,11 +5113,11 @@ async function closeSheetCustomer(command) {
   }
 
   if (matches.length === 0) {
-    return [buildTextMessage(`⚠️ ${command.code} 진행중 고객을 찾지 못했습니다.`)];
+    return `⚠️ ${command.code} 진행중 고객을 찾지 못했습니다.`;
   }
 
   if (matches.length > 1) {
-    return [buildTextMessage(`⚠️ ${command.code} 진행중 항목이 ${matches.length}개입니다. 중복 확인이 필요합니다.`)];
+    return `⚠️ ${command.code} 진행중 항목이 ${matches.length}개입니다. 중복 확인이 필요합니다.`;
   }
 
   const topRowNumber = matches[0].rowIndex0 + 1;
@@ -4973,15 +5128,7 @@ async function closeSheetCustomer(command) {
   await updateSheetCell(accessToken, topRowNumber, 2, targetStatus);
   await applyClosedCustomerStyle(accessToken, topRowNumber);
 
-  const messages = [buildTextMessage(`✅ ${command.code} ${targetStatus} 처리완료\n${managerProfitText}`)];
-  const settlementWonAmount = formatSettlementWonAmount(managerProfit);
-
-  // 정상 종료일 때만 기존 안내 뒤에 원 단위 정산금을 별도 말풍선으로 전송한다.
-  if (targetStatus === "종료" && settlementWonAmount !== null) {
-    messages.push(buildTextMessage(`${command.code} - ${settlementWonAmount}`));
-  }
-
-  return messages;
+  return `✅ ${command.code} ${targetStatus} 처리완료\n${managerProfitText}`;
 }
 
 const ignoreKeywords = [
@@ -5243,7 +5390,7 @@ function koreanToEnglishKeyboard(text) {
 const KOREAN_COMMAND_WORDS = [
   "등록", "종료", "종결", "블랙", "조회", "카운트",
   "날짜변경", "날짜복구", "미등록", "내아이디", "관리자아이디확인",
-  "송금완료", "오늘상환요청", "오늘상환오전", "오늘상환오후"
+  "송금완료", "오늘상환요청", "오늘상환요청테스트", "오늘상환오전", "오늘상환오후"
 ];
 const ENGLISH_KEYBOARD_COMMAND_ALIASES = new Map(
   KOREAN_COMMAND_WORDS.map(word => [koreanToEnglishKeyboard(word), word])
@@ -6399,6 +6546,30 @@ export default async function handler(req, res) {
         continue;
       }
 
+      if (parseTodayRepaymentTestCommand(commandText)) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
+        const testGroupId = event?.source?.groupId || "";
+        if (!testGroupId) {
+          await replyToLine(event.replyToken, "⚠️ 오늘상환요청테스트 명령은 LINE 그룹방에서만 사용할 수 있습니다.");
+          continue;
+        }
+
+        const testResult = await pushToLineWithRetry(
+          "REPAYMENT_TEST",
+          testGroupId,
+          buildPaymentRequestFlexMessage()
+        );
+
+        if (!testResult.ok) {
+          await replyToLine(event.replyToken, `❌ 테스트 메시지 발송 실패\n\n${testResult.error || "발송 실패"}`);
+        }
+        continue;
+      }
+
       const todayRepaymentBroadcastCommand = parseTodayRepaymentBroadcastCommand(commandText);
       if (todayRepaymentBroadcastCommand) {
         if (!isAdmin(event)) {
@@ -6411,7 +6582,7 @@ export default async function handler(req, res) {
           todayRepaymentBroadcastCommand.codePrefix
         );
         if (broadcastReply) {
-          await replyToLine(event.replyToken, broadcastReply);
+          await replyToLineMessages(event.replyToken, [buildRepaymentAdminResultFlexMessage(broadcastReply)]);
         }
         continue;
       }
@@ -6498,8 +6669,8 @@ export default async function handler(req, res) {
           continue;
         }
 
-        const closeReplyMessages = await closeSheetCustomer(closeCommand);
-        await replyToLineMessages(event.replyToken, closeReplyMessages);
+        const closeReply = await closeSheetCustomer(closeCommand);
+        await replyToLine(event.replyToken, closeReply);
         continue;
       }
 
