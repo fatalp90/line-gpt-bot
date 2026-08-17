@@ -6566,6 +6566,11 @@ export default async function handler(req, res) {
 
         if (!testResult.ok) {
           await replyToLine(event.replyToken, `❌ 테스트 메시지 발송 실패\n\n${testResult.error || "발송 실패"}`);
+        } else {
+          await replyToLine(
+            event.replyToken,
+            "✅ 오늘상환요청 테스트 완료\n\n현재 그룹방에만 테스트 메시지를 발송했습니다.\n실제 고객 대상 조회 및 발송은 실행하지 않았습니다."
+          );
         }
         continue;
       }
