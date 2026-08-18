@@ -182,14 +182,6 @@ function buildPaymentRequestFlexMessage() {
           },
           { type: "separator", color: "#E4E7EC", margin: "sm" },
           {
-            type: "text",
-            text: "ข้อมูลสำหรับการโอน",
-            color: "#101828",
-            size: "sm",
-            weight: "bold",
-            margin: "sm"
-          },
-          {
             type: "box",
             layout: "vertical",
             backgroundColor: "#F5F7FA",
@@ -199,20 +191,22 @@ function buildPaymentRequestFlexMessage() {
             contents: [
               {
                 type: "box",
-                layout: "baseline",
+                layout: "horizontal",
                 spacing: "sm",
+                alignItems: "center",
                 contents: [
-                  { type: "icon", url: SHINHAN_LOGO_URL, size: "sm" },
+                  { type: "image", url: SHINHAN_LOGO_URL, size: "20px", aspectMode: "fit", flex: 0 },
                   { type: "text", text: "SHINHAN BANK", color: "#0046FF", size: "sm", weight: "bold", flex: 1 }
                 ]
               },
               {
-                type: "text",
-                text: "110551366954",
-                color: "#101828",
-                size: "md",
-                weight: "bold",
-                align: "end"
+                type: "box",
+                layout: "baseline",
+                spacing: "sm",
+                contents: [
+                  { type: "text", text: "เลขที่บัญชี", color: "#667085", size: "xs", flex: 2 },
+                  { type: "text", text: "110551366954", color: "#101828", size: "md", weight: "bold", align: "end", flex: 3 }
+                ]
               },
               {
                 type: "box",
