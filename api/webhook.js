@@ -181,13 +181,6 @@ function buildPaymentRequestFlexMessage() {
             weight: "bold",
             wrap: true
           },
-          {
-            type: "text",
-            text: "ขณะนี้ยังไม่พบรายการโอนสำหรับยอดที่ครบกำหนดชำระวันนี้ กรุณาดำเนินการโอนโดยเร็ว",
-            color: "#344054",
-            size: "sm",
-            wrap: true
-          },
           { type: "separator", color: "#E4E7EC", margin: "md" },
           {
             type: "text",
@@ -230,6 +223,43 @@ function buildPaymentRequestFlexMessage() {
                 contents: [
                   { type: "text", text: "ชื่อบัญชี", color: "#667085", size: "xs", flex: 2 },
                   { type: "text", text: "CHAYAPONE", color: "#101828", size: "sm", weight: "bold", align: "end", flex: 3 }
+                ]
+              }
+            ]
+          },
+          {
+            type: "box",
+            layout: "vertical",
+            backgroundColor: "#FFF4ED",
+            cornerRadius: "md",
+            paddingAll: "16px",
+            spacing: "sm",
+            margin: "md",
+            contents: [
+              {
+                type: "text",
+                text: "⚠️ ค่าปรับกรณีชำระล่าช้า",
+                color: "#B42318",
+                size: "sm",
+                weight: "bold",
+                wrap: true
+              },
+              {
+                type: "box",
+                layout: "baseline",
+                spacing: "sm",
+                contents: [
+                  { type: "text", text: "หลังเวลา 20:00 น.", color: "#7A271A", size: "xs", flex: 3 },
+                  { type: "text", text: "20,000 วอน", color: "#B42318", size: "sm", weight: "bold", align: "end", flex: 2 }
+                ]
+              },
+              {
+                type: "box",
+                layout: "baseline",
+                spacing: "sm",
+                contents: [
+                  { type: "text", text: "หลังเวลา 00:00 น.", color: "#7A271A", size: "xs", flex: 3 },
+                  { type: "text", text: "50,000 วอน", color: "#B42318", size: "sm", weight: "bold", align: "end", flex: 2 }
                 ]
               }
             ]
