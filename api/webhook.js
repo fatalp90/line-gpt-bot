@@ -130,15 +130,21 @@ const SHINHAN_LOGO_URL = String(
   process.env.SHINHAN_LOGO_URL
   || "https://www.shinhangroup.com/resources/publish/kr/images/common/favicon_192_192.png"
 ).trim();
-const VERCEL_PUBLIC_HOST = String(
-  process.env.VERCEL_PROJECT_PRODUCTION_URL
-  || process.env.VERCEL_URL
-  || ""
-).trim().replace(/^https?:\/\//i, "").replace(/\/$/, "");
-const REPAYMENT_ALERT_ANIMATION_URL = String(
-  process.env.REPAYMENT_ALERT_ANIMATION_URL
-  || (VERCEL_PUBLIC_HOST ? `https://${VERCEL_PUBLIC_HOST}/repayment-alert.png` : SHINHAN_LOGO_URL)
-).trim();
+let repaymentRuntimePublicHost = "";
+
+function normalizePublicHost(value) {
+  return String(value || "").trim().replace(/^https?:\/\//i, "").replace(/\/$/, "");
+}
+
+function getRepaymentAlertAnimationUrl() {
+  const explicitUrl = String(process.env.REPAYMENT_ALERT_ANIMATION_URL || "").trim();
+  if (explicitUrl) return explicitUrl;
+
+  const publicHost = repaymentRuntimePublicHost || normalizePublicHost(
+    process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL
+  );
+  return publicHost ? `https://${publicHost}/repayment-alert.png` : SHINHAN_LOGO_URL;
+}
 
 const REPAYMENT_MORNING_MESSAGE = `📌 วันนี้เป็นวันชำระ
 โอนภายในเวลา 20:00 น.
@@ -250,10 +256,16 @@ function buildPaymentRequestFlexMessage() {
                 alignItems: "center",
                 contents: [
                   {
+                    type: "text",
+                    text: "⚠️",
+                    size: "sm",
+                    flex: 0
+                  },
+                  {
                     type: "image",
-                    url: REPAYMENT_ALERT_ANIMATION_URL,
+                    url: getRepaymentAlertAnimationUrl(),
                     animated: true,
-                    size: "24px",
+                    size: "20px",
                     aspectMode: "fit",
                     flex: 0
                   },
@@ -6448,6 +6460,12 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(200).send("OK");
   }
+
+  // 실제 LINE webhook이 호출한 배포 주소를 사용해야 public의 APNG를
+  // LINE 이미지 서버에서도 확실하게 가져올 수 있다.
+  repaymentRuntimePublicHost = normalizePublicHost(
+    req.headers?.["x-forwarded-host"] || req.headers?.host
+  );
 
   const events = req.body.events || [];
 
