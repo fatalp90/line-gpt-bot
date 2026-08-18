@@ -173,17 +173,29 @@ function buildPaymentRequestFlexMessage() {
         spacing: "sm",
         contents: [
           {
-            type: "text",
-            text: "ยังไม่พบรายการโอน",
-            color: "#B42318",
-            size: "xl",
-            weight: "bold",
-            wrap: true
+            type: "box",
+            layout: "horizontal",
+            spacing: "sm",
+            alignItems: "center",
+            contents: [
+              { type: "text", text: "⚠️", size: "sm", flex: 0 },
+              {
+                type: "text",
+                text: "ยังไม่พบรายการโอน",
+                color: "#B42318",
+                size: "xl",
+                weight: "bold",
+                align: "center",
+                wrap: true,
+                flex: 1
+              },
+              { type: "text", text: "⚠️", size: "sm", align: "end", flex: 0 }
+            ]
           },
-          { type: "separator", color: "#E4E7EC", margin: "sm" },
           {
             type: "box",
             layout: "vertical",
+            margin: "lg",
             backgroundColor: "#F5F7FA",
             cornerRadius: "md",
             paddingAll: "12px",
