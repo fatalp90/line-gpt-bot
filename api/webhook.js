@@ -163,7 +163,6 @@ function buildPaymentRequestFlexMessage() {
         paddingAll: "20px",
         spacing: "xs",
         contents: [
-          { type: "text", text: "PAYMENT NOTICE", color: "#DCE6FF", size: "xs", weight: "bold" },
           { type: "text", text: "แจ้งเตือนการชำระเงิน", color: "#FFFFFF", size: "lg", weight: "bold", wrap: true }
         ]
       },
@@ -177,7 +176,7 @@ function buildPaymentRequestFlexMessage() {
             type: "text",
             text: "ยังไม่พบรายการโอน",
             color: "#B42318",
-            size: "md",
+            size: "xl",
             weight: "bold",
             wrap: true
           },
@@ -208,13 +207,12 @@ function buildPaymentRequestFlexMessage() {
                 ]
               },
               {
-                type: "box",
-                layout: "baseline",
-                spacing: "sm",
-                contents: [
-                  { type: "text", text: "เลขที่บัญชี", color: "#667085", size: "xs", flex: 2 },
-                  { type: "text", text: "110551366954", color: "#101828", size: "sm", weight: "bold", align: "end", flex: 3 }
-                ]
+                type: "text",
+                text: "110551366954",
+                color: "#101828",
+                size: "md",
+                weight: "bold",
+                align: "end"
               },
               {
                 type: "box",
