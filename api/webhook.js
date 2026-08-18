@@ -130,6 +130,15 @@ const SHINHAN_LOGO_URL = String(
   process.env.SHINHAN_LOGO_URL
   || "https://www.shinhangroup.com/resources/publish/kr/images/common/favicon_192_192.png"
 ).trim();
+const VERCEL_PUBLIC_HOST = String(
+  process.env.VERCEL_PROJECT_PRODUCTION_URL
+  || process.env.VERCEL_URL
+  || ""
+).trim().replace(/^https?:\/\//i, "").replace(/\/$/, "");
+const REPAYMENT_ALERT_ANIMATION_URL = String(
+  process.env.REPAYMENT_ALERT_ANIMATION_URL
+  || (VERCEL_PUBLIC_HOST ? `https://${VERCEL_PUBLIC_HOST}/repayment-alert.png` : SHINHAN_LOGO_URL)
+).trim();
 
 const REPAYMENT_MORNING_MESSAGE = `📌 วันนี้เป็นวันชำระ
 โอนภายในเวลา 20:00 น.
@@ -235,12 +244,29 @@ function buildPaymentRequestFlexMessage() {
             margin: "sm",
             contents: [
               {
-                type: "text",
-                text: "⚠️ ค่าปรับกรณีชำระล่าช้า",
-                color: "#B42318",
-                size: "sm",
-                weight: "bold",
-                wrap: true
+                type: "box",
+                layout: "horizontal",
+                spacing: "sm",
+                alignItems: "center",
+                contents: [
+                  {
+                    type: "image",
+                    url: REPAYMENT_ALERT_ANIMATION_URL,
+                    animated: true,
+                    size: "24px",
+                    aspectMode: "fit",
+                    flex: 0
+                  },
+                  {
+                    type: "text",
+                    text: "ค่าปรับกรณีชำระล่าช้า",
+                    color: "#B42318",
+                    size: "sm",
+                    weight: "bold",
+                    wrap: true,
+                    flex: 1
+                  }
+                ]
               },
               {
                 type: "box",
