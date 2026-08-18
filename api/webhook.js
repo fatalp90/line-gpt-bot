@@ -5155,7 +5155,16 @@ async function closeSheetCustomer(command) {
   await updateSheetCell(accessToken, topRowNumber, 2, targetStatus);
   await applyClosedCustomerStyle(accessToken, topRowNumber);
 
-  return `✅ ${command.code} ${targetStatus} 처리완료\n${managerProfitText}`;
+  const completionText = `✅ ${command.code} ${targetStatus} 처리완료\n${managerProfitText}`;
+  if (targetStatus !== "종료" || managerProfit === null) {
+    return completionText;
+  }
+
+  const finalAmountWon = Math.round(managerProfit * 10000).toLocaleString("ko-KR");
+  return [
+    { type: "text", text: completionText },
+    { type: "text", text: `${command.code} - ${finalAmountWon}` }
+  ];
 }
 
 const ignoreKeywords = [
@@ -6702,7 +6711,11 @@ export default async function handler(req, res) {
         }
 
         const closeReply = await closeSheetCustomer(closeCommand);
-        await replyToLine(event.replyToken, closeReply);
+        if (Array.isArray(closeReply)) {
+          await replyToLineMessages(event.replyToken, closeReply);
+        } else {
+          await replyToLine(event.replyToken, closeReply);
+        }
         continue;
       }
 
