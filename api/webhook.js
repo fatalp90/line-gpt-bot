@@ -160,7 +160,7 @@ function buildPaymentRequestFlexMessage() {
         type: "box",
         layout: "vertical",
         backgroundColor: "#00236E",
-        paddingAll: "20px",
+        paddingAll: "14px",
         spacing: "xs",
         contents: [
           { type: "text", text: "แจ้งเตือนการชำระเงิน", color: "#FFFFFF", size: "lg", weight: "bold", wrap: true }
@@ -169,8 +169,8 @@ function buildPaymentRequestFlexMessage() {
       body: {
         type: "box",
         layout: "vertical",
-        paddingAll: "20px",
-        spacing: "md",
+        paddingAll: "16px",
+        spacing: "sm",
         contents: [
           {
             type: "text",
@@ -180,22 +180,22 @@ function buildPaymentRequestFlexMessage() {
             weight: "bold",
             wrap: true
           },
-          { type: "separator", color: "#E4E7EC", margin: "md" },
+          { type: "separator", color: "#E4E7EC", margin: "sm" },
           {
             type: "text",
             text: "ข้อมูลสำหรับการโอน",
             color: "#101828",
             size: "sm",
             weight: "bold",
-            margin: "md"
+            margin: "sm"
           },
           {
             type: "box",
             layout: "vertical",
             backgroundColor: "#F5F7FA",
             cornerRadius: "md",
-            paddingAll: "16px",
-            spacing: "sm",
+            paddingAll: "12px",
+            spacing: "xs",
             contents: [
               {
                 type: "box",
@@ -230,9 +230,9 @@ function buildPaymentRequestFlexMessage() {
             layout: "vertical",
             backgroundColor: "#FFF4ED",
             cornerRadius: "md",
-            paddingAll: "16px",
-            spacing: "sm",
-            margin: "md",
+            paddingAll: "12px",
+            spacing: "xs",
+            margin: "sm",
             contents: [
               {
                 type: "text",
@@ -266,23 +266,16 @@ function buildPaymentRequestFlexMessage() {
             type: "text",
             text: "หากท่านชำระเงินแล้ว หรือวันนี้ไม่ใช่วันครบกำหนดชำระ กรุณาไม่ต้องดำเนินการใด ๆ",
             color: "#667085",
-            size: "xs",
+            size: "xxs",
             wrap: true,
-            margin: "md"
-          },
-          {
-            type: "text",
-            text: "ขอบคุณสำหรับความร่วมมือ",
-            color: "#475467",
-            size: "xs",
-            wrap: true
+            margin: "sm"
           }
         ]
       },
       footer: {
         type: "box",
         layout: "vertical",
-        paddingAll: "16px",
+        paddingAll: "12px",
         contents: [
           {
             type: "button",
