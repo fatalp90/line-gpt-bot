@@ -3254,12 +3254,14 @@ async function tryHandlePassportImage(event) {
   }
 }
 
-async function handleReceiptImageMessage(event, analyzedResult = null) {
+async function handleReceiptImageMessage(event, analyzedResult = null, sourceContext = null) {
   const sourceGroupId = getLineSourceGroupId(event);
   if (!sourceGroupId) return;
 
-  let accessToken = null;
-  let code = "";
+  // 이미지가 올라온 순간 확인한 고객방 정보를 이후 분석 성공/실패 분기에서도 그대로 사용한다.
+  // OCR이 끝난 뒤 다시 매핑을 조회해서 코드가 "-"로 바뀌는 일을 막기 위한 처리다.
+  let accessToken = sourceContext?.accessToken || null;
+  let code = String(sourceContext?.code || "").trim().toUpperCase();
 
   try {
     if (!SHEET_ID) {
@@ -3273,8 +3275,8 @@ async function handleReceiptImageMessage(event, analyzedResult = null) {
     if (!result.ok) {
       if (result.ignored) return;
 
-      accessToken = await getGoogleAccessToken();
-      code = await findMappedCodeByGroupId(accessToken, sourceGroupId);
+      if (!accessToken) accessToken = await getGoogleAccessToken();
+      if (!code) code = await findMappedCodeByGroupId(accessToken, sourceGroupId);
       await notifyReceiptAnalysisFailureToApprovalGroup({
         accessToken,
         sourceGroupId,
@@ -3292,8 +3294,8 @@ async function handleReceiptImageMessage(event, analyzedResult = null) {
       return;
     }
 
-    accessToken = await getGoogleAccessToken();
-    code = await findMappedCodeByGroupId(accessToken, sourceGroupId);
+    if (!accessToken) accessToken = await getGoogleAccessToken();
+    if (!code) code = await findMappedCodeByGroupId(accessToken, sourceGroupId);
     if (!code) {
       // 실제 이체사진으로 판별된 경우에만 코드 매핑 누락을 PP01 관리자방에 알린다.
       // 일반 사진은 위에서 이미 조용히 무시된다.
@@ -6500,12 +6502,26 @@ export default async function handler(req, res) {
       }
 
       if (event.message.type === "image") {
+        // 고객이 사진을 올린 바로 그 시점의 그룹방 코드부터 확정한다.
+        // 이미지 분석이 실패하더라도 이 코드를 실패 알림에 표시한다.
+        let imageSourceContext = null;
+        if (SHEET_ID) {
+          try {
+            const sourceGroupId = getLineSourceGroupId(event);
+            const accessToken = await getGoogleAccessToken();
+            const code = await findMappedCodeByGroupId(accessToken, sourceGroupId);
+            imageSourceContext = { accessToken, code: code || "" };
+          } catch (err) {
+            console.error(`[IMAGE SOURCE CODE LOOKUP FAIL] messageId=${event.message?.id || "-"} error=${err?.response?.data?.error?.message || err?.message || err}`);
+          }
+        }
+
         // 한 번의 이미지 호출로 여권/입금사진/기타를 자동 분류하고 필요한 값까지 추출한다.
         const imageResult = await analyzeReceiptImageAmount(event.message.id);
         if (imageResult.ok && imageResult.kind === "passport") {
           await queuePassportNameReply(event, imageResult);
         } else {
-          await handleReceiptImageMessage(event, imageResult);
+          await handleReceiptImageMessage(event, imageResult, imageSourceContext);
         }
         continue;
       }
