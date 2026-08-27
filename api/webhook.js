@@ -1612,35 +1612,42 @@ function isRegisteredCustomerTopRow(row) {
   return Boolean(customerName || dateValue || loanValue);
 }
 
-function getNextCustomerNumber(values) {
-  let maxNo = 0;
-  for (const row of values.slice(1)) {
-    if (!isRegisteredCustomerTopRow(row)) continue;
-    const no = parseCustomerNo(row?.[0]);
-    if (no) maxNo = Math.max(maxNo, no);
-  }
-  return maxNo + 1;
-}
-
-function findNextCustomerWriteRow(values, nextNo) {
-  // A열 번호 기준으로 입력 위치를 찾는다.
-  // 예: 688번까지 등록되어 있고 689번 양식 행이 이미 있으면 그 행에 덮어쓴다.
-  // 사용자가 700번까지 수동 등록했다면 다음 번호는 701이고, A열 701 행을 찾아 쓴다.
-  const targetNo = parseCustomerNo(nextNo);
-  if (targetNo) {
-    for (let i = 1; i < values.length; i += 1) {
-      const rowNo = parseCustomerNo(values[i]?.[0]);
-      if (rowNo === targetNo) return i + 1;
-    }
-  }
-
-  // 번호 양식이 아직 없으면 마지막 실제 등록 고객의 아래 2행 뒤에 쓴다.
+function findNextCustomerSlot(values) {
+  const registeredNumbers = new Set();
+  let maxRegisteredNo = 0;
   let lastRegisteredRowNumber = 1;
+
+  // 먼저 실제 고객정보가 들어간 번호를 모두 수집한다.
+  // 같은 번호의 빈 양식이 시트 아래쪽에 중복되어 있어도 다시 사용하지 않기 위함이다.
   for (let i = 1; i < values.length; i += 1) {
-    if (isRegisteredCustomerTopRow(values[i])) lastRegisteredRowNumber = i + 1;
+    const row = values[i] || [];
+    if (!isRegisteredCustomerTopRow(row)) continue;
+
+    const no = parseCustomerNo(row[0]);
+    if (!no) continue;
+
+    registeredNumbers.add(no);
+    maxRegisteredNo = Math.max(maxRegisteredNo, no);
+    lastRegisteredRowNumber = i + 1;
   }
 
-  return Math.max(2, lastRegisteredRowNumber + 2);
+  // 최대 등록번호 다음 행을 찾는 대신, 위에서부터 실제로 비어 있는 첫 고객 양식을 사용한다.
+  // 예: 995~1000번이 비어 있으면 1001번으로 건너뛰지 않고 995번부터 채운다.
+  for (let i = 1; i < values.length; i += 1) {
+    const row = values[i] || [];
+    const no = parseCustomerNo(row[0]);
+    if (!no) continue;
+    if (isRegisteredCustomerTopRow(row)) continue;
+    if (registeredNumbers.has(no)) continue;
+
+    return { rowNumber: i + 1, customerNo: no };
+  }
+
+  // 준비된 빈 양식이 전혀 없을 때만 마지막 등록 고객 아래에 새 번호로 기록한다.
+  return {
+    rowNumber: Math.max(2, lastRegisteredRowNumber + 2),
+    customerNo: maxRegisteredNo + 1
+  };
 }
 
 function makeWritableRow(row, width) {
@@ -4925,8 +4932,9 @@ async function writeCustomerRegistration(command) {
   const existingCustomer = findExistingProductCustomer(values, command.productCode);
   const customerType = existingCustomer.exists ? "기존" : "신규";
   const resolvedCustomerName = command.customerName || existingCustomer.customerName || "";
-  const nextNo = getNextCustomerNumber(values);
-  const rowNumber = findNextCustomerWriteRow(values, nextNo);
+  const nextSlot = findNextCustomerSlot(values);
+  const nextNo = nextSlot.customerNo;
+  const rowNumber = nextSlot.rowNumber;
   const dateText = formatKoreaDateValue(today);
   const monthDropdownText = formatKoreaYearMonthDropdownValue(today);
   // J/K열에는 기존 시트 수식이 있으므로 행 전체(A:AP)를 덮어쓰지 않는다.
