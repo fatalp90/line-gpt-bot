@@ -2746,7 +2746,6 @@ ${receiptSystemPrompt}`;
     : /(?:\bTHB\b|฿|บาท)/i.test(displayedAmountText)
       ? "THB"
       : "";
-  // 앱이 태국어인지 여부가 아니라 화면에 표시된 실제 송금액 단위를 최우선으로 사용한다.
   const currency = explicitDisplayedCurrency || modelCurrency;
   const amountRole = String(parsed?.amount_role || parsed?.amount_type || "").trim().toLowerCase();
   const rawAmountValue = normalizeWonAmount(
@@ -2776,8 +2775,8 @@ ${receiptSystemPrompt}`;
     ? rawReceiptScore
     : (Number.isFinite(confidence) ? confidence * 100 : 0);
 
-  // 태국계좌 알림은 실제 송금액 단위가 THB일 때만 만든다.
-  // receipt_kind나 태국어 UI만으로는 절대 태국계좌 이체로 분류하지 않는다.
+  // 실제 송금액 단위가 THB일 때만 태국계좌 이체로 분류한다.
+  // 태국어 UI나 receipt_kind만으로는 태국계좌 알림을 만들지 않는다.
   if (documentType === "receipt" && currency === "THB") {
     return {
       ok: false,
@@ -3120,10 +3119,10 @@ async function pushReceiptDoneToRelatedGroups({ clickedGroupId, sourceGroupId, a
 }
 
 
-async function notifyReceiptAnalysisFailureToApprovalGroup({ accessToken, sourceGroupId, code, messageId, error, title, detail }) {
+async function notifyReceiptAnalysisFailureToApprovalGroup({ accessToken, sourceGroupId, code, messageId, error, title, detail, replyToken }) {
   try {
     const approvalGroupId = await getReceiptApprovalGroupId(accessToken);
-    if (!approvalGroupId || approvalGroupId === sourceGroupId) {
+    if (!approvalGroupId) {
       console.warn(`[RECEIPT OCR FAIL NOTICE SKIP] approvalGroupId=${approvalGroupId || "not_found"} sourceGroupId=${sourceGroupId}`);
       return;
     }
@@ -3142,6 +3141,17 @@ async function notifyReceiptAnalysisFailureToApprovalGroup({ accessToken, source
       "",
       `(${getKoreaDateTimeText()})`
     ].join("\n");
+
+    // PP01 관리자방에서 사진을 직접 시험하면 원본방과 알림방이 같다.
+    // 이 경우 중복 방지로 버리지 않고, 해당 이미지 이벤트의 replyToken으로 같은 방에 답장한다.
+    if (approvalGroupId === sourceGroupId) {
+      if (replyToken) {
+        await replyToLine(replyToken, noticeText);
+      } else {
+        console.warn(`[RECEIPT OCR FAIL NOTICE SAME GROUP SKIP] approvalGroupId=${approvalGroupId} replyToken=missing`);
+      }
+      return;
+    }
 
     await pushToLine(approvalGroupId, noticeText);
   } catch (err) {
@@ -3364,7 +3374,8 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
         messageId: event.message.id,
         title: "🇹🇭 태국계좌 이체 사진",
         error: "실제 송금액이 태국 바트(THB)인 계좌 이체로 확인되어 자동 등록하지 않았습니다.",
-        detail: `송금금액: ${amountText}\n이체일시: ${result.transferDate || "확인 불가"}\n등록 버튼은 생성하지 않았습니다.`
+        detail: `송금금액: ${amountText}\n이체일시: ${result.transferDate || "확인 불가"}\n등록 버튼은 생성하지 않았습니다.`,
+        replyToken: event.replyToken
       });
       return;
     }
@@ -3372,8 +3383,6 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
     if (!result.ok) {
       if (result.ignored) return;
 
-      // 실제 이체사진 또는 여권으로 확인된 경우만 실패 알림을 보낸다.
-      // 일반 사진이나 종류를 확정하지 못한 이미지는 조용히 무시한다.
       if (result.kind !== "receipt" && result.kind !== "passport") return;
 
       if (!accessToken) accessToken = await getGoogleAccessToken();
@@ -3389,7 +3398,8 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
         error: result.error || result.reason,
         detail: result.kind === "passport"
           ? "1회 분석으로 여권 영문 이름을 확정하지 못했습니다."
-          : "1회 분석으로 내용을 확정하지 못해 등록 버튼을 만들지 않았습니다."
+          : "1회 분석으로 내용을 확정하지 못해 등록 버튼을 만들지 않았습니다.",
+        replyToken: event.replyToken
       });
       // 고객방에는 실패 메시지를 보내지 않는다. 관리자방 알림만 남긴다.
       return;
@@ -3407,7 +3417,8 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
         messageId: event.message?.id,
         title: "⚠️ 이체사진 분석 불가",
         error: "해당 고객방의 코드 매핑을 찾지 못했습니다.",
-        detail: "이체사진으로 보이지만 코드/등록이 안 된 고객방이거나 그룹 매핑이 삭제된 상태입니다. 고객방 매핑을 먼저 확인해주세요."
+        detail: "이체사진으로 보이지만 코드/등록이 안 된 고객방이거나 그룹 매핑이 삭제된 상태입니다. 고객방 매핑을 먼저 확인해주세요.",
+        replyToken: event.replyToken
       });
       return;
     }
@@ -3548,7 +3559,8 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
         messageId: event.message?.id,
         title: "⚠️ 이체사진 처리 오류",
         error: errorText,
-        detail: "이미지 수신/OCR/등록대기 생성 과정에서 오류가 발생해서 등록 버튼을 만들지 못했습니다."
+        detail: "이미지 수신/OCR/등록대기 생성 과정에서 오류가 발생해서 등록 버튼을 만들지 못했습니다.",
+        replyToken: event.replyToken
       });
     } catch (noticeErr) {
       console.error(`[RECEIPT IMAGE HANDLE FAIL NOTICE ERROR] ${noticeErr?.message || noticeErr}`);
