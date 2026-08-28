@@ -1625,9 +1625,8 @@ function isRegisteredCustomerTopRow(row) {
 }
 
 function findNextCustomerSlot(values) {
-  const registeredNumbers = new Set();
   const numberedSlots = [];
-  let maxCustomerNo = 0;
+  let maxOccupiedCustomerNo = 0;
   let lastOccupiedRowNumber = 0;
   let lastNumberedRowNumber = 0;
 
@@ -1643,28 +1642,33 @@ function findNextCustomerSlot(values) {
     const occupied = registered || !isEmptyCustomerSlot(values, i);
 
     numberedSlots.push({ topIndex0: i, rowNumber, customerNo: no });
-    maxCustomerNo = Math.max(maxCustomerNo, no);
     lastNumberedRowNumber = Math.max(lastNumberedRowNumber, rowNumber);
 
-    if (registered) registeredNumbers.add(no);
-    if (occupied) lastOccupiedRowNumber = Math.max(lastOccupiedRowNumber, rowNumber);
+    if (occupied) {
+      lastOccupiedRowNumber = Math.max(lastOccupiedRowNumber, rowNumber);
+      maxOccupiedCustomerNo = Math.max(maxOccupiedCustomerNo, no);
+    }
   }
 
   // 체크오버 등록은 중간의 빈 구멍을 재사용하지 않고,
   // 마지막으로 사용된 자리 바로 다음에 있는 완전히 빈 2행 양식에만 추가한다.
+  // 빈 양식 A열에 과거 번호가 중복으로 미리 들어 있어도 그 자리를 건너뛰지 않는다.
+  // 위치는 첫 빈칸을 쓰고, 고객번호는 마지막 사용 번호의 다음 번호로 새로 기록한다.
   for (const slot of numberedSlots) {
     if (slot.rowNumber <= lastOccupiedRowNumber) continue;
-    if (registeredNumbers.has(slot.customerNo)) continue;
     if (!isEmptyCustomerSlot(values, slot.topIndex0)) continue;
 
-    return { rowNumber: slot.rowNumber, customerNo: slot.customerNo };
+    return {
+      rowNumber: slot.rowNumber,
+      customerNo: maxOccupiedCustomerNo > 0 ? maxOccupiedCustomerNo + 1 : slot.customerNo
+    };
   }
 
   // 준비된 빈 양식이 없으면 기존 번호 양식 전체의 아래쪽에 새 2행을 추가한다.
   // 이미 값이 있는 행을 덮지 않도록 마지막 등록 행이 아니라 마지막 번호 행을 기준으로 한다.
   return {
     rowNumber: Math.max(2, lastNumberedRowNumber + 2, lastOccupiedRowNumber + 2),
-    customerNo: maxCustomerNo + 1
+    customerNo: maxOccupiedCustomerNo + 1
   };
 }
 
