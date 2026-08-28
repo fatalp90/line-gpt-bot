@@ -2187,6 +2187,7 @@ async function findMappedCodeByGroupId(accessToken, sourceGroupId) {
   return null;
 }
 
+
 function buildCheckOverGroupMismatchMessage(currentCode, checkOverCode) {
   return [
     "⚠️ 고객방 등록 코드가 다릅니다.",
@@ -2575,8 +2576,9 @@ async function callReceiptOcrOpenAI(image, retry = false) {
 여권 인적사항면이 사진의 중심에 크고 선명하게 촬영되어 이름 또는 MRZ를 글자 단위로 읽을 수 있을 때만 document_type="passport", is_passport=true, is_transfer_receipt=false로 두고 surname, given_names, mrz_line1을 추출한다. 여권번호, 생년월일 등 다른 개인정보는 출력하지 않는다. MRZ의 P< 다음 국가코드 3글자는 이름에서 제외한다.
 사람의 얼굴이나 상반신이 사진의 큰 부분을 차지하고 그 사람이 펼친 여권을 들고 있는 본인확인 사진, 셀카, 인증사진이면 document_type="passport_selfie", is_passport=false, is_transfer_receipt=false로 둔다. 이런 사진 속의 작거나 기울어진 여권에서는 이름을 추출하지 말고 surname, given_names, mrz_line1을 모두 비운다. 같은 사용자가 여권 단독 사진도 함께 올리는 경우 단독 사진에서만 이름을 분석하기 위한 분류다.
 은행/금융앱 이체 화면이면 document_type="receipt", is_passport=false로 둔다.
-이체 화면의 실제 송금 통화를 currency에 KRW, THB, OTHER, UNKNOWN 중 하나로 반드시 구분하고, 통화와 관계없는 실제 송금 숫자를 amount_value에 넣는다.
-한국 원화 송금이면 currency="KRW"로 두고 amount_won에도 원화 송금액을 넣는다. Bangkok Bank, Kasikornbank, SCB/Siam Commercial Bank, Krungthai Bank 등 태국 은행 사이에서 THB로 송금한 화면은 currency="THB", receipt_kind="thai_domestic_transfer"로 둔다. 예를 들어 Bangkok Bank 화면에 2,500.00 THB와 태국 은행 출금·수취계좌가 보이면 한국계좌 입금이 아니라 태국계좌 이체다. 이때 amount_value=2500, amount_won=null로 반환하고 원화로 변환하지 않는다. 태국 불기 연도 2569 또는 화면의 축약 연도 69는 서기 2026년으로 변환해 transfer_date에 기록한다.
+화면의 가장 중요한 실제 송금액 문구를 통화 단위까지 그대로 displayed_amount_text에 적는다. 예: "40,000 KRW", "2,500.00 THB". 실제 송금 숫자는 amount_value에 넣고 currency는 KRW, THB, OTHER, UNKNOWN 중 하나로 구분한다.
+통화 판정은 앱 언어, 태국어 문구, 사용자 국적, 앱 이름이 아니라 displayed_amount_text의 단위를 최우선으로 한다. 태국어 화면이어도 실제 송금액이 "40,000 KRW"이면 무조건 currency="KRW"이며 정상 원화 이체다. 수취인이 CHAYAPONE/Shinhan Bank/110551366954이고 송금액이 KRW이면 특히 원화 입금으로 판정한다. 수수료나 잔액의 통화가 아니라 실제 송금액의 통화를 사용한다.
+실제 송금액 자체가 THB이고 태국 은행 사이에서 송금한 화면만 currency="THB", receipt_kind="thai_domestic_transfer"로 둔다. 예: Bangkok Bank 화면의 실제 송금액이 2,500.00 THB이면 displayed_amount_text="2,500.00 THB", amount_value=2500, amount_won=null이다. 한국 원화 송금이면 currency="KRW"로 두고 amount_won에도 원화 송금액을 넣는다. 태국 불기 연도 2569 또는 축약 연도 69는 서기 2026년으로 변환해 transfer_date에 기록한다.
 둘 다 아니면 document_type="other", is_passport=false, is_transfer_receipt=false로 둔다.
 모든 결과는 document_type, is_passport, is_transfer_receipt, surname, given_names, mrz_line1 필드를 포함한 JSON 하나로만 출력한다.
 해당되지 않거나 화면에서 확인할 수 없는 문자열은 빈 문자열 또는 null, 금액은 null, all_names는 빈 배열, 점수는 0으로 반환한다.
@@ -2628,6 +2630,7 @@ ${receiptSystemPrompt}`;
               mrz_line1: { type: "string" },
               surname: { type: "string" },
               given_names: { type: "string" },
+              displayed_amount_text: { type: "string" },
               amount_value: { type: ["number", "null"] },
               amount_won: { type: ["number", "null"] },
               fee_won: { type: ["number", "null"] },
@@ -2657,6 +2660,7 @@ ${receiptSystemPrompt}`;
               "mrz_line1",
               "surname",
               "given_names",
+              "displayed_amount_text",
               "amount_value",
               "amount_won",
               "fee_won",
@@ -2735,8 +2739,15 @@ ${receiptSystemPrompt}`;
   }
 
   const isTransferReceipt = parsed?.is_transfer_receipt === true || parsed?.is_transfer_receipt === "true";
-  const currency = String(parsed?.currency || "UNKNOWN").trim().toUpperCase();
-  const receiptKind = String(parsed?.receipt_kind || "").trim().toLowerCase();
+  const modelCurrency = String(parsed?.currency || "UNKNOWN").trim().toUpperCase();
+  const displayedAmountText = String(parsed?.displayed_amount_text || "").trim().toUpperCase();
+  const explicitDisplayedCurrency = /(?:\bKRW\b|₩|원)/i.test(displayedAmountText)
+    ? "KRW"
+    : /(?:\bTHB\b|฿|บาท)/i.test(displayedAmountText)
+      ? "THB"
+      : "";
+  // 앱이 태국어인지 여부가 아니라 화면에 표시된 실제 송금액 단위를 최우선으로 사용한다.
+  const currency = explicitDisplayedCurrency || modelCurrency;
   const amountRole = String(parsed?.amount_role || parsed?.amount_type || "").trim().toLowerCase();
   const rawAmountValue = normalizeWonAmount(
     parsed?.amount_value
@@ -2765,16 +2776,16 @@ ${receiptSystemPrompt}`;
     ? rawReceiptScore
     : (Number.isFinite(confidence) ? confidence * 100 : 0);
 
-  const isThaiAccountTransfer = documentType === "receipt"
-    && (currency === "THB" || /thai[_ -]?(?:domestic|account|bank)?[_ -]?transfer/.test(receiptKind));
-
-  if (isThaiAccountTransfer) {
+  // 태국계좌 알림은 실제 송금액 단위가 THB일 때만 만든다.
+  // receipt_kind나 태국어 UI만으로는 절대 태국계좌 이체로 분류하지 않는다.
+  if (documentType === "receipt" && currency === "THB") {
     return {
       ok: false,
       kind: "thai_transfer",
       isTransferReceipt: true,
       currency: "THB",
       amountThb: rawAmountValue,
+      displayedAmountText,
       senderName,
       allNames,
       recipientName: normalizeSenderName(parsed?.recipient_name),
@@ -3345,7 +3356,6 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
       const amountText = Number.isFinite(result.amountThb)
         ? `${Number(result.amountThb).toLocaleString("ko-KR")} THB`
         : "확인 불가";
-      const transferDateText = result.transferDate || "확인 불가";
 
       await notifyReceiptAnalysisFailureToApprovalGroup({
         accessToken,
@@ -3353,8 +3363,8 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
         code: code || "-",
         messageId: event.message.id,
         title: "🇹🇭 태국계좌 이체 사진",
-        error: "태국 바트(THB) 계좌 간 이체로 확인되어 자동 등록하지 않았습니다.",
-        detail: `송금금액: ${amountText}\n이체일시: ${transferDateText}\n등록 버튼은 생성하지 않았습니다.`
+        error: "실제 송금액이 태국 바트(THB)인 계좌 이체로 확인되어 자동 등록하지 않았습니다.",
+        detail: `송금금액: ${amountText}\n이체일시: ${result.transferDate || "확인 불가"}\n등록 버튼은 생성하지 않았습니다.`
       });
       return;
     }
@@ -3363,7 +3373,7 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
       if (result.ignored) return;
 
       // 실제 이체사진 또는 여권으로 확인된 경우만 실패 알림을 보낸다.
-      // 분석 서비스 오류나 일반 사진처럼 종류를 확정하지 못한 이미지는 조용히 무시한다.
+      // 일반 사진이나 종류를 확정하지 못한 이미지는 조용히 무시한다.
       if (result.kind !== "receipt" && result.kind !== "passport") return;
 
       if (!accessToken) accessToken = await getGoogleAccessToken();
