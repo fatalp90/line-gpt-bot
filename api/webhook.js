@@ -1578,14 +1578,26 @@ async function updateSheetRows(accessToken, startRowNumber, rows) {
   return response.data;
 }
 
-function hasCustomerRegisterContent(row) {
+function hasCustomerRegisterContent(row, ignoreCustomerNumber = false) {
   const cells = row || [];
   for (let i = 0; i <= DATE_END_COLUMN_INDEX; i += 1) {
+    // 윗줄 A열에는 빈 양식에도 고객번호가 미리 들어가 있을 수 있다.
+    if (ignoreCustomerNumber && i === 0) continue;
     // J/K열은 빈 양식에도 수식이 있을 수 있어서 신규 입력 위치 판단에서 제외한다.
     if (i === 9 || i === 10) continue;
     if (!isBlankCell(cells[i])) return true;
   }
   return false;
+}
+
+function isEmptyCustomerSlot(values, topIndex0) {
+  const topRow = values[topIndex0] || [];
+  const bottomRow = values[topIndex0 + 1] || [];
+
+  // 고객번호와 양식 수식만 있는 2행 묶음만 빈 자리로 인정한다.
+  // 특히 날짜칸(L:AP)에 -, $, 숫자 등 적용값이 하나라도 있으면 절대 재사용하지 않는다.
+  return !hasCustomerRegisterContent(topRow, true)
+    && !hasCustomerRegisterContent(bottomRow, false);
 }
 
 function parseCustomerNo(value) {
@@ -1614,39 +1626,45 @@ function isRegisteredCustomerTopRow(row) {
 
 function findNextCustomerSlot(values) {
   const registeredNumbers = new Set();
-  let maxRegisteredNo = 0;
-  let lastRegisteredRowNumber = 1;
+  const numberedSlots = [];
+  let maxCustomerNo = 0;
+  let lastOccupiedRowNumber = 0;
+  let lastNumberedRowNumber = 0;
 
-  // 먼저 실제 고객정보가 들어간 번호를 모두 수집한다.
-  // 같은 번호의 빈 양식이 시트 아래쪽에 중복되어 있어도 다시 사용하지 않기 위함이다.
-  for (let i = 1; i < values.length; i += 1) {
-    const row = values[i] || [];
-    if (!isRegisteredCustomerTopRow(row)) continue;
-
-    const no = parseCustomerNo(row[0]);
-    if (!no) continue;
-
-    registeredNumbers.add(no);
-    maxRegisteredNo = Math.max(maxRegisteredNo, no);
-    lastRegisteredRowNumber = i + 1;
-  }
-
-  // 최대 등록번호 다음 행을 찾는 대신, 위에서부터 실제로 비어 있는 첫 고객 양식을 사용한다.
-  // 예: 995~1000번이 비어 있으면 1001번으로 건너뛰지 않고 995번부터 채운다.
+  // 번호가 미리 입력된 모든 2행 양식을 확인한다.
+  // 고객정보뿐 아니라 날짜칸 등 어느 곳에든 적용값이 있으면 사용 중인 자리로 본다.
   for (let i = 1; i < values.length; i += 1) {
     const row = values[i] || [];
     const no = parseCustomerNo(row[0]);
     if (!no) continue;
-    if (isRegisteredCustomerTopRow(row)) continue;
-    if (registeredNumbers.has(no)) continue;
 
-    return { rowNumber: i + 1, customerNo: no };
+    const rowNumber = i + 1;
+    const registered = isRegisteredCustomerTopRow(row);
+    const occupied = registered || !isEmptyCustomerSlot(values, i);
+
+    numberedSlots.push({ topIndex0: i, rowNumber, customerNo: no });
+    maxCustomerNo = Math.max(maxCustomerNo, no);
+    lastNumberedRowNumber = Math.max(lastNumberedRowNumber, rowNumber);
+
+    if (registered) registeredNumbers.add(no);
+    if (occupied) lastOccupiedRowNumber = Math.max(lastOccupiedRowNumber, rowNumber);
   }
 
-  // 준비된 빈 양식이 전혀 없을 때만 마지막 등록 고객 아래에 새 번호로 기록한다.
+  // 체크오버 등록은 중간의 빈 구멍을 재사용하지 않고,
+  // 마지막으로 사용된 자리 바로 다음에 있는 완전히 빈 2행 양식에만 추가한다.
+  for (const slot of numberedSlots) {
+    if (slot.rowNumber <= lastOccupiedRowNumber) continue;
+    if (registeredNumbers.has(slot.customerNo)) continue;
+    if (!isEmptyCustomerSlot(values, slot.topIndex0)) continue;
+
+    return { rowNumber: slot.rowNumber, customerNo: slot.customerNo };
+  }
+
+  // 준비된 빈 양식이 없으면 기존 번호 양식 전체의 아래쪽에 새 2행을 추가한다.
+  // 이미 값이 있는 행을 덮지 않도록 마지막 등록 행이 아니라 마지막 번호 행을 기준으로 한다.
   return {
-    rowNumber: Math.max(2, lastRegisteredRowNumber + 2),
-    customerNo: maxRegisteredNo + 1
+    rowNumber: Math.max(2, lastNumberedRowNumber + 2, lastOccupiedRowNumber + 2),
+    customerNo: maxCustomerNo + 1
   };
 }
 
@@ -4935,6 +4953,13 @@ async function writeCustomerRegistration(command) {
   const nextSlot = findNextCustomerSlot(values);
   const nextNo = nextSlot.customerNo;
   const rowNumber = nextSlot.rowNumber;
+
+  // 마지막 방어선: 선택된 2행에 고객번호/양식 수식 외의 값이 있으면 쓰기를 중단한다.
+  // 슬롯 탐색 기준이 나중에 바뀌더라도 기존 적용칸을 덮어쓰지 않게 한다.
+  if (!isEmptyCustomerSlot(values, rowNumber - 1)) {
+    return `⚠️ ${rowNumber}행에 기존 적용값이 있어 등록을 중단했습니다. 다음 빈칸을 확인해주세요.`;
+  }
+
   const dateText = formatKoreaDateValue(today);
   const monthDropdownText = formatKoreaYearMonthDropdownValue(today);
   // J/K열에는 기존 시트 수식이 있으므로 행 전체(A:AP)를 덮어쓰지 않는다.
