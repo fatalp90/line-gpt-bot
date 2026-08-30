@@ -5305,6 +5305,7 @@ const ignoreKeywords = [
 const COMMISSION_ACCOUNT_LABEL_PATTERN = /^(?:관리자\s*)?(?:계좌\s*정보|bank\s*information|payment\s*information|name|family\s*name|bank|phone(?:\s*(?:no\.?|number))?|account(?:\s*(?:no\.?|number|name))?|beneficiary|swift|iban|ชื่อ(?:บัญชี)?|นามสกุล|ธนาคาร|เบอร์(?:โทร)?|เลข(?:ที่)?บัญชี|예금주|은행|계좌(?:번호)?|전화(?:번호)?|휴대폰)(?=\s|[:：-]|$)/iu;
 const COMMISSION_BONUS_LABEL_PATTERN = /(?:보너스|bonus|โบนัส)/iu;
 const COMMISSION_CODE_PATTERN = /^[\s*•·▪▫▶▷►→👉📌📍-]*([a-z]{1,10}\s*[-_]?\s*\d{1,6})\s*(?:[-–—:：/|]|\s)\s*(.+?)\s*$/i;
+const COMMISSION_NAMED_ITEM_PATTERN = /^[\s*•·▪▫▶▷►→👉📌📍-]*(.+?\S)\s*[-–—]\s*(.+?)\s*$/u;
 const COMMISSION_AMOUNT_PATTERN = /^(?:₩\s*)?([+-]?\d{1,3}(?:[,.\s]\d{3})*|[+-]?\d+)(?:\.00)?\s*(?:원|won|วอน|บาท|baht|thb)?$/iu;
 
 function isCommissionSeparatorLine(line) {
@@ -5335,10 +5336,20 @@ function extractCommissionItem(line) {
   }
 
   const codeMatch = clean.match(COMMISSION_CODE_PATTERN);
-  if (!codeMatch) return null;
+  if (codeMatch) {
+    const amount = parseCommissionAmount(codeMatch[2]);
+    if (amount !== null) {
+      return { type: "code", code: codeMatch[1].replace(/\s+/g, "").toUpperCase(), amount };
+    }
+  }
 
-  const amount = parseCommissionAmount(codeMatch[2]);
-  return amount === null ? null : { type: "code", code: codeMatch[1].replace(/\s+/g, "").toUpperCase(), amount };
+  // 코드뿐 아니라 "주간이벤트 - 50,000", "월간이벤트 - 100,000"처럼
+  // 임의의 항목명 뒤에 하이픈과 금액이 적힌 줄도 커미션 합산에 포함한다.
+  const namedItemMatch = clean.match(COMMISSION_NAMED_ITEM_PATTERN);
+  if (!namedItemMatch) return null;
+
+  const amount = parseCommissionAmount(namedItemMatch[2]);
+  return amount === null ? null : { type: "named", label: namedItemMatch[1].trim(), amount };
 }
 
 function cleanCommissionManagerName(line) {
