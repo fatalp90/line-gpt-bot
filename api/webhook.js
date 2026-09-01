@@ -4279,21 +4279,46 @@ function buildCreditReply(command, records) {
     `최근/관련 코드\n${recentRecords}`;
 }
 
-async function buildCustomerCreditReport(command) {
+async function buildCustomerCreditReports(command) {
   if (!SHEET_ID) {
-    return "⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다.";
+    return ["⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다."];
   }
 
   const accessToken = await getGoogleAccessToken();
   const values = await getSheetValues(accessToken);
+  return buildCustomerCreditReportsFromValues(command, values);
+}
+
+function buildCustomerCreditReportsFromValues(command, values) {
   const records = findCreditRecords(values, command);
 
   if (records.length || command.type === "code") {
-    return buildCreditReply(command, records);
+    const reports = [buildCreditReply(command, records)];
+
+    // 코드로 조회하면 가장 최근 거래의 고객 영문명을 이용해 이름 조회를 한 번 더 실행한다.
+    // 같은 고객이 과거에 다른 코드를 사용한 경우까지 두 번째 푸시에서 함께 확인할 수 있다.
+    if (command.type === "code" && records.length) {
+      const customerName = records
+        .slice()
+        .sort((a, b) =>
+          ((b.loanDateValue || 0) - (a.loanDateValue || 0))
+          || ((b.rowNumber || 0) - (a.rowNumber || 0))
+        )
+        .find(record => normalizeText(record.customerName))
+        ?.customerName;
+
+      if (customerName) {
+        const nameCommand = { type: "name", keyword: normalizeText(customerName) };
+        const nameRecords = findCreditRecords(values, nameCommand);
+        reports.push(`🔎 자동 영문이름 조회\n\n${buildCreditReply(nameCommand, nameRecords)}`);
+      }
+    }
+
+    return reports;
   }
 
   const candidates = findSimilarCustomerCandidates(values, command.keyword);
-  return buildSimilarCustomerReply(command.keyword, candidates);
+  return [buildSimilarCustomerReply(command.keyword, candidates)];
 }
 
 function hasDollarToday(values, topIndex0, todayColumnIndex0) {
@@ -6787,8 +6812,17 @@ export default async function handler(req, res) {
           continue;
         }
 
-        const creditReply = await buildCustomerCreditReport(creditCheckCommand);
-        await replyToLine(event.replyToken, creditReply);
+        const creditReplies = await buildCustomerCreditReports(creditCheckCommand);
+        await replyToLine(event.replyToken, creditReplies[0]);
+
+        // 코드 조회에서 고객 영문명이 확인되면 "영문이름/조회" 결과를 같은 대화방에 별도 푸시한다.
+        if (creditReplies.length > 1) {
+          const pushTargetId = getConversationKey(event);
+          await pushToLineMessages(
+            pushTargetId,
+            creditReplies.slice(1).map(buildTextMessage)
+          );
+        }
         continue;
       }
 
