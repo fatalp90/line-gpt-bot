@@ -2525,6 +2525,8 @@ function isTransferCompleteCommand(text) {
   return clean === "송금완료";
 }
 
+const TRANSFER_COMPLETE_CREDIT_MESSAGE = "รักษาเครดิตนะครับ";
+
 function buildTransferCompleteFlexMessage() {
   return {
     type: "flex",
@@ -6706,6 +6708,7 @@ export default async function handler(req, res) {
         }
 
         await replyToLineMessages(event.replyToken, [buildTransferCompleteFlexMessage()]);
+        await pushToLine(getConversationKey(event), TRANSFER_COMPLETE_CREDIT_MESSAGE);
         continue;
       }
 
