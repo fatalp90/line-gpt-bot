@@ -1119,6 +1119,18 @@ function parseRegisterGroupCommand(text) {
   };
 }
 
+function parseRegisterAdminGroupCommand(text) {
+  const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
+  const match = clean.match(/^([A-Za-z]{2})\/관리자등록$/i);
+  if (!match) return null;
+
+  const managerCode = match[1].toUpperCase();
+  return {
+    code: `ADMIN-${managerCode}`,
+    managerCode
+  };
+}
+
 
 function parseCloseCommand(text) {
   const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
@@ -1767,6 +1779,11 @@ function extractReferencedDateTokens(text) {
   return [...new Set(matches)].slice(0, 3);
 }
 
+function getAdminCodeFromGroupMapCode(groupCode) {
+  const match = String(groupCode || "").trim().toUpperCase().match(/^ADMIN-([A-Z]{2})$/);
+  return match ? match[1] : null;
+}
+
 async function ensureChatRiskLogSheet(accessToken) {
   const titles = await getSpreadsheetSheetTitles(accessToken);
   if (titles.includes(CHAT_RISK_LOG_SHEET_NAME)) return;
@@ -1814,6 +1831,8 @@ async function recordChatRiskMessage(event, text) {
 
   const accessToken = await getGoogleAccessToken();
   const groupCode = await findMappedCodeByGroupId(accessToken, groupId) || "";
+  // 고객방의 우연한 BAD/RUN은 저장하지 않고, XX/관리자등록을 마친 관리자방만 기록한다.
+  if (!getAdminCodeFromGroupMapCode(groupCode)) return false;
   await ensureChatRiskLogSheet(accessToken);
 
   const eventTimestamp = Number(event?.timestamp) || Date.now();
@@ -4495,6 +4514,7 @@ function findCustomerRiskMentions(command, customerValues, riskLogValues) {
     const timestamp = Number(row[8]) || 0;
 
     if (!keywords) continue;
+    if (!getAdminCodeFromGroupMapCode(groupCode)) continue;
     const matchedByCode = Boolean(groupCode && targets.codes.has(groupCode));
     const matchedByName = [...targets.names].some(name => messageMentionsCustomerName(originalText, name));
     if (!matchedByCode && !matchedByName) continue;
@@ -4521,7 +4541,8 @@ function buildCustomerRiskReportFromValues(command, customerValues, riskLogValue
 
   const visible = matches.slice(0, CHAT_RISK_RESULT_LIMIT);
   const lines = visible.map(item => {
-    const code = item.groupCode ? ` / ${item.groupCode}` : "";
+    const adminCode = getAdminCodeFromGroupMapCode(item.groupCode);
+    const code = adminCode ? ` / 관리자 ${adminCode}` : "";
     const referencedDates = extractReferencedDateTokens(item.originalText);
     const referencedDateText = referencedDates.length
       ? ` / 기재일 ${referencedDates.join(", ")}`
@@ -5828,7 +5849,7 @@ function koreanToEnglishKeyboard(text) {
 }
 
 const KOREAN_COMMAND_WORDS = [
-  "등록", "종료", "종결", "블랙", "조회", "카운트",
+  "등록", "관리자등록", "종료", "종결", "블랙", "조회", "카운트",
   "날짜변경", "날짜복구", "미등록", "내아이디", "관리자아이디확인",
   "송금완료", "오늘상환요청", "오늘상환요청테스트", "오늘상환오전", "오늘상환오후"
 ];
@@ -6964,6 +6985,23 @@ export default async function handler(req, res) {
       if (parseMyIdCommand(commandText)) {
         const userId = getLineUserId(event);
         await replyToLine(event.replyToken, userId ? `내아이디\n${userId}` : "⚠️ userId를 확인할 수 없습니다.");
+        continue;
+      }
+
+      const registerAdminGroupCommand = parseRegisterAdminGroupCommand(commandText);
+      if (registerAdminGroupCommand) {
+        if (!isAdmin(event)) {
+          await replyUnauthorized(event);
+          continue;
+        }
+
+        const registerReply = await registerGroupCode(registerAdminGroupCommand, event);
+        const adminReply = String(registerReply || "")
+          .replaceAll(
+            `${registerAdminGroupCommand.code} 그룹등록`,
+            `${registerAdminGroupCommand.managerCode} 관리자그룹 등록`
+          );
+        await replyToLine(event.replyToken, adminReply);
         continue;
       }
 
