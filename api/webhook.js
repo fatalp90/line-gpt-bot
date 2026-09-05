@@ -16,6 +16,11 @@ const DATE_END_COLUMN_INDEX = 41; // AP column, 0-based
 const CLOSED_BACKGROUND_RGB = { red: 0.8, green: 0.8, blue: 0.8 }; // #CCCCCC
 const CLOSED_TEXT_RGB = { red: 1, green: 0, blue: 0 }; // #FF0000
 const GROUP_MAP_SHEET_NAME = process.env.LINE_GROUP_MAP_SHEET_NAME || "LINE그룹매핑";
+const CHAT_RISK_LOG_SHEET_NAME = process.env.LINE_CHAT_RISK_LOG_SHEET_NAME || "LINE대화위험기록";
+const CHAT_RISK_RESULT_LIMIT_RAW = Number(process.env.LINE_CHAT_RISK_RESULT_LIMIT || 10);
+const CHAT_RISK_RESULT_LIMIT = Number.isFinite(CHAT_RISK_RESULT_LIMIT_RAW)
+  ? Math.max(1, Math.floor(CHAT_RISK_RESULT_LIMIT_RAW))
+  : 10;
 const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "")
   .split(",")
   .map(v => v.trim())
@@ -1738,6 +1743,110 @@ async function getGroupMapValues(accessToken) {
     headers: { Authorization: `Bearer ${accessToken}` }
   });
   return response.data.values || [];
+}
+
+function extractChatRiskKeywords(text) {
+  const clean = normalizeText(text);
+  if (!clean) return [];
+
+  const keywords = [];
+  // BAD뿐 아니라 BAAD, BAAAD, BAAAAD처럼 A를 늘여 쓴 표현도 같은 BAD로 기록한다.
+  if (/(^|[^A-Za-z])BA+D([^A-Za-z]|$)/i.test(clean)) keywords.push("BAD");
+  if (/(^|[^A-Za-z])RUN([^A-Za-z]|$)/i.test(clean)) keywords.push("RUN");
+  if (/블랙\s*리스트/.test(clean)) keywords.push("블랙리스트");
+  if (/조회\s*가능/.test(clean)) keywords.push("조회 가능");
+  return keywords;
+}
+
+function extractReferencedDateTokens(text) {
+  const clean = normalizeText(text);
+  if (!clean) return [];
+
+  // 06/09, 6-9, 06.09, 2026/06/09처럼 대화 안에 직접 적은 날짜를 원문 그대로 보존한다.
+  const matches = clean.match(/(?:\b\d{4}[./-])?\d{1,2}[./-]\d{1,2}\b/g) || [];
+  return [...new Set(matches)].slice(0, 3);
+}
+
+async function ensureChatRiskLogSheet(accessToken) {
+  const titles = await getSpreadsheetSheetTitles(accessToken);
+  if (titles.includes(CHAT_RISK_LOG_SHEET_NAME)) return;
+
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}:batchUpdate`;
+  try {
+    await axios.post(
+      url,
+      { requests: [{ addSheet: { properties: { title: CHAT_RISK_LOG_SHEET_NAME } } }] },
+      { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+    );
+  } catch (err) {
+    // 배포 직후 여러 메시지가 동시에 들어오면 시트 생성 요청이 겹칠 수 있다.
+    // 이미 같은 이름의 시트가 만들어진 경우만 계속 진행한다.
+    const status = err?.response?.status;
+    const message = String(err?.response?.data?.error?.message || err?.message || "");
+    if (status !== 400 || !/already exists|이미 존재/i.test(message)) throw err;
+  }
+
+  const headerRange = `'${escapeSheetName(CHAT_RISK_LOG_SHEET_NAME)}'!A1:I1`;
+  const headerUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(headerRange)}?valueInputOption=RAW`;
+  await axios.put(
+    headerUrl,
+    { range: headerRange, majorDimension: "ROWS", values: [[
+      "기록ID", "발생일시(KST)", "그룹ID", "그룹코드", "작성자ID", "키워드", "원문", "메시지ID", "타임스탬프(ms)"
+    ]] },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+}
+
+async function getChatRiskLogValues(accessToken) {
+  await ensureChatRiskLogSheet(accessToken);
+  const range = `'${escapeSheetName(CHAT_RISK_LOG_SHEET_NAME)}'!A:I`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`;
+  const response = await axios.get(url, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  return response.data.values || [];
+}
+
+async function recordChatRiskMessage(event, text) {
+  const keywords = extractChatRiskKeywords(text);
+  const groupId = getLineSourceGroupId(event);
+  if (!keywords.length || !groupId || !SHEET_ID) return false;
+
+  const accessToken = await getGoogleAccessToken();
+  const groupCode = await findMappedCodeByGroupId(accessToken, groupId) || "";
+  await ensureChatRiskLogSheet(accessToken);
+
+  const eventTimestamp = Number(event?.timestamp) || Date.now();
+  const messageId = String(event?.message?.id || "");
+  const recordId = messageId || crypto
+    .createHash("sha256")
+    .update(`${groupId}|${eventTimestamp}|${text}`, "utf8")
+    .digest("hex")
+    .slice(0, 24);
+  const range = `'${escapeSheetName(CHAT_RISK_LOG_SHEET_NAME)}'!A:I`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
+
+  await axios.post(
+    url,
+    {
+      range,
+      majorDimension: "ROWS",
+      values: [[
+        recordId,
+        getKoreaDateTimeText(new Date(eventTimestamp)),
+        groupId,
+        groupCode,
+        getLineUserId(event),
+        keywords.join(", "),
+        text,
+        messageId,
+        eventTimestamp
+      ]]
+    },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+
+  return true;
 }
 
 async function ensureReceiptPendingSheet(accessToken) {
@@ -4323,6 +4432,136 @@ function buildCustomerCreditReportsFromValues(command, values) {
   return [buildSimilarCustomerReply(command.keyword, candidates)];
 }
 
+function getCustomerRiskLookupTargets(command, customerValues) {
+  const directRecords = findCreditRecords(customerValues, command);
+  const relatedRecords = [...directRecords];
+  const names = new Set();
+  const codes = new Set();
+
+  if (command.type === "code") codes.add(command.keyword);
+  else names.add(normalizeText(command.keyword));
+
+  for (const record of directRecords) {
+    if (record.code) codes.add(record.code);
+    if (normalizeText(record.customerName)) names.add(normalizeText(record.customerName));
+  }
+
+  // 코드 조회인 경우 같은 영문 이름으로 등록된 과거/다른 코드도 함께 연결한다.
+  if (command.type === "code" && names.size) {
+    for (const name of names) {
+      const nameRecords = findCreditRecords(customerValues, { type: "name", keyword: name });
+      for (const record of nameRecords) relatedRecords.push(record);
+    }
+  }
+
+  for (const record of relatedRecords) {
+    if (record.code) codes.add(record.code);
+    if (normalizeText(record.customerName)) names.add(normalizeText(record.customerName));
+  }
+
+  return {
+    codes,
+    names,
+    displayName: [...names][0] || command.keyword
+  };
+}
+
+function messageMentionsCustomerName(messageText, customerName) {
+  const source = normalizeText(messageText)
+    .toLowerCase()
+    .replace(/[^a-z0-9가-힣\u0E00-\u0E7F]/g, "");
+  if (!source) return false;
+
+  for (const variant of getCustomerNameSearchVariants(customerName)) {
+    const cleanVariant = String(variant || "").replace(/[^a-z0-9가-힣\u0E00-\u0E7F]/g, "");
+    if (cleanVariant && source.includes(cleanVariant)) return true;
+  }
+  return false;
+}
+
+function findCustomerRiskMentions(command, customerValues, riskLogValues) {
+  const targets = getCustomerRiskLookupTargets(command, customerValues);
+  const matches = [];
+  const seen = new Set();
+
+  for (let i = 1; i < (riskLogValues || []).length; i += 1) {
+    const row = riskLogValues[i] || [];
+    const recordId = String(row[0] || row[7] || `${i}`);
+    const occurredAt = String(row[1] || "날짜없음");
+    const groupId = String(row[2] || "");
+    const groupCode = String(row[3] || "").trim().toUpperCase();
+    const keywords = String(row[5] || "").trim();
+    const originalText = String(row[6] || "");
+    const timestamp = Number(row[8]) || 0;
+
+    if (!keywords) continue;
+    const matchedByCode = Boolean(groupCode && targets.codes.has(groupCode));
+    const matchedByName = [...targets.names].some(name => messageMentionsCustomerName(originalText, name));
+    if (!matchedByCode && !matchedByName) continue;
+    if (seen.has(recordId)) continue;
+    seen.add(recordId);
+
+    matches.push({ recordId, occurredAt, groupId, groupCode, keywords, originalText, timestamp });
+  }
+
+  return {
+    targets,
+    matches: matches.sort((a, b) => b.timestamp - a.timestamp)
+  };
+}
+
+function buildCustomerRiskReportFromValues(command, customerValues, riskLogValues) {
+  const { targets, matches } = findCustomerRiskMentions(command, customerValues, riskLogValues);
+  const title = "🔎 대화 위험 키워드 조회";
+  const nameLine = `고객명: ${targets.displayName || command.keyword}`;
+
+  if (!matches.length) {
+    return `${title}\n\n${nameLine}\n관련 기록 없음\n\n※ 기능 적용 이후 기록만 조회됩니다.`;
+  }
+
+  const visible = matches.slice(0, CHAT_RISK_RESULT_LIMIT);
+  const lines = visible.map(item => {
+    const code = item.groupCode ? ` / ${item.groupCode}` : "";
+    const referencedDates = extractReferencedDateTokens(item.originalText);
+    const referencedDateText = referencedDates.length
+      ? ` / 기재일 ${referencedDates.join(", ")}`
+      : "";
+    return `${item.occurredAt}${code} / ${item.keywords}${referencedDateText}`;
+  });
+  const remainder = matches.length > visible.length
+    ? `\n외 ${matches.length - visible.length}건`
+    : "";
+
+  return `${title}\n\n${nameLine}\n총 ${matches.length}건\n\n${lines.join("\n")}${remainder}\n\n※ 기능 적용 이후 기록만 조회됩니다.`;
+}
+
+async function buildCustomerCreditLookup(command) {
+  if (!SHEET_ID) {
+    return {
+      creditReplies: ["⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다."],
+      riskReply: null
+    };
+  }
+
+  const accessToken = await getGoogleAccessToken();
+  const customerValues = await getSheetValues(accessToken);
+  const creditReplies = buildCustomerCreditReportsFromValues(command, customerValues);
+
+  try {
+    const riskLogValues = await getChatRiskLogValues(accessToken);
+    return {
+      creditReplies,
+      riskReply: buildCustomerRiskReportFromValues(command, customerValues, riskLogValues)
+    };
+  } catch (err) {
+    console.error(`[CHAT RISK LOOKUP FAIL] keyword=${command.keyword} error=${err?.response?.data?.error?.message || err?.message || err}`);
+    return {
+      creditReplies,
+      riskReply: "⚠️ 대화 위험 키워드 기록을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
+    };
+  }
+}
+
 function hasDollarToday(values, topIndex0, todayColumnIndex0) {
   const topRow = values[topIndex0] || [];
   const bottomRow = values[topIndex0 + 1] || [];
@@ -6691,6 +6930,16 @@ export default async function handler(req, res) {
       if (!text) continue;
       const commandText = normalizeEnglishKeyboardCommand(text);
 
+      // BAD·블랙리스트·조회 가능이 언급된 그룹 메시지만 장기 기록한다.
+      // 기록 실패가 기존 번역/명령 기능을 막지 않도록 오류는 로그만 남긴다.
+      if (extractChatRiskKeywords(text).length) {
+        try {
+          await recordChatRiskMessage(event, text);
+        } catch (err) {
+          console.error(`[CHAT RISK RECORD FAIL] messageId=${event.message?.id || "-"} error=${err?.response?.data?.error?.message || err?.message || err}`);
+        }
+      }
+
       const commissionSummary = parseCommissionSummary(text);
       if (commissionSummary) {
         // 일반 텍스트로 보내야 LINE PC에서는 우클릭 복사,
@@ -6815,15 +7064,20 @@ export default async function handler(req, res) {
           continue;
         }
 
-        const creditReplies = await buildCustomerCreditReports(creditCheckCommand);
+        const { creditReplies, riskReply } = await buildCustomerCreditLookup(creditCheckCommand);
         await replyToLine(event.replyToken, creditReplies[0]);
 
-        // 코드 조회에서 고객 영문명이 확인되면 "영문이름/조회" 결과를 같은 대화방에 별도 푸시한다.
-        if (creditReplies.length > 1) {
+        // 자동 영문이름 조회와 대화 위험 키워드 결과를 한 번의 추가 push 요청에 묶는다.
+        // 메시지 객체가 여러 개여도 LINE은 같은 요청의 수신자 수를 기준으로 집계한다.
+        const extraCreditMessages = [
+          ...creditReplies.slice(1),
+          riskReply
+        ].filter(Boolean);
+        if (extraCreditMessages.length) {
           const pushTargetId = getConversationKey(event);
           await pushToLineMessages(
             pushTargetId,
-            creditReplies.slice(1).map(buildTextMessage)
+            extraCreditMessages.map(buildTextMessage)
           );
         }
         continue;
