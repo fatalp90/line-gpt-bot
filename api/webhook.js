@@ -1841,10 +1841,11 @@ function isLikelyCustomerEnglishName(text) {
   return /^[A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){1,5}$/.test(clean);
 }
 
-function getQuotedSourceTextFromRiskLog(riskLogValues, quotedMessageId) {
+function getQuotedSourceTextFromRiskLog(riskLogValues, quotedMessageId, groupId = "", eventTimestamp = Date.now()) {
   const targetId = String(quotedMessageId || "").trim();
   if (!targetId) return "";
 
+  // 1순위: LINE이 전달한 quotedMessageId와 봇 발송 메시지 ID를 직접 연결한다.
   for (let i = (riskLogValues || []).length - 1; i >= 1; i -= 1) {
     const row = riskLogValues[i] || [];
     const messageId = String(row[7] || "").trim();
@@ -1853,6 +1854,25 @@ function getQuotedSourceTextFromRiskLog(riskLogValues, quotedMessageId) {
       return normalizeText(row[6]);
     }
   }
+
+  // 일부 환경에서 발송 응답 ID가 정상 보존되지 않는 경우를 대비한다.
+  // 같은 관리자/PP01 그룹에서 답장 직전 30분 이내에 봇이 보낸 가장 최근 영문 고객명만 보조 연결한다.
+  const cleanGroupId = String(groupId || "").trim();
+  const replyTimestamp = Number(eventTimestamp) || Date.now();
+  const fallbackWindowMs = 30 * 60 * 1000;
+  let best = null;
+  for (let i = 1; i < (riskLogValues || []).length; i += 1) {
+    const row = riskLogValues[i] || [];
+    const rowGroupId = String(row[2] || "").trim();
+    const authorId = String(row[4] || "").trim().toUpperCase();
+    const sourceText = normalizeText(row[6]);
+    const timestamp = Number(row[8]) || 0;
+    if (!cleanGroupId || rowGroupId !== cleanGroupId || authorId !== "BOT") continue;
+    if (!isLikelyCustomerEnglishName(sourceText)) continue;
+    if (!timestamp || timestamp > replyTimestamp || replyTimestamp - timestamp > fallbackWindowMs) continue;
+    if (!best || timestamp > best.timestamp) best = { sourceText, timestamp };
+  }
+  if (best) return best.sourceText;
   return "";
 }
 
@@ -1863,8 +1883,8 @@ function mergeRiskMessageWithQuotedSource(text, quotedSourceText) {
   return `답장대상: ${sourceText}\n답변: ${replyText}`;
 }
 
-async function rememberSentLineTextMessages(messages, lineResponse) {
-  if (!SHEET_ID) return false;
+async function rememberSentLineTextMessages(messages, lineResponse, destinationId = "") {
+  if (!SHEET_ID || !destinationId) return false;
 
   const sentMessages = lineResponse?.data?.sentMessages || [];
   const rows = [];
@@ -1893,6 +1913,14 @@ async function rememberSentLineTextMessages(messages, lineResponse) {
   if (!rows.length) return false;
 
   const accessToken = await getGoogleAccessToken();
+  const groupCode = await findMappedCodeByGroupId(accessToken, destinationId) || "";
+  // 답장 연결용 봇 고객명도 관리자 그룹과 PP01에서만 저장한다.
+  if (!getRiskTrackingGroupLabel(groupCode)) return false;
+
+  for (const row of rows) {
+    row[2] = destinationId;
+    row[3] = groupCode;
+  }
   await ensureChatRiskLogSheet(accessToken);
   const range = `'${escapeSheetName(CHAT_RISK_LOG_SHEET_NAME)}'!A:I`;
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
@@ -1904,9 +1932,9 @@ async function rememberSentLineTextMessages(messages, lineResponse) {
   return true;
 }
 
-async function rememberSentLineTextMessagesSafely(messages, lineResponse) {
+async function rememberSentLineTextMessagesSafely(messages, lineResponse, destinationId = "") {
   try {
-    return await rememberSentLineTextMessages(messages, lineResponse);
+    return await rememberSentLineTextMessages(messages, lineResponse, destinationId);
   } catch (err) {
     // LINE 발송 자체는 이미 성공했으므로, 답장 연결용 보조 기록 실패 때문에 기존 기능을 실패시키지 않는다.
     console.error(`[LINE SENT MESSAGE RECORD FAIL] ${err?.response?.data?.error?.message || err?.message || err}`);
@@ -1925,15 +1953,20 @@ async function recordChatRiskMessage(event, text) {
   if (!getRiskTrackingGroupLabel(groupCode)) return false;
   await ensureChatRiskLogSheet(accessToken);
 
+  const eventTimestamp = Number(event?.timestamp) || Date.now();
   const quotedMessageId = String(event?.message?.quotedMessageId || "").trim();
   let recordedText = text;
   if (quotedMessageId) {
     const riskLogValues = await getChatRiskLogValues(accessToken);
-    const quotedSourceText = getQuotedSourceTextFromRiskLog(riskLogValues, quotedMessageId);
+    const quotedSourceText = getQuotedSourceTextFromRiskLog(
+      riskLogValues,
+      quotedMessageId,
+      groupId,
+      eventTimestamp
+    );
     recordedText = mergeRiskMessageWithQuotedSource(text, quotedSourceText);
   }
 
-  const eventTimestamp = Number(event?.timestamp) || Date.now();
   const messageId = String(event?.message?.id || "");
   const recordId = messageId || crypto
     .createHash("sha256")
@@ -3917,7 +3950,7 @@ async function pushToLine(to, text, retryKey = null) {
     },
     { headers }
   );
-  await rememberSentLineTextMessagesSafely(messages, response);
+  await rememberSentLineTextMessagesSafely(messages, response, to);
   return response;
 }
 
@@ -3936,7 +3969,7 @@ async function pushToLineMessages(to, messages, retryKey = null) {
     { to, messages },
     { headers }
   );
-  await rememberSentLineTextMessagesSafely(messages, response);
+  await rememberSentLineTextMessagesSafely(messages, response, to);
   return response;
 }
 
@@ -6274,7 +6307,7 @@ function buildContextText(history) {
     .join("\n");
 }
 
-async function replyToLine(replyToken, text) {
+async function replyToLine(replyToken, text, destinationId = "") {
   const messages = [{ type: "text", text }];
   const response = await axios.post(
     "https://api.line.me/v2/bot/message/reply",
@@ -6289,11 +6322,11 @@ async function replyToLine(replyToken, text) {
       }
     }
   );
-  await rememberSentLineTextMessagesSafely(messages, response);
+  await rememberSentLineTextMessagesSafely(messages, response, destinationId);
   return response;
 }
 
-async function replyToLineMessages(replyToken, messages) {
+async function replyToLineMessages(replyToken, messages, destinationId = "") {
   const response = await axios.post(
     "https://api.line.me/v2/bot/message/reply",
     { replyToken, messages },
@@ -6304,7 +6337,7 @@ async function replyToLineMessages(replyToken, messages) {
       }
     }
   );
-  await rememberSentLineTextMessagesSafely(messages, response);
+  await rememberSentLineTextMessagesSafely(messages, response, destinationId);
   return response;
 }
 
@@ -7342,7 +7375,7 @@ export default async function handler(req, res) {
       if (!translated) continue;
 
       saveHistory(conversationKey, text, translated);
-      await replyToLine(event.replyToken, translated);
+      await replyToLine(event.replyToken, translated, conversationKey);
 
     } catch (err) {
       console.error(err);
