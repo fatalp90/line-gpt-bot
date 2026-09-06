@@ -1824,6 +1824,88 @@ async function getChatRiskLogValues(accessToken) {
   return response.data.values || [];
 }
 
+function isLikelyCustomerEnglishName(text) {
+  const clean = normalizeText(text).replace(/\s+/g, " ");
+  if (!clean || clean.length > 120) return false;
+
+  // 봇이 단독으로 보낸 영문 고객명(예: OANGKHANA MUNTHULI)만 답장 연결용으로 보존한다.
+  // 일반 번역 메시지 전체를 계속 저장하지 않아 시트 증가와 Google API 호출을 줄인다.
+  return /^[A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){1,5}$/.test(clean);
+}
+
+function getQuotedSourceTextFromRiskLog(riskLogValues, quotedMessageId) {
+  const targetId = String(quotedMessageId || "").trim();
+  if (!targetId) return "";
+
+  for (let i = (riskLogValues || []).length - 1; i >= 1; i -= 1) {
+    const row = riskLogValues[i] || [];
+    const messageId = String(row[7] || "").trim();
+    const authorId = String(row[4] || "").trim().toUpperCase();
+    if (messageId === targetId && authorId === "BOT") {
+      return normalizeText(row[6]);
+    }
+  }
+  return "";
+}
+
+function mergeRiskMessageWithQuotedSource(text, quotedSourceText) {
+  const replyText = normalizeText(text);
+  const sourceText = normalizeText(quotedSourceText);
+  if (!sourceText) return replyText;
+  return `답장대상: ${sourceText}\n답변: ${replyText}`;
+}
+
+async function rememberSentLineTextMessages(messages, lineResponse) {
+  if (!SHEET_ID) return false;
+
+  const sentMessages = lineResponse?.data?.sentMessages || [];
+  const rows = [];
+  const timestamp = Date.now();
+  const occurredAt = getKoreaDateTimeText(new Date(timestamp));
+
+  for (let i = 0; i < (messages || []).length; i += 1) {
+    const message = messages[i] || {};
+    const text = message.type === "text" ? normalizeText(message.text) : "";
+    const messageId = String(sentMessages[i]?.id || "").trim();
+    if (!messageId || !isLikelyCustomerEnglishName(text)) continue;
+
+    rows.push([
+      `BOT-${messageId}`,
+      occurredAt,
+      "",
+      "",
+      "BOT",
+      "",
+      text,
+      messageId,
+      timestamp
+    ]);
+  }
+
+  if (!rows.length) return false;
+
+  const accessToken = await getGoogleAccessToken();
+  await ensureChatRiskLogSheet(accessToken);
+  const range = `'${escapeSheetName(CHAT_RISK_LOG_SHEET_NAME)}'!A:I`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
+  await axios.post(
+    url,
+    { range, majorDimension: "ROWS", values: rows },
+    { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
+  );
+  return true;
+}
+
+async function rememberSentLineTextMessagesSafely(messages, lineResponse) {
+  try {
+    return await rememberSentLineTextMessages(messages, lineResponse);
+  } catch (err) {
+    // LINE 발송 자체는 이미 성공했으므로, 답장 연결용 보조 기록 실패 때문에 기존 기능을 실패시키지 않는다.
+    console.error(`[LINE SENT MESSAGE RECORD FAIL] ${err?.response?.data?.error?.message || err?.message || err}`);
+    return false;
+  }
+}
+
 async function recordChatRiskMessage(event, text) {
   const keywords = extractChatRiskKeywords(text);
   const groupId = getLineSourceGroupId(event);
@@ -1834,6 +1916,14 @@ async function recordChatRiskMessage(event, text) {
   // 고객방의 우연한 BAD/RUN은 저장하지 않고, XX/관리자등록을 마친 관리자방만 기록한다.
   if (!getAdminCodeFromGroupMapCode(groupCode)) return false;
   await ensureChatRiskLogSheet(accessToken);
+
+  const quotedMessageId = String(event?.message?.quotedMessageId || "").trim();
+  let recordedText = text;
+  if (quotedMessageId) {
+    const riskLogValues = await getChatRiskLogValues(accessToken);
+    const quotedSourceText = getQuotedSourceTextFromRiskLog(riskLogValues, quotedMessageId);
+    recordedText = mergeRiskMessageWithQuotedSource(text, quotedSourceText);
+  }
 
   const eventTimestamp = Number(event?.timestamp) || Date.now();
   const messageId = String(event?.message?.id || "");
@@ -1857,7 +1947,7 @@ async function recordChatRiskMessage(event, text) {
         groupCode,
         getLineUserId(event),
         keywords.join(", "),
-        text,
+        recordedText,
         messageId,
         eventTimestamp
       ]]
@@ -3810,14 +3900,17 @@ async function pushToLine(to, text, retryKey = null) {
     headers["X-Line-Retry-Key"] = retryKey;
   }
 
-  return axios.post(
+  const messages = [{ type: "text", text }];
+  const response = await axios.post(
     "https://api.line.me/v2/bot/message/push",
     {
       to,
-      messages: [{ type: "text", text }]
+      messages
     },
     { headers }
   );
+  await rememberSentLineTextMessagesSafely(messages, response);
+  return response;
 }
 
 async function pushToLineMessages(to, messages, retryKey = null) {
@@ -3830,11 +3923,13 @@ async function pushToLineMessages(to, messages, retryKey = null) {
     headers["X-Line-Retry-Key"] = retryKey;
   }
 
-  return axios.post(
+  const response = await axios.post(
     "https://api.line.me/v2/bot/message/push",
     { to, messages },
     { headers }
   );
+  await rememberSentLineTextMessagesSafely(messages, response);
+  return response;
 }
 
 // 오늘상환오전/오후/요청 발송 속도 설정
@@ -6172,11 +6267,12 @@ function buildContextText(history) {
 }
 
 async function replyToLine(replyToken, text) {
-  return axios.post(
+  const messages = [{ type: "text", text }];
+  const response = await axios.post(
     "https://api.line.me/v2/bot/message/reply",
     {
       replyToken,
-      messages: [{ type: "text", text }]
+      messages
     },
     {
       headers: {
@@ -6185,10 +6281,12 @@ async function replyToLine(replyToken, text) {
       }
     }
   );
+  await rememberSentLineTextMessagesSafely(messages, response);
+  return response;
 }
 
 async function replyToLineMessages(replyToken, messages) {
-  return axios.post(
+  const response = await axios.post(
     "https://api.line.me/v2/bot/message/reply",
     { replyToken, messages },
     {
@@ -6198,6 +6296,8 @@ async function replyToLineMessages(replyToken, messages) {
       }
     }
   );
+  await rememberSentLineTextMessagesSafely(messages, response);
+  return response;
 }
 
 async function askOpenAI({ systemPrompt, userText, history = [], convertWonToThai = false }) {
