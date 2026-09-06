@@ -1895,10 +1895,18 @@ async function rememberSentLineTextMessages(messages, lineResponse, destinationI
     const message = messages[i] || {};
     const text = message.type === "text" ? normalizeText(message.text) : "";
     const messageId = String(sentMessages[i]?.id || "").trim();
-    if (!messageId || !isLikelyCustomerEnglishName(text)) continue;
+    if (!isLikelyCustomerEnglishName(text)) continue;
+
+    // LINE 응답에 sentMessages.id가 없는 환경에서도 그룹/시간 기반 답장 연결이 가능하도록
+    // 고객명 자체는 반드시 저장하고, 기록ID만 안전한 대체값을 사용한다.
+    const fallbackId = crypto
+      .createHash("sha256")
+      .update(`${destinationId}|${timestamp}|${i}|${text}`, "utf8")
+      .digest("hex")
+      .slice(0, 24);
 
     rows.push([
-      `BOT-${messageId}`,
+      `BOT-${messageId || fallbackId}`,
       occurredAt,
       "",
       "",
