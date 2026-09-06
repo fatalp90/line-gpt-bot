@@ -3958,7 +3958,6 @@ async function pushToLine(to, text, retryKey = null) {
     },
     { headers }
   );
-  await rememberSentLineTextMessagesSafely(messages, response, to);
   return response;
 }
 
@@ -3977,7 +3976,6 @@ async function pushToLineMessages(to, messages, retryKey = null) {
     { to, messages },
     { headers }
   );
-  await rememberSentLineTextMessagesSafely(messages, response, to);
   return response;
 }
 
@@ -4703,28 +4701,14 @@ function buildCustomerRiskReportFromValues(command, customerValues, riskLogValue
 async function buildCustomerCreditLookup(command) {
   if (!SHEET_ID) {
     return {
-      creditReplies: ["⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다."],
-      riskReply: null
+      creditReplies: ["⚠️ GOOGLE_SHEET_ID 환경변수가 설정되지 않았습니다."]
     };
   }
 
   const accessToken = await getGoogleAccessToken();
   const customerValues = await getSheetValues(accessToken);
   const creditReplies = buildCustomerCreditReportsFromValues(command, customerValues);
-
-  try {
-    const riskLogValues = await getChatRiskLogValues(accessToken);
-    return {
-      creditReplies,
-      riskReply: buildCustomerRiskReportFromValues(command, customerValues, riskLogValues)
-    };
-  } catch (err) {
-    console.error(`[CHAT RISK LOOKUP FAIL] keyword=${command.keyword} error=${err?.response?.data?.error?.message || err?.message || err}`);
-    return {
-      creditReplies,
-      riskReply: "⚠️ 대화 위험 키워드 기록을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
-    };
-  }
+  return { creditReplies };
 }
 
 function hasDollarToday(values, topIndex0, todayColumnIndex0) {
@@ -6330,7 +6314,6 @@ async function replyToLine(replyToken, text, destinationId = "") {
       }
     }
   );
-  await rememberSentLineTextMessagesSafely(messages, response, destinationId);
   return response;
 }
 
@@ -6345,7 +6328,6 @@ async function replyToLineMessages(replyToken, messages, destinationId = "") {
       }
     }
   );
-  await rememberSentLineTextMessagesSafely(messages, response, destinationId);
   return response;
 }
 
@@ -7100,16 +7082,6 @@ export default async function handler(req, res) {
       if (!text) continue;
       const commandText = normalizeEnglishKeyboardCommand(text);
 
-      // BAD·블랙리스트·조회 가능이 언급된 그룹 메시지만 장기 기록한다.
-      // 기록 실패가 기존 번역/명령 기능을 막지 않도록 오류는 로그만 남긴다.
-      if (extractChatRiskKeywords(text).length) {
-        try {
-          await recordChatRiskMessage(event, text);
-        } catch (err) {
-          console.error(`[CHAT RISK RECORD FAIL] messageId=${event.message?.id || "-"} error=${err?.response?.data?.error?.message || err?.message || err}`);
-        }
-      }
-
       const commissionSummary = parseCommissionSummary(text);
       if (commissionSummary) {
         // 일반 텍스트로 보내야 LINE PC에서는 우클릭 복사,
@@ -7251,15 +7223,12 @@ export default async function handler(req, res) {
           continue;
         }
 
-        const { creditReplies, riskReply } = await buildCustomerCreditLookup(creditCheckCommand);
+        const { creditReplies } = await buildCustomerCreditLookup(creditCheckCommand);
         await replyToLine(event.replyToken, creditReplies[0]);
 
-        // 자동 영문이름 조회와 대화 위험 키워드 결과를 한 번의 추가 push 요청에 묶는다.
-        // 메시지 객체가 여러 개여도 LINE은 같은 요청의 수신자 수를 기준으로 집계한다.
-        const extraCreditMessages = [
-          ...creditReplies.slice(1),
-          riskReply
-        ].filter(Boolean);
+        // 코드 조회 시 기존 자동 영문이름 조회만 추가 푸시한다.
+        // 대화 위험 키워드 기록/조회 기능은 사용하지 않는다.
+        const extraCreditMessages = creditReplies.slice(1).filter(Boolean);
         if (extraCreditMessages.length) {
           const pushTargetId = getConversationKey(event);
           await pushToLineMessages(
