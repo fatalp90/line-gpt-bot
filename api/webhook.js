@@ -1784,6 +1784,14 @@ function getAdminCodeFromGroupMapCode(groupCode) {
   return match ? match[1] : null;
 }
 
+function getRiskTrackingGroupLabel(groupCode) {
+  const cleanCode = String(groupCode || "").trim().toUpperCase();
+  const adminCode = getAdminCodeFromGroupMapCode(cleanCode);
+  if (adminCode) return `관리자 ${adminCode}`;
+  if (cleanCode === "PP01") return "PP01";
+  return "";
+}
+
 async function ensureChatRiskLogSheet(accessToken) {
   const titles = await getSpreadsheetSheetTitles(accessToken);
   if (titles.includes(CHAT_RISK_LOG_SHEET_NAME)) return;
@@ -1913,8 +1921,8 @@ async function recordChatRiskMessage(event, text) {
 
   const accessToken = await getGoogleAccessToken();
   const groupCode = await findMappedCodeByGroupId(accessToken, groupId) || "";
-  // 고객방의 우연한 BAD/RUN은 저장하지 않고, XX/관리자등록을 마친 관리자방만 기록한다.
-  if (!getAdminCodeFromGroupMapCode(groupCode)) return false;
+  // 고객방의 우연한 BAD/RUN은 저장하지 않고, 관리자방과 테스트용 PP01방만 기록한다.
+  if (!getRiskTrackingGroupLabel(groupCode)) return false;
   await ensureChatRiskLogSheet(accessToken);
 
   const quotedMessageId = String(event?.message?.quotedMessageId || "").trim();
@@ -4609,7 +4617,7 @@ function findCustomerRiskMentions(command, customerValues, riskLogValues) {
     const timestamp = Number(row[8]) || 0;
 
     if (!keywords) continue;
-    if (!getAdminCodeFromGroupMapCode(groupCode)) continue;
+    if (!getRiskTrackingGroupLabel(groupCode)) continue;
     const matchedByCode = Boolean(groupCode && targets.codes.has(groupCode));
     const matchedByName = [...targets.names].some(name => messageMentionsCustomerName(originalText, name));
     if (!matchedByCode && !matchedByName) continue;
@@ -4636,8 +4644,8 @@ function buildCustomerRiskReportFromValues(command, customerValues, riskLogValue
 
   const visible = matches.slice(0, CHAT_RISK_RESULT_LIMIT);
   const lines = visible.map(item => {
-    const adminCode = getAdminCodeFromGroupMapCode(item.groupCode);
-    const code = adminCode ? ` / 관리자 ${adminCode}` : "";
+    const groupLabel = getRiskTrackingGroupLabel(item.groupCode);
+    const code = groupLabel ? ` / ${groupLabel}` : "";
     const referencedDates = extractReferencedDateTokens(item.originalText);
     const referencedDateText = referencedDates.length
       ? ` / 기재일 ${referencedDates.join(", ")}`
