@@ -473,7 +473,8 @@ const CHECK_OVER_MANAGER_MAP = {
   MO: "모나",
   JB: "수연",
   TT: "지아",
-  KO: "콥"
+  KO: "콥",
+  DH: "하나"
 };
 
 function getAdminNameByCustomerCode(code) {
