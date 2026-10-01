@@ -3553,14 +3553,14 @@ function buildPassportOcrResult(parsed) {
   };
 }
 
-function buildPassportInfoMessage(passport) {
-  if (!passport?.fullName) return "";
-  // 세 항목을 텍스트 메시지 하나로 전송한다. 기존 이름 단독 메시지는 따로 보내지 않는다.
+function buildPassportInfoMessages(passport) {
+  if (!passport?.fullName) return [];
+  // 이름 → 여권번호 → 생년월일을 각각 복사할 수 있는 독립된 텍스트 메시지로 만든다.
   return [
     passport.fullName,
     normalizePassportNumber(passport.passportNumber) || "여권번호 확인 불가",
     normalizePassportDateOfBirth(passport.dateOfBirth) || "생년월일 확인 불가"
-  ].join("\n");
+  ].map(text => buildTextMessage(text));
 }
 
 async function callPassportOcrOpenAI(image) {
@@ -3662,7 +3662,7 @@ async function queuePassportNameReply(event, passportResult) {
   });
 
   // 고객이 여권을 1장 또는 2장 연속으로 보낼 수 있으므로 잠깐 모은 뒤,
-  // 가장 신뢰도가 높은 여권 하나의 세 항목을 한 메시지로 보낸다.
+  // 가장 신뢰도가 높은 여권 하나의 세 항목을 순서대로 세 메시지로 보낸다.
   // 서로 다른 사진의 이름/여권번호/생년월일을 섞어서 만들지 않는다.
   await new Promise(resolve => setTimeout(resolve, PASSPORT_BATCH_WAIT_MS));
 
@@ -3675,8 +3675,8 @@ async function queuePassportNameReply(event, passportResult) {
   )[0];
   if (!best?.fullName) return;
 
-  const message = buildPassportInfoMessage(best);
-  const fingerprint = crypto.createHash("sha256").update(message, "utf8").digest("hex");
+  const messages = buildPassportInfoMessages(best);
+  const fingerprint = crypto.createHash("sha256").update(JSON.stringify(messages), "utf8").digest("hex");
   // 동일한 사진을 연속으로 처리해도 짧은 캐시 유지 시간 동안 동일 결과는 다시 보내지 않는다.
   // 전송 완료 후 이름/번호/생년월일 원문은 후보 목록에서 비우고 비교용 해시만 남긴다.
   passportBatchCache.set(sourceId, {
@@ -3688,7 +3688,8 @@ async function queuePassportNameReply(event, passportResult) {
   if (latest.lastSentFingerprint === fingerprint) return;
 
   try {
-    await pushToLine(sourceId, message);
+    // 하나의 push 요청에 세 메시지를 담아 순서를 유지하고, 합친 메시지는 추가로 보내지 않는다.
+    await pushToLineMessages(sourceId, messages);
   } catch (err) {
     const current = passportBatchCache.get(sourceId);
     if (current?.lastSentFingerprint === fingerprint) {
