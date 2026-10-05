@@ -130,29 +130,12 @@ function markMessageProcessing(event) {
 
 const LINE_CUSTOMER_START_ROW = 1058;
 const LINE_CUSTOMER_START_INDEX0 = LINE_CUSTOMER_START_ROW - 1;
-const REPAYMENT_IGNORE_NOTICE = "(※ หากโอนเงินแล้ว หรือวันนี้ไม่ใช่วันชำระของคุณ กรุณาไม่ต้องสนใจข้อความนี้)";
 const SHINHAN_LOGO_URL = String(
   process.env.SHINHAN_LOGO_URL
   || "https://www.shinhangroup.com/resources/publish/kr/images/common/favicon_192_192.png"
 ).trim();
 
-const REPAYMENT_MORNING_MESSAGE = `📌 วันนี้เป็นวันชำระ
-โอนภายในเวลา 20:00 น.
-
-👉ธนาคาร SHINHAN BANK
-👉ชื่อบช. 110551366954
-👉ชื่อ  CHAYAPONE
-
-${REPAYMENT_IGNORE_NOTICE}`;
-
-const REPAYMENT_AFTERNOON_MESSAGE = `📌 เวลา 20:00 น. แล้ว
-รีบโอนเงินด้วยครับ
-
-👉ธนาคาร SHINHAN BANK
-👉ชื่อบช. 110551366954
-👉ชื่อ  CHAYAPONE
-
-${REPAYMENT_IGNORE_NOTICE}`;
+const REPAYMENT_FOLLOWUP_MESSAGE = `ยังไม่ได้รับการยืนยันยอดโอน กรุณารีบโอนเงิน หากไม่โอนเงิน จะดำเนินการติดตามทวงถามหนี้ภาคบังคับในขั้นที่ 2`;
 
 function buildPaymentRequestFlexMessage() {
   return {
@@ -2849,6 +2832,7 @@ ${PASSPORT_DETAILS_OCR_INSTRUCTIONS}
 은행/금융앱 이체 화면이면 document_type="receipt", is_passport=false로 둔다.
 화면의 가장 중요한 실제 송금액 문구를 통화 단위까지 그대로 displayed_amount_text에 적는다. 예: "40,000 KRW", "2,500.00 THB". 실제 송금 숫자는 amount_value에 넣고 currency는 KRW, THB, OTHER, UNKNOWN 중 하나로 구분한다.
 통화 판정은 앱 언어, 태국어 문구, 사용자 국적, 앱 이름이 아니라 displayed_amount_text의 단위를 최우선으로 한다. 태국어 화면이어도 실제 송금액이 "40,000 KRW"이면 무조건 currency="KRW"이며 정상 원화 이체다. 수취인이 CHAYAPONE/Shinhan Bank/110551366954이고 송금액이 KRW이면 특히 원화 입금으로 판정한다. 수수료나 잔액의 통화가 아니라 실제 송금액의 통화를 사용한다.
+태국어 통화 단위 "วอน"은 한국 원(KRW)이며 태국 바트가 아니다. "50,000 วอน", "50,000วอน", "50,000 WON"은 모두 currency="KRW", amount_value=50000, amount_won=50000이다. "บาท", "THB", "฿"는 태국 바트다. 예를 들어 "โอนเงินเสร็จสิ้นแล้ว", "50,000 วอน", 수취계좌(บัญชีขารับ) "088-SHINHAN 110-55-1366-954", 출금계좌(บัญชีถอนเงิน) "004-KOOKMIN", 잔액(ยอดคงเหลือหลังถอน) "2,332,735วอน"이 보이면 원화 이체 완료 화면이다. 이 경우 is_transfer_receipt=true, currency="KRW", displayed_amount_text="50,000 วอน", amount_value=50000, amount_won=50000, balance_won=2332735, account_number="110551366954"로 반환한다. 출금계좌를 수취계좌로 선택하지 말고, 화면에 없는 이름과 날짜는 추측하지 마라.
 실제 송금액 자체가 THB이고 태국 은행 사이에서 송금한 화면만 currency="THB", receipt_kind="thai_domestic_transfer"로 둔다. 예: Bangkok Bank 화면의 실제 송금액이 2,500.00 THB이면 displayed_amount_text="2,500.00 THB", amount_value=2500, amount_won=null이다. 한국 원화 송금이면 currency="KRW"로 두고 amount_won에도 원화 송금액을 넣는다. 태국 불기 연도 2569 또는 축약 연도 69는 서기 2026년으로 변환해 transfer_date에 기록한다.
 둘 다 아니면 document_type="other", is_passport=false, is_transfer_receipt=false로 둔다.
 모든 결과는 document_type, is_passport, is_transfer_receipt, surname, given_names, mrz_line1, passport_number, date_of_birth 필드를 포함한 JSON 하나로만 출력한다.
@@ -3011,7 +2995,7 @@ ${receiptSystemPrompt}`;
   const isTransferReceipt = parsed?.is_transfer_receipt === true || parsed?.is_transfer_receipt === "true";
   const modelCurrency = String(parsed?.currency || "UNKNOWN").trim().toUpperCase();
   const displayedAmountText = String(parsed?.displayed_amount_text || "").trim().toUpperCase();
-  const explicitDisplayedCurrency = /(?:\bKRW\b|₩|원)/i.test(displayedAmountText)
+  const explicitDisplayedCurrency = /(?:KRW|₩|원|วอน|\bWON\b)/i.test(displayedAmountText)
     ? "KRW"
     : /(?:\bTHB\b|฿|บาท)/i.test(displayedAmountText)
       ? "THB"
@@ -4084,7 +4068,7 @@ async function pushToLineMessages(to, messages, retryKey = null) {
   return response;
 }
 
-// 오늘상환오전/오후/요청 발송 속도 설정
+// 상환요청/상환요청1 발송 속도 설정
 // 기존에는 1건씩 순차 발송 + 건별 대기시간으로 느렸기 때문에,
 // 기본값을 병렬 발송으로 변경한다.
 // 필요 시 환경변수 LINE_PUSH_CONCURRENCY로 동시 발송 개수를 조절 가능.
@@ -4146,35 +4130,15 @@ async function pushToLineWithRetry(code, groupId, message) {
   };
 }
 
-function parseTodayRepaymentBroadcastCommand(text) {
+function parseRepaymentBroadcastCommand(text) {
   const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
-  const match = clean.match(/^(오늘상환요청|오늘상환오전|오늘상환오후)(?:\/([A-Za-z0-9가-힣_-]{1,10}))?$/);
+  const match = clean.match(/^(상환요청1|상환요청)(?:\/([A-Za-z0-9가-힣_-]{1,10}))?$/);
+  if (!match) return null;
 
-  if (!match) {
-    return null;
-  }
-
-  const command = match[1];
   const codePrefix = match[2] ? match[2].trim().toUpperCase() : "";
-
-  if (command === "오늘상환요청") {
-    return { type: "payment", message: buildPaymentRequestFlexMessage(), codePrefix };
-  }
-
-  if (command === "오늘상환오전") {
-    return { type: "morning", message: REPAYMENT_MORNING_MESSAGE, codePrefix };
-  }
-
-  if (command === "오늘상환오후") {
-    return { type: "afternoon", message: REPAYMENT_AFTERNOON_MESSAGE, codePrefix };
-  }
-
-  return null;
-}
-
-function parseTodayRepaymentTestCommand(text) {
-  const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
-  return clean === "오늘상환요청테스트";
+  return match[1] === "상환요청1"
+    ? { type: "followup", message: REPAYMENT_FOLLOWUP_MESSAGE, codePrefix }
+    : { type: "payment", message: buildPaymentRequestFlexMessage(), codePrefix };
 }
 
 function buildRepaymentAdminResultFlexMessage(resultText) {
@@ -6084,7 +6048,7 @@ function koreanToEnglishKeyboard(text) {
 const KOREAN_COMMAND_WORDS = [
   "등록", "관리자등록", "종료", "종결", "블랙", "조회", "카운트",
   "날짜변경", "날짜복구", "미등록", "내아이디", "관리자아이디확인",
-  "송금완료", "오늘상환요청", "오늘상환요청테스트", "오늘상환오전", "오늘상환오후"
+  "송금완료", "상환요청", "상환요청1"
 ];
 const ENGLISH_KEYBOARD_COMMAND_ALIASES = new Map(
   KOREAN_COMMAND_WORDS.map(word => [koreanToEnglishKeyboard(word), word])
@@ -6125,8 +6089,8 @@ function normalizeEnglishKeyboardCommand(text) {
     return `${clean.slice(0, -countMatch[0].length)}/카운트${countMatch[2]}`;
   }
 
-  // 오늘상환... 명령어 뒤의 선택 코드(/KN 등)는 그대로 둔다.
-  for (const word of ["오늘상환요청", "오늘상환오전", "오늘상환오후"]) {
+  // 상환요청/상환요청1 명령어 뒤의 선택 코드(/KN 등)는 그대로 둔다.
+  for (const word of ["상환요청1", "상환요청"]) {
     const alias = koreanToEnglishKeyboard(word);
     const head = clean.slice(0, alias.length);
     if (normalizeDubeolsikKeyCase(head) === alias && (clean.length === alias.length || clean.charAt(alias.length) === "/")) {
@@ -7275,45 +7239,16 @@ export default async function handler(req, res) {
         continue;
       }
 
-      if (parseTodayRepaymentTestCommand(commandText)) {
-        if (!isAdmin(event)) {
-          await replyUnauthorized(event);
-          continue;
-        }
-
-        const testGroupId = event?.source?.groupId || "";
-        if (!testGroupId) {
-          await replyToLine(event.replyToken, "⚠️ 오늘상환요청테스트 명령은 LINE 그룹방에서만 사용할 수 있습니다.");
-          continue;
-        }
-
-        const testResult = await pushToLineWithRetry(
-          "REPAYMENT_TEST",
-          testGroupId,
-          buildPaymentRequestFlexMessage()
-        );
-
-        if (!testResult.ok) {
-          await replyToLine(event.replyToken, `❌ 테스트 메시지 발송 실패\n\n${testResult.error || "발송 실패"}`);
-        } else {
-          await replyToLine(
-            event.replyToken,
-            "✅ 오늘상환요청 테스트 완료\n\n현재 그룹방에만 테스트 메시지를 발송했습니다.\n실제 고객 대상 조회 및 발송은 실행하지 않았습니다."
-          );
-        }
-        continue;
-      }
-
-      const todayRepaymentBroadcastCommand = parseTodayRepaymentBroadcastCommand(commandText);
-      if (todayRepaymentBroadcastCommand) {
+      const repaymentBroadcastCommand = parseRepaymentBroadcastCommand(commandText);
+      if (repaymentBroadcastCommand) {
         if (!isAdmin(event)) {
           await replyUnauthorized(event);
           continue;
         }
 
         const broadcastReply = await sendTodayRepaymentBroadcast(
-          todayRepaymentBroadcastCommand.message,
-          todayRepaymentBroadcastCommand.codePrefix
+          repaymentBroadcastCommand.message,
+          repaymentBroadcastCommand.codePrefix
         );
         if (broadcastReply) {
           await replyToLineMessages(event.replyToken, [buildRepaymentAdminResultFlexMessage(broadcastReply)]);
