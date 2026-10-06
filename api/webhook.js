@@ -4267,13 +4267,13 @@ function buildRepaymentAdminResultFlexMessage(resultText) {
 
 function parseUnregisteredCheckCommand(text) {
   const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
-  return clean === "미등록";
+  return clean === "그룹미등록";
 }
 
 // PP01 관리자 확인방에서 등록 버튼을 아직 누르지 않은 대기 항목 조회
 function parsePendingRegistrationCheckCommand(text) {
   const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
-  return clean === "/미등록";
+  return clean === "미등록" || clean === "/미등록";
 }
 
 function parseMyIdCommand(text) {
@@ -6132,7 +6132,7 @@ function koreanToEnglishKeyboard(text) {
 
 const KOREAN_COMMAND_WORDS = [
   "등록", "관리자등록", "종료", "종결", "블랙", "조회", "카운트",
-  "날짜변경", "날짜복구", "미등록", "내아이디", "관리자아이디확인",
+  "날짜변경", "날짜복구", "미등록", "그룹미등록", "내아이디", "관리자아이디확인",
   "송금완료", "상환요청", "상환요청1"
 ];
 const ENGLISH_KEYBOARD_COMMAND_ALIASES = new Map(
@@ -6149,7 +6149,7 @@ function normalizeEnglishKeyboardCommand(text) {
   const clean = normalizeText(text);
   if (!clean) return clean;
 
-  // 단독 명령어. /미등록은 기존의 별도 기능 구분을 그대로 유지한다.
+  // 단독 명령어. 미등록과 /미등록은 동일한 대기 항목 조회로 처리한다.
   const hasLeadingSlash = clean.startsWith("/");
   const standalone = hasLeadingSlash ? clean.slice(1) : clean;
   const standaloneWord = ENGLISH_KEYBOARD_COMMAND_ALIASES.get(normalizeDubeolsikKeyCase(standalone))
@@ -7047,7 +7047,7 @@ async function resendPendingRegistrationButtons(event) {
   const approvalGroupId = await getReceiptApprovalGroupId(accessToken);
   const sourceGroupId = getLineSourceGroupId(event);
   if (!approvalGroupId || !sourceGroupId || sourceGroupId !== approvalGroupId) {
-    await replyToLine(event.replyToken, `⚠️ /미등록은 ${RECEIPT_APPROVAL_GROUP_CODE} 그룹에서만 사용할 수 있습니다.`);
+    await replyToLine(event.replyToken, `⚠️ 미등록은 ${RECEIPT_APPROVAL_GROUP_CODE} 그룹에서만 사용할 수 있습니다.`);
     return;
   }
 
@@ -7091,7 +7091,7 @@ export async function checkPendingRegistrations(event) {
 
   // 명령어는 등록 확인방(PP01)에서만 실행한다.
   if (!approvalGroupId || !sourceGroupId || sourceGroupId !== approvalGroupId) {
-    return `⚠️ /미등록은 ${RECEIPT_APPROVAL_GROUP_CODE} 그룹에서만 사용할 수 있습니다.`;
+    return `⚠️ 미등록은 ${RECEIPT_APPROVAL_GROUP_CODE} 그룹에서만 사용할 수 있습니다.`;
   }
 
   const [receiptItems, checkOverItems] = await Promise.all([
