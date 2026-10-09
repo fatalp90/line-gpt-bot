@@ -6854,10 +6854,17 @@ function extractTranslationFacts(text) {
   // Explicit Korean / Thai month dates can change wording without changing value.
   const months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"];
   const monthShort = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+  // Normalize only inside this comparison, never rewrite the user's message.
+  // เดือน 11- เดือน 1 / เดือน 11-1 -> named months; 11 เดือน is a duration.
+  rest = rest.replace(/เดือน\s*(1[0-2]|0?[1-9])(?![\d/.])(?:\s*(?:[-–—~]|ถึง)\s*(?:เดือน\s*)?(1[0-2]|0?[1-9])(?![\d/.]))?/g,
+    (_, first, last) => `เดือน${months[Number(first) - 1]}${last ? ` ถึงเดือน${months[Number(last) - 1]}` : ""}`);
+  // Korean may omit the first 월: 11~1월 / 11-1월.
+  rest = rest.replace(/(?<![\d/.-])(1[0-2]|0?[1-9])\s*([-–—~])\s*(1[0-2]|0?[1-9])\s*월/g,
+    (_, first, separator, last) => `${first}월${separator}${last}월`);
   const dateKey = (year, month, day) => `date:${year ? Number(year) : ""}:${Number(month)}:${Number(day)}`;
   take(/(?:(\d{4})\s*년\s*)?(\d{1,2})\s*월\s*(\d{1,2})\s*일/g, (_, y, m, d) => dateKey(y, m, d));
   const monthPattern = [...months, ...monthShort].map(m => m.replace(/\./g, "\\.")).join("|");
-  take(new RegExp(`(?:วันที่\\s*)?(\\d{1,2})\\s*(${monthPattern})(?:\\s+(?:พ\\.ศ\\.\\s*|ค\\.ศ\\.\\s*)?(\\d{4}))?`, "g"),
+  take(new RegExp(`(?:วันที่\\s*)?(\\d{1,2})\\s*(?:เดือน\\s*)?(${monthPattern})(?:\\s+(?:พ\\.ศ\\.\\s*|ค\\.ศ\\.\\s*)?(\\d{4}))?`, "g"),
     (_, d, month, y) => dateKey(y, months.includes(month) ? months.indexOf(month) + 1 : monthShort.indexOf(month) + 1, d));
   take(/(\d{1,2})\s*월/g, (_, month) => `month:${Number(month)}`);
   take(new RegExp(`(?:เดือน\\s*)?(${monthPattern})`, "g"),
