@@ -798,10 +798,17 @@ function buildCheckOverApprovalFlexMessage(command, params, cancelParams) {
         paddingAll: "10px",
         contents: [
           { type: "text", text: `📥 ${RECEIPT_APPROVAL_GROUP_CODE} Check Over 등록 대기`, weight: "bold", size: "sm", wrap: true },
-          { type: "text", text: `${command.productCode} · 관리자 ${command.adminName}`, weight: "bold", size: "sm", wrap: true },
+          { type: "separator", margin: "sm" },
+          { type: "box", layout: "horizontal", spacing: "sm", margin: "sm", contents: [
+            { type: "text", text: `관리자 : ${command.adminName}`, size: "sm", weight: "bold", flex: 1, wrap: true },
+            { type: "text", text: `코드 : ${command.productCode}`, size: "sm", weight: "bold", flex: 1, wrap: true }
+          ] },
           { type: "text", text: `고객명 : ${command.customerName || "-"}`, size: "sm", wrap: true },
           { type: "text", text: `상품금액 : ${command.productAmount.toLocaleString("ko-KR")}`, size: "xs", wrap: true },
-          { type: "text", text: `대출금 : ${formatAmountValue(command.loanAmount)} · 공제 : ${formatAmountValue(command.cut)}`, size: "xs", wrap: true }
+          { type: "box", layout: "horizontal", spacing: "sm", contents: [
+            { type: "text", text: `대출금 : ${formatAmountValue(command.loanAmount)}`, size: "xs", flex: 1, wrap: true },
+            { type: "text", text: `공제 : ${formatAmountValue(command.cut)}`, size: "xs", flex: 1, wrap: true }
+          ] }
         ]
       },
       footer: {
@@ -3181,17 +3188,10 @@ function buildReceiptCustomerAnalysisText({ code, amountWon, sheetValue, senderN
 
 function buildReceiptApprovalFlexMessage({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, dataBase }) {
   const amountText = Number(amountWon).toLocaleString("ko-KR");
-  const reviewText = buildReceiptMatchText({ senderName, accountNumber })
+  const reviewFields = buildReceiptMatchText({ senderName, accountNumber })
     .replace("입금자명 확인 : ", "이름 ")
     .replace("계좌번호 확인 : ", "계좌 ")
-    .replace("\n", " · ");
-  const fields = [
-    `${code} · ${amountText}원 (시트값 ${sheetValue})`,
-    `입금자 : ${senderName || "-"}`,
-    `계좌 : ${accountNumber || "-"}`,
-    `이체일시 : ${transferDate || "-"}`,
-    reviewText
-  ];
+    .split("\n");
 
   return {
     type: "flex",
@@ -3206,7 +3206,14 @@ function buildReceiptApprovalFlexMessage({ code, amountWon, sheetValue, senderNa
         paddingAll: "10px",
         contents: [
           { type: "text", text: `📥 ${RECEIPT_APPROVAL_GROUP_CODE} 입금 등록 대기`, weight: "bold", size: "sm", wrap: true },
-          ...fields.map((text, idx) => ({ type: "text", text, size: idx === 0 ? "sm" : "xs", weight: idx === 0 ? "bold" : "regular", wrap: true, margin: "none" }))
+          { type: "separator", margin: "sm" },
+          { type: "text", text: `${code} · ${amountText}원`, size: "sm", weight: "bold", wrap: true, margin: "sm" },
+          { type: "box", layout: "horizontal", spacing: "sm", contents: [
+            { type: "text", text: `입금자 : ${senderName || "-"}`, size: "xs", flex: 1, wrap: true },
+            { type: "text", text: `계좌 : ${accountNumber || "-"}`, size: "xs", flex: 1, wrap: true }
+          ] },
+          { type: "text", text: `이체일시 : ${transferDate || "-"}`, size: "xs", wrap: true },
+          { type: "box", layout: "horizontal", spacing: "sm", contents: reviewFields.map(text => ({ type: "text", text, size: "xs", flex: 1, wrap: true })) }
         ]
       },
       footer: {
