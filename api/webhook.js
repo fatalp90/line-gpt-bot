@@ -3288,7 +3288,7 @@ ${formatWon(receipt.won)} รับโอนเรียบร้อย
 }
 
 function buildReceiptDoneFlexMessage(receipt, dateTimeText = getKoreaDateTimeText()) {
-  const codeText = `${receipt.code}/${receipt.value}`;
+  const codeText = `${receipt.code}`;
   const amountText = formatWon(receipt.won);
 
   return {
