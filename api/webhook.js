@@ -794,23 +794,24 @@ function buildCheckOverApprovalFlexMessage(command, params, cancelParams) {
       body: {
         type: "box",
         layout: "vertical",
-        spacing: "sm",
+        spacing: "xs",
+        paddingAll: "10px",
         contents: [
-          { type: "text", text: `📥 ${RECEIPT_APPROVAL_GROUP_CODE} Check Over 등록 대기`, weight: "bold", size: "md", wrap: true },
-          { type: "separator", margin: "md" },
-          { type: "text", text: `관리자 : ${command.adminName}`, size: "sm", wrap: true, margin: "md" },
-          { type: "text", text: `코드 : ${command.productCode}`, size: "sm", wrap: true },
+          { type: "text", text: `📥 ${RECEIPT_APPROVAL_GROUP_CODE} Check Over 등록 대기`, weight: "bold", size: "sm", wrap: true },
+          { type: "text", text: `${command.productCode} · 관리자 ${command.adminName}`, weight: "bold", size: "sm", wrap: true },
           { type: "text", text: `고객명 : ${command.customerName || "-"}`, size: "sm", wrap: true },
-          { type: "text", text: `상품금액 : ${command.productAmount.toLocaleString("ko-KR")}`, size: "sm", wrap: true },
-          { type: "text", text: `대출금 : ${formatAmountValue(command.loanAmount)}`, size: "sm", wrap: true },
-          { type: "text", text: `공제 : ${formatAmountValue(command.cut)}`, size: "sm", wrap: true },
-          { type: "text", text: "등록하시겠습니까?", weight: "bold", size: "sm", wrap: true, margin: "md" }
+          { type: "text", text: `상품금액 : ${command.productAmount.toLocaleString("ko-KR")}`, size: "xs", wrap: true },
+          { type: "text", text: `대출금 : ${formatAmountValue(command.loanAmount)} · 공제 : ${formatAmountValue(command.cut)}`, size: "xs", wrap: true }
         ]
       },
       footer: {
         type: "box",
         layout: "horizontal",
         spacing: "sm",
+        paddingTop: "0px",
+        paddingBottom: "8px",
+        paddingStart: "10px",
+        paddingEnd: "10px",
         contents: [
           { type: "button", style: "primary", color: "#1E88E5", height: "sm", action: { type: "postback", label: "등록", data: params.toString(), displayText: "등록" } },
           { type: "button", style: "secondary", height: "sm", action: { type: "postback", label: "취소", data: cancelParams.toString(), displayText: "취소" } }
