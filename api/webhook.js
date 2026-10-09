@@ -3180,15 +3180,16 @@ function buildReceiptCustomerAnalysisText({ code, amountWon, sheetValue, senderN
 
 function buildReceiptApprovalFlexMessage({ code, amountWon, sheetValue, senderName, accountNumber, transferDate, dataBase }) {
   const amountText = Number(amountWon).toLocaleString("ko-KR");
-  const reviewText = buildReceiptMatchText({ senderName, accountNumber }).split("\n");
+  const reviewText = buildReceiptMatchText({ senderName, accountNumber })
+    .replace("입금자명 확인 : ", "이름 ")
+    .replace("계좌번호 확인 : ", "계좌 ")
+    .replace("\n", " · ");
   const fields = [
-    `코드 : ${code}`,
-    `입금액 : ${amountText}원`,
-    `시트값 : ${sheetValue}`,
+    `${code} · ${amountText}원 (시트값 ${sheetValue})`,
     `입금자 : ${senderName || "-"}`,
     `계좌 : ${accountNumber || "-"}`,
     `이체일시 : ${transferDate || "-"}`,
-    ...reviewText
+    reviewText
   ];
 
   return {
@@ -3200,18 +3201,21 @@ function buildReceiptApprovalFlexMessage({ code, amountWon, sheetValue, senderNa
       body: {
         type: "box",
         layout: "vertical",
-        spacing: "sm",
+        spacing: "xs",
+        paddingAll: "10px",
         contents: [
-          { type: "text", text: `📥 ${RECEIPT_APPROVAL_GROUP_CODE} 입금 등록 대기`, weight: "bold", size: "md", wrap: true },
-          { type: "separator", margin: "md" },
-          ...fields.map((text, idx) => ({ type: "text", text, size: "sm", wrap: true, margin: idx === 0 ? "md" : "none" })),
-          { type: "text", text: "입금 등록하시겠습니까?", weight: "bold", size: "sm", wrap: true, margin: "md" }
+          { type: "text", text: `📥 ${RECEIPT_APPROVAL_GROUP_CODE} 입금 등록 대기`, weight: "bold", size: "sm", wrap: true },
+          ...fields.map((text, idx) => ({ type: "text", text, size: idx === 0 ? "sm" : "xs", weight: idx === 0 ? "bold" : "regular", wrap: true, margin: "none" }))
         ]
       },
       footer: {
         type: "box",
         layout: "horizontal",
         spacing: "sm",
+        paddingTop: "0px",
+        paddingBottom: "8px",
+        paddingStart: "10px",
+        paddingEnd: "10px",
         contents: [
           { type: "button", style: "primary", height: "sm", action: { type: "postback", label: "등록", data: `${dataBase}&action=confirm`, displayText: "등록" } },
           { type: "button", style: "secondary", height: "sm", action: { type: "postback", label: "취소", data: `${dataBase}&action=cancel`, displayText: "취소" } }
@@ -3296,69 +3300,41 @@ function buildReceiptDoneFlexMessage(receipt, dateTimeText = getKoreaDateTimeTex
         type: "box",
         layout: "vertical",
         alignItems: "center",
-        spacing: "md",
-        paddingAll: "24px",
+        spacing: "xs",
+        paddingAll: "10px",
         contents: [
           {
             type: "text",
-            text: "✅",
-            size: "5xl",
-            align: "center"
-          },
-          {
-            type: "text",
-            text: "รับโอนเรียบร้อย",
+            text: "✅ รับโอนเรียบร้อย",
             weight: "bold",
-            size: "lg",
+            size: "sm",
             align: "center",
             wrap: true
           },
           {
             type: "text",
             text: "입금 확인 완료",
-            size: "sm",
+            size: "xs",
             color: "#888888",
             align: "center",
             wrap: true
           },
           {
-            type: "separator",
-            margin: "lg"
+            type: "text",
+            text: `${codeText} · ${amountText}`,
+            size: "md",
+            weight: "bold",
+            color: "#333333",
+            align: "center",
+            wrap: true
           },
           {
-            type: "box",
-            layout: "vertical",
-            spacing: "sm",
-            margin: "lg",
-            width: "100%",
-            contents: [
-              {
-                type: "text",
-                text: `👤 ${codeText}`,
-                size: "md",
-                weight: "bold",
-                color: "#333333",
-                align: "center",
-                wrap: true
-              },
-              {
-                type: "text",
-                text: `💰 ${amountText}`,
-                size: "md",
-                weight: "bold",
-                color: "#333333",
-                align: "center",
-                wrap: true
-              },
-              {
-                type: "text",
-                text: `🕒 ${dateTimeText}`,
-                size: "sm",
-                color: "#888888",
-                align: "center",
-                wrap: true
-              }
-            ]
+            type: "text",
+            text: `🕒 ${dateTimeText}`,
+            size: "xs",
+            color: "#888888",
+            align: "center",
+            wrap: true
           }
         ]
       }
