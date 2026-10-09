@@ -2771,6 +2771,20 @@ function buildTextMessage(text, quickReply) {
   };
 }
 
+function isDailyProductMenuCommand(text) {
+  // 문장에 포함된 단어는 번역 흐름을 유지하고, 단독 명령어만 처리한다.
+  return normalizeText(text) === "라이완";
+}
+
+function buildDailyProductMenuText() {
+  return [
+    "★ ดอกลอย 25,000 × 10 วัน",
+    "★ ทุกวัน 10 วัน 50,000 × 10 งวด",
+    "★ ทุกวัน 12 วัน 45,000 × 12 งวด",
+    "★ ทุกวัน 15 วัน 40,000 × 15 งวด"
+  ].join("\n");
+}
+
 function isTransferCompleteCommand(text) {
   const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
   return clean === "송금완료";
@@ -7235,6 +7249,12 @@ export default async function handler(req, res) {
       const text = normalizeText(event.message.text);
       if (!text) continue;
       const commandText = normalizeEnglishKeyboardCommand(text);
+
+      if (isDailyProductMenuCommand(text)) {
+        // 입력한 대화방에 네 상품을 한 번의 텍스트 push로 보내고 번역은 생략한다.
+        await pushToLine(getConversationKey(event), buildDailyProductMenuText());
+        continue;
+      }
 
       const commissionSummary = parseCommissionSummary(text);
       if (commissionSummary) {
