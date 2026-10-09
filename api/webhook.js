@@ -2205,6 +2205,50 @@ function makeReceiptPendingId(receiptKey, sourceGroupId) {
   return crypto.createHash("sha256").update(raw, "utf8").digest("hex").slice(0, 20);
 }
 
+// A shared Sheets lock, not an instance-local cache. Never expire a lock while
+// its owner may still be writing money. A crashed owner requires manual review
+// before removing its PLP_RECEIPT_LOCK_* named range (no cell data is changed).
+async function acquireReceiptGroupLock(accessToken, sourceGroupId) {
+  if (!sourceGroupId) throw new Error("입금 처리 고객방을 확인할 수 없습니다.");
+  await ensureReceiptPendingSheet(accessToken);
+  const base = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}`;
+  const options = { headers: { Authorization: `Bearer ${accessToken}` }, timeout: 15000 };
+  const metadata = await axios.get(`${base}?fields=sheets(properties(sheetId,title))`, options);
+  const sheetId = metadata.data.sheets?.find(s => s.properties?.title === RECEIPT_PENDING_SHEET_NAME)?.properties?.sheetId;
+  if (sheetId === undefined) throw new Error("등록대기 시트를 확인할 수 없습니다.");
+  const id = `plp_receipt_${crypto.createHash("sha256").update(sourceGroupId).digest("hex").slice(0, 32)}`;
+  const owner = `PLP_RECEIPT_LOCK_${Date.now()}_${crypto.randomBytes(8).toString("hex")}`;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    try {
+      await axios.post(`${base}:batchUpdate`, { requests: [{ addNamedRange: { namedRange: {
+        namedRangeId: id, name: owner,
+        range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 1 }
+      } } }] }, options);
+      return async () => {
+        // Do not retry deletion: after a lost response another worker could own it.
+        try {
+          await axios.post(`${base}:batchUpdate`, { requests: [{ deleteNamedRange: { namedRangeId: id } }] }, options);
+        } catch (err) {
+          console.error(`[RECEIPT LOCK RELEASE FAILED] ${id}: ${err?.message}`);
+        }
+      };
+    } catch (err) {
+      const message = String(err?.response?.data?.error?.message || "");
+      if (err?.response?.status !== 400 || !/already exists/i.test(message)) throw err;
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+  }
+  throw new Error("같은 고객방의 입금을 처리 중입니다. 완료 메시지를 확인해주세요. 계속되면 등록대기 기록과 처리 잠금 확인이 필요합니다.");
+}
+
+function receiptDatesConflict(a, b) {
+  const left = normalizeTransferDate(a);
+  const right = normalizeTransferDate(b);
+  if (!/^\d{4}-\d{2}-\d{2}/.test(left) || !/^\d{4}-\d{2}-\d{2}/.test(right)) return false;
+  if (left.slice(0, 10) !== right.slice(0, 10)) return true;
+  return left.length >= 16 && right.length >= 16 && left.slice(0, 16) !== right.slice(0, 16);
+}
+
 async function appendReceiptPending(accessToken, item) {
   await ensureReceiptPendingSheet(accessToken);
   const nowText = getKoreaDateTimeText();
@@ -2298,16 +2342,18 @@ async function findReceiptDuplicatePendingByKeys(accessToken, keys = {}) {
       return pending;
     }
 
-    // 3) 유사키는 위/아래로 나눠 찍은 캡처의 "등록 대기 중복"만 막는다.
-    //    이미 완료/취소된 과거 입금은 매일 같은 금액 고객을 막을 수 있으므로 제외한다.
+    // 3) 최근 같은 금액은 중복 가능성으로 분류한다. 첫 사진을 이미
+    //    승인했어도 늦게 분석된 두 번째 사진이 새 버튼을 만들지 않는다.
+    //    취소 건과 시간 범위 밖의 과거 입금은 제외한다.
     if (
       nearDuplicateKey &&
       pending.nearDuplicateKey &&
       pending.nearDuplicateKey === nearDuplicateKey &&
-      ["pending", "processing"].includes(status) &&
+      !receiptDatesConflict(pending.transferDate, keys.transferDate) &&
+      ["pending", "processing", "confirmed"].includes(status) &&
       isFreshReceiptPending(pending)
     ) {
-      return pending;
+      return { ...pending, possibleDuplicate: true };
     }
   }
 
@@ -2322,7 +2368,7 @@ async function updateReceiptPendingStatus(accessToken, pending, status) {
   await axios.put(
     url,
     { range, majorDimension: "ROWS", values: [[
-      status, pending.sourceGroupId || "", pending.approvalGroupId || "", pending.code || "", pending.sheetValue || "", pending.amountWon || "", pending.senderName || "", pending.accountNumber || "", pending.transferDate || "", pending.imageKey || "", pending.infoKey || "", pending.nearDuplicateKey || "", "", nowText
+      status, pending.sourceGroupId || "", pending.approvalGroupId || "", pending.code || "", pending.sheetValue || "", pending.amountWon || "", pending.senderName || "", pending.accountNumber || "", pending.transferDate || "", pending.imageKey || "", pending.infoKey || "", pending.nearDuplicateKey || "", pending.createdAt || "", nowText
     ]] },
     { headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" } }
   );
@@ -3891,7 +3937,10 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
       accountNumber: result.accountNumber
     });
 
-    let existing = receiptCacheGet(imageKey) || receiptCacheGet(infoKey) || receiptCacheGet(nearDuplicateKey);
+    const releaseReceiptLock = await acquireReceiptGroupLock(accessToken, sourceGroupId);
+    try {
+    // Always re-read durable state while holding the cross-instance lock.
+    let existing = null;
     if (!existing) {
       try {
         // Vercel/서버리스 환경에서는 연속 이미지가 서로 다른 인스턴스에서 처리될 수 있어
@@ -3901,7 +3950,8 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
         existing = await findReceiptDuplicatePendingByKeys(accessToken, {
           imageKey,
           infoKey,
-          nearDuplicateKey
+          nearDuplicateKey,
+          transferDate: result.transferDate
         });
         if (existing) {
           receiptCacheSet(imageKey, existing);
@@ -3911,13 +3961,20 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
         }
       } catch (err) {
         console.error(`[RECEIPT DUPLICATE SHEET CHECK FAIL] code=${code} error=${err?.response?.data?.error?.message || err?.message || err}`);
+        throw err;
       }
     }
 
     if (existing) {
       // 같은 송금내역을 스크롤해서 위/아래 2장으로 보낸 경우에는
       // 등록 버튼과 PP01 푸시를 다시 만들지 않고 PP01에 이미 생성된 기존 요청만 사용하게 한다.
-      await replyToLine(event.replyToken, buildReceiptDuplicateText(existing));
+      if (existing.possibleDuplicate) {
+        const approvalId = existing.approvalGroupId || await getReceiptApprovalGroupId(accessToken);
+        if (approvalId) await pushToLine(approvalId, `⚠️ 중복 입금사진 확인 필요\n${code} / ${formatWon(result.amountWon)}\n최근 같은 금액의 요청(${existing.status})이 있어 추가 버튼을 만들지 않았습니다. 상하로 나눈 사진이면 기존 요청만 처리하세요. 실제 별도 입금이면 이체일시와 내역을 확인한 후 수동 등록해주세요.`);
+      }
+      await replyToLine(event.replyToken, existing.possibleDuplicate
+        ? "최근 같은 금액의 요청이 있어 관리자에게 중복 여부 확인을 요청했습니다. 추가 등록 버튼은 생성하지 않았습니다."
+        : buildReceiptDuplicateText(existing));
       return;
     }
 
@@ -3941,15 +3998,12 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
       accountNumber: result.accountNumber,
       transferDate: result.transferDate
     };
+    // A failed or uncertain append must never produce an actionable card.
+    await appendReceiptPending(accessToken, cacheItem);
     receiptCacheSet(imageKey, cacheItem);
     receiptCacheSet(infoKey, cacheItem);
     receiptCacheSet(nearDuplicateKey, cacheItem, RECEIPT_NEAR_DUPLICATE_TTL_MS);
     receiptCacheSet(pendingId, cacheItem);
-    try {
-      await appendReceiptPending(accessToken, cacheItem);
-    } catch (err) {
-      console.error(`[RECEIPT PENDING APPEND FAIL] pendingId=${pendingId} error=${err?.response?.data?.error?.message || err?.message || err}`);
-    }
 
     const confirmMessages = buildReceiptConfirmMessages({
       code,
@@ -3996,6 +4050,9 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
     }
 
     await replyToLineMessages(event.replyToken, confirmMessages);
+    } finally {
+      await releaseReceiptLock();
+    }
   } catch (err) {
     const errorText = getLinePushErrorMessage(err);
     console.error(`[RECEIPT IMAGE HANDLE FAIL] code=${code || "-"} sourceGroupId=${sourceGroupId || "-"} messageId=${event.message?.id || "-"} error=${errorText}`);
@@ -4021,6 +4078,25 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
 }
 
 async function handleReceiptPostback(event, receipt) {
+  const token = await getGoogleAccessToken();
+  const stored = receipt.pendingId ? await findReceiptPending(token, receipt.pendingId) : null;
+  if (!stored) {
+    await replyToLine(event.replyToken, "⚠️ 저장된 등록대기를 확인할 수 없어 등록하지 않았습니다. 관리자 확인이 필요합니다.");
+    return;
+  }
+  if (!canApproveReceipt(event, { ...receipt, approvalGroupId: stored.approvalGroupId }, stored, stored)) {
+    await replyUnauthorized(event);
+    return;
+  }
+  const release = await acquireReceiptGroupLock(token, stored.sourceGroupId);
+  try {
+    return await handleReceiptPostbackLocked(event, receipt);
+  } finally {
+    await release();
+  }
+}
+
+async function handleReceiptPostbackLocked(event, receipt) {
   const accessToken = await getGoogleAccessToken();
   let cached = receiptCacheGet(receipt.pendingId) || receiptCacheGet(receipt.receiptKey);
   let pending = null;
@@ -4030,9 +4106,13 @@ async function handleReceiptPostback(event, receipt) {
       if (pending) cached = { ...(cached || {}), ...pending };
     } catch (err) {
       console.error(`[RECEIPT PENDING READ FAIL] pendingId=${receipt.pendingId} error=${err?.response?.data?.error?.message || err?.message || err}`);
+      throw err;
     }
   }
 
+  if (!pending) throw new Error("저장된 등록대기를 확인할 수 없습니다.");
+  receipt = { ...receipt, code: pending.code, value: pending.sheetValue, won: pending.amountWon,
+    senderName: pending.senderName, accountNumber: pending.accountNumber, sourceGroupId: pending.sourceGroupId };
   const fallbackApprovalGroupId = cached?.approvalGroupId || pending?.approvalGroupId || await getReceiptApprovalGroupId(accessToken);
   if (!canApproveReceipt(event, { ...receipt, approvalGroupId: fallbackApprovalGroupId }, cached, pending)) {
     await replyUnauthorized(event);
@@ -4053,6 +4133,8 @@ async function handleReceiptPostback(event, receipt) {
   }
 
   const setReceiptStatus = async status => {
+    // Persist before writing money; failures must leave the request blocked.
+    await updateReceiptPendingStatus(accessToken, pending, status);
     if (cached) {
       receiptCacheSet(cached.imageKey, { ...cached, status });
       receiptCacheSet(cached.infoKey, { ...cached, status });
@@ -4071,9 +4153,6 @@ async function handleReceiptPostback(event, receipt) {
         amountWon: receipt.won,
         sheetValue: receipt.value
       });
-    }
-    if (pending) {
-      await retryPendingStatusUpdate(() => updateReceiptPendingStatus(accessToken, pending, status), `RECEIPT PENDING STATUS FAIL pendingId=${receipt.pendingId} status=${status}`);
     }
   };
 
