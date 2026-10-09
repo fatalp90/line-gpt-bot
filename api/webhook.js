@@ -3156,7 +3156,8 @@ async function analyzeReceiptImageAmount(messageId) {
   let result = await callReceiptOcrOpenAI(image, false);
 
   // 비용 예측이 가능하도록 이미지당 OpenAI 호출은 항상 1회로 제한한다.
-  // 판독이 어려운 여권/입금사진은 호출을 반복하지 않고 PP01 관리자방에 알린다.
+  // 판독 실패 시 재호출하지 않는다. 고객방의 여권 실패는 조용히 종료하고,
+  // 입금사진 및 관리자등록방의 여권 실패 알림은 기존대로 유지한다.
   return result;
 }
 
@@ -3841,6 +3842,22 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
       if (result.ignored) return;
 
       if (result.kind !== "receipt" && result.kind !== "passport") return;
+
+      if (result.kind === "passport") {
+        // 고객방의 여권 판독 실패는 PP01에 알리지 않는다.
+        // 관리자등록방(ADMIN-XX)만 기존 실패 알림을 유지한다.
+        try {
+          if (!code) {
+            if (!accessToken) accessToken = await getGoogleAccessToken();
+            code = await findMappedCodeByGroupId(accessToken, sourceGroupId);
+          }
+        } catch (err) {
+          // 방 확인 실패도 아래의 공통 이체 오류 알림으로 넘어가지 않게 한다.
+          console.error("[PASSPORT FAILURE NOTICE SKIP] source mapping unavailable");
+          return;
+        }
+        if (!/^ADMIN-[A-Z]{2}$/.test(code || "")) return;
+      }
 
       if (!accessToken) accessToken = await getGoogleAccessToken();
       if (!code) code = await findMappedCodeByGroupId(accessToken, sourceGroupId);
