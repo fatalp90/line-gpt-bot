@@ -1133,16 +1133,36 @@ function parseCloseCommand(text) {
   };
 }
 
+// 조회 명령어 안에서만 두벌식 한영 혼합 입력을 복원한다.
+// 고객명 원문과 일반 대화, 등록/종료 등 다른 명령어에는 적용하지 않는다.
+function lookupKeyboardLetters(text) {
+  const jamo = {
+    "ㄱ":"r", "ㄲ":"R", "ㄳ":"rt", "ㄴ":"s", "ㄵ":"sw", "ㄶ":"sg",
+    "ㄷ":"e", "ㄸ":"E", "ㄹ":"f", "ㄺ":"fr", "ㄻ":"fa", "ㄼ":"fq",
+    "ㄽ":"ft", "ㄾ":"fx", "ㄿ":"fv", "ㅀ":"fg", "ㅁ":"a", "ㅂ":"q",
+    "ㅃ":"Q", "ㅄ":"qt", "ㅅ":"t", "ㅆ":"T", "ㅇ":"d", "ㅈ":"w",
+    "ㅉ":"W", "ㅊ":"c", "ㅋ":"z", "ㅌ":"x", "ㅍ":"v", "ㅎ":"g",
+    "ㅏ":"k", "ㅐ":"o", "ㅑ":"i", "ㅒ":"O", "ㅓ":"j", "ㅔ":"p",
+    "ㅕ":"u", "ㅖ":"P", "ㅗ":"h", "ㅘ":"hk", "ㅙ":"ho", "ㅚ":"hl",
+    "ㅛ":"y", "ㅜ":"n", "ㅝ":"nj", "ㅞ":"np", "ㅟ":"nl", "ㅠ":"b",
+    "ㅡ":"m", "ㅢ":"ml", "ㅣ":"l"
+  };
+  return Array.from(koreanToEnglishKeyboard(String(text || "").normalize("NFC")))
+    .map(char => jamo[char] || char).join("");
+}
+
 function parseCreditCheckCommand(text) {
-  const clean = normalizeText(normalizeEnglishKeyboardCommand(text));
-  const match = clean.match(/^(.+?)\/조회$/i);
+  const clean = normalizeText(text);
+  const match = clean.match(/^([^/]+)\/([^/]+)$/);
   if (!match) return null;
+  const suffix = lookupKeyboardLetters(match[2].replace(/\s+/g, "")).toLowerCase();
+  if (suffix !== "whghl") return null;
 
   const rawKeyword = normalizeText(match[1]);
   if (!rawKeyword) return null;
 
   const compactKeyword = rawKeyword.replace(/\s+/g, "");
-  const codeMatch = compactKeyword.match(/^([A-Za-z]{1,3}\d{1,3})$/);
+  const codeMatch = lookupKeyboardLetters(compactKeyword).match(/^([A-Za-z]{1,3}\d{1,3})$/);
   if (codeMatch) {
     return { type: "code", keyword: codeMatch[1].toUpperCase() };
   }
