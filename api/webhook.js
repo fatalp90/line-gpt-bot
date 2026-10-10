@@ -1123,18 +1123,22 @@ function parseRegisterAdminGroupCommand(text) {
 
 
 function parseCloseCommand(text) {
-  const clean = normalizeText(normalizeEnglishKeyboardCommand(text)).replace(/\s+/g, "");
-  const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/(종료|종결|블랙)$/i);
+  const clean = lookupKeyboardLetters(normalizeText(text).replace(/\s+/g, ""));
+  const match = clean.match(/^([A-Za-z]{1,3}\d{1,3})\/([A-Za-z]+)$/);
   if (!match) return null;
+  const suffix = match[2].toLowerCase();
+  const status = suffix === koreanToEnglishKeyboard("블랙") ? "블랙"
+    : suffix === koreanToEnglishKeyboard("종료") ? "종료" : null;
+  if (!status) return null;
 
   return {
     code: match[1].toUpperCase(),
-    status: match[2] === "블랙" ? "블랙" : "종료"
+    status
   };
 }
 
-// 조회 명령어 안에서만 두벌식 한영 혼합 입력을 복원한다.
-// 고객명 원문과 일반 대화, 등록/종료 등 다른 명령어에는 적용하지 않는다.
+// 조회·종료·블랙 명령어 안에서 두벌식 한영 혼합 입력을 복원한다.
+// 고객명 원문과 일반 대화, 등록 등 다른 명령어에는 적용하지 않는다.
 function lookupKeyboardLetters(text) {
   const jamo = {
     "ㄱ":"r", "ㄲ":"R", "ㄳ":"rt", "ㄴ":"s", "ㄵ":"sw", "ㄶ":"sg",
@@ -6233,7 +6237,7 @@ function koreanToEnglishKeyboard(text) {
 }
 
 const KOREAN_COMMAND_WORDS = [
-  "등록", "관리자등록", "종료", "종결", "블랙", "조회", "카운트",
+  "등록", "관리자등록", "종료", "블랙", "조회", "카운트",
   "날짜변경", "날짜복구", "미등록", "그룹미등록", "내아이디", "관리자아이디확인",
   "송금완료", "상환요청", "상환요청1"
 ];
@@ -6262,7 +6266,7 @@ function normalizeEnglishKeyboardCommand(text) {
   }
 
   // 코드/종료, 이름/조회, 코드/카운트3 같은 접미 명령어.
-  for (const word of ["등록", "종료", "종결", "블랙", "조회"]) {
+  for (const word of ["등록", "종료", "블랙", "조회"]) {
     const alias = koreanToEnglishKeyboard(word);
     const tail = clean.slice(-alias.length);
     if (clean.charAt(clean.length - alias.length - 1) === "/" && normalizeDubeolsikKeyCase(tail) === alias) {
