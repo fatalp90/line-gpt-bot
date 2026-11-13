@@ -1,7 +1,7 @@
 import axios from "axios";
 import crypto from "crypto";
 
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.5";
 
 
 const SHEET_ID = process.env.GOOGLE_SHEET_ID || "";
@@ -19,7 +19,7 @@ const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "")
   .map(v => v.trim())
   .filter(Boolean);
 
-// 번역은 정확도를 위해 OPENAI_MODEL(gpt-5.4)을 그대로 사용한다.
+// 번역은 OPENAI_MODEL(gpt-5.5)을 사용하고 추론을 비활성화해 응답 지연을 줄인다.
 // 이미지 OCR만 mini 모델을 기본값으로 사용해 비용을 줄인다.
 const RECEIPT_OCR_MODEL = process.env.RECEIPT_OCR_MODEL || "gpt-5.4-mini";
 const PASSPORT_OCR_MODEL = process.env.PASSPORT_OCR_MODEL || "gpt-5.4-mini";
@@ -6224,7 +6224,8 @@ async function askOpenAI({ systemPrompt, userText, convertWonToThai = false }) {
     body: JSON.stringify({
       model: OPENAI_MODEL,
       messages,
-      max_completion_tokens: 400
+      reasoning_effort: "none",
+      max_completion_tokens: 1200
     })
   });
 
