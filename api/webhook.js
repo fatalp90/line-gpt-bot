@@ -128,7 +128,48 @@ const SHINHAN_LOGO_URL = String(
   || "https://www.shinhangroup.com/resources/publish/kr/images/common/favicon_192_192.png"
 ).trim();
 
-const REPAYMENT_FOLLOWUP_MESSAGE = `ยังไม่ได้รับการยืนยันยอดโอน กรุณารีบโอนเงิน หากไม่โอนเงิน จะดำเนินการติดตามทวงถามหนี้ภาคบังคับในขั้นที่ 2`;
+const REPAYMENT_FOLLOWUP_MESSAGE = `ยังไม่ได้รับการยืนยันยอดโอน กรุณารีบโอนเงิน หากท่านชำระเงินแล้ว หรือวันนี้ไม่ใช่วันครบกำหนดชำระ กรุณาไม่ต้องดำเนินการใด ๆ`;
+
+function buildRepaymentFollowupFlexMessage() {
+  return {
+    type: "flex",
+    altText: REPAYMENT_FOLLOWUP_MESSAGE,
+    contents: {
+      type: "bubble",
+      size: "mega",
+      header: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: "#B91C1C",
+        paddingAll: "14px",
+        contents: [
+          { type: "text", text: "แจ้งเตือนการชำระเงิน", color: "#FFFFFF", size: "lg", weight: "bold", wrap: true }
+        ]
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: "#DC2626",
+        paddingAll: "16px",
+        spacing: "md",
+        contents: [
+          { type: "text", text: "⚠️ ยังไม่ได้รับการยืนยันยอดโอน", color: "#FFFFFF", size: "lg", weight: "bold", wrap: true },
+          { type: "text", text: "กรุณารีบโอนเงิน", color: "#FFFFFF", size: "xxl", weight: "bold", align: "center", adjustMode: "shrink-to-fit", wrap: true },
+          {
+            type: "box",
+            layout: "vertical",
+            backgroundColor: "#FEF2F2",
+            cornerRadius: "md",
+            paddingAll: "12px",
+            contents: [
+              { type: "text", text: "หากท่านชำระเงินแล้ว หรือวันนี้ไม่ใช่วันครบกำหนดชำระ กรุณาไม่ต้องดำเนินการใด ๆ", color: "#7F1D1D", size: "sm", wrap: true }
+            ]
+          }
+        ]
+      }
+    }
+  };
+}
 
 function buildPaymentRequestFlexMessage() {
   return {
@@ -4076,7 +4117,7 @@ function parseRepaymentBroadcastCommand(text) {
 
   const codePrefix = match[2] ? match[2].trim().toUpperCase() : "";
   return match[1] === "상환요청1"
-    ? { type: "followup", message: REPAYMENT_FOLLOWUP_MESSAGE, codePrefix }
+    ? { type: "followup", message: buildRepaymentFollowupFlexMessage(), codePrefix }
     : { type: "payment", message: buildPaymentRequestFlexMessage(), codePrefix };
 }
 
