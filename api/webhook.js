@@ -6159,6 +6159,10 @@ function shouldIgnoreMessage(text) {
   const clean = normalizeText(text);
   const lowerClean = clean.toLowerCase();
 
+  // 관리자 안내문: 은행명 또는 지정 계좌가 있으면 자동번역 제외.
+  if (/\bSHINHAN\s+BANK\b/i.test(clean)) return true;
+  if (/(?:^|[^0-9])110[\s\-–—]*551[\s\-–—]*366954(?![0-9])/.test(clean)) return true;
+
   if (containsNoTranslateAmount(clean)) return true;
 
   for (const keyword of ignoreKeywords) {
