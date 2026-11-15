@@ -2,8 +2,7 @@
 (async()=>{
  let token='';let version='0',last=null,busy=false,role='',dirty=false;
  document.querySelector('main').hidden=true;document.querySelectorAll('dialog').forEach(d=>d.close());
- const loadingStyle=document.createElement('style');loadingStyle.textContent=`.contract-loading{min-height:60vh;display:grid;place-items:center}.contract-spinner{width:40px;height:40px;border:3px solid #243149;border-top-color:#4387ff;border-radius:50%;animation:contract-spin .85s linear infinite}@keyframes contract-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.contract-spinner{animation:none;border-color:#4387ff;border-right-color:#243149}}`;document.head.append(loadingStyle);
- const banner=document.createElement('div');banner.className='contract-loading';banner.setAttribute('role','status');banner.setAttribute('aria-label','กำลังโหลด · 불러오는 중');const spinner=document.createElement('span');spinner.className='contract-spinner';spinner.setAttribute('aria-hidden','true');banner.append(spinner);document.querySelector('header').after(banner);
+ const banner=document.getElementById('contract-loading');
  function finishLoading(){banner.className='callout';banner.style.margin='20px';banner.removeAttribute('aria-label');banner.replaceChildren()}
 
  async function api(action,extra={}){const r=await fetch('/api/contracts',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({action,...extra})});const data=await r.json();if(!r.ok)throw Error(data.error||'Connection failed');return data}
