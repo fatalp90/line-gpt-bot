@@ -28,7 +28,7 @@
  }
  const s=await api('load');role=s.role;
  if(role==='admin'){
- document.querySelector('main').hidden=false;banner.innerHTML=html('ทดสอบจริงผ่าน LINE / ใช้ข้อมูลสมมติเท่านั้น','입력정보·계약서·서명·첨부는 전용 구글 드라이브 폴더에 저장됩니다. 가상정보로 테스트해주세요.');
+ document.querySelector('main').hidden=false;banner.hidden=true;banner.innerHTML=html('ทดสอบจริงผ่าน LINE / ใช้ข้อมูลสมมติเท่านั้น','입력정보·계약서·서명·첨부는 전용 구글 드라이브 폴더에 저장됩니다. 가상정보로 테스트해주세요.');
  if(s.data)Object.entries(s.data).forEach(([k,v])=>{if(fields[k])fields[k].value=v});renderRenewal();result(s);
  $('pane-check').querySelector('.callout').innerHTML=html('กรอกจำนวนเงินเป็นวอน ระบบใช้กลุ่มที่ส่งคำสั่ง /관리자','금액은 원 단위이며 명령어를 사용한 그룹에 연결됩니다.');
  $('pane-check').querySelector('p.hint').innerHTML=html('กดบันทึกเพื่อเก็บข้อมูลในเซิร์ฟเวอร์ ลายเซ็นที่ส่งแล้วจะถูกเก็บไว้','저장 버튼으로 서버에 저장하며 제출된 서명도 보관됩니다.');
@@ -51,5 +51,5 @@
  dialog.querySelector('[data-close]').hidden=true;dialog.addEventListener('cancel',e=>e.preventDefault());dialog.showModal();
  form.onsubmit=e=>{e.preventDefault();task(async()=>{if(!(renew?rs:hasSign))throw Error('กรุณาลงลายเซ็น · 서명을 작성해주세요');await api('sign',{consent:true,signature:signature(renew?rc:canvas),details:renew?{}:Object.fromEntries(new FormData(form))});dialog.close();banner.textContent='✓ ส่งลายเซ็นแล้ว ขอบคุณค่ะ · 서명 제출이 완료됐습니다.'})};
  }
- }catch(e){banner.textContent=e.message}
+ }catch(e){banner.hidden=false;banner.textContent=e.message}
 })();
