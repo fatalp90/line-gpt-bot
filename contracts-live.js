@@ -2,7 +2,10 @@
 (async()=>{
  let token='';let version='0',last=null,busy=false,role='',dirty=false;
  document.querySelector('main').hidden=true;document.querySelectorAll('dialog').forEach(d=>d.close());
- const banner=document.createElement('div');banner.className='callout';banner.style.margin='20px';banner.textContent='กำลังเชื่อมต่อ 그룹 연결 중';document.querySelector('header').after(banner);
+ const loadingStyle=document.createElement('style');loadingStyle.textContent=`.contract-loading{min-height:60vh;display:grid;place-items:center}.contract-spinner{width:40px;height:40px;border:3px solid #243149;border-top-color:#4387ff;border-radius:50%;animation:contract-spin .85s linear infinite}@keyframes contract-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.contract-spinner{animation:none;border-color:#4387ff;border-right-color:#243149}}`;document.head.append(loadingStyle);
+ const banner=document.createElement('div');banner.className='contract-loading';banner.setAttribute('role','status');banner.setAttribute('aria-label','กำลังโหลด · 불러오는 중');const spinner=document.createElement('span');spinner.className='contract-spinner';spinner.setAttribute('aria-hidden','true');banner.append(spinner);document.querySelector('header').after(banner);
+ function finishLoading(){banner.className='callout';banner.style.margin='20px';banner.removeAttribute('aria-label');banner.replaceChildren()}
+
  async function api(action,extra={}){const r=await fetch('/api/contracts',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({action,...extra})});const data=await r.json();if(!r.ok)throw Error(data.error||'Connection failed');return data}
  async function task(fn){if(busy)return;busy=true;try{await fn()}catch(e){toast(e.message)}finally{busy=false}}
  const html=(th,ko)=>'<span class="bilingual">'+th+'<small class="ko">'+ko+'</small></span>';
@@ -26,7 +29,7 @@
  if(!entry)throw Error('กรุณาเปิดลิงก์จากกลุ่ม LINE · 그룹방의 관리자 입력폼 버튼으로 열어주세요.');
  token=entry;const exchanged=await api('exchange',{idToken:liff.getIDToken()});token=exchanged.token;
  }
- const s=await api('load');role=s.role;
+ const s=await api('load');role=s.role;finishLoading();
  if(role==='admin'){
  document.querySelector('main').hidden=false;banner.hidden=true;banner.innerHTML=html('ทดสอบจริงผ่าน LINE / ใช้ข้อมูลสมมติเท่านั้น','입력정보·계약서·서명·첨부는 전용 구글 드라이브 폴더에 저장됩니다. 가상정보로 테스트해주세요.');
  if(s.data)Object.entries(s.data).forEach(([k,v])=>{if(fields[k])fields[k].value=v});renderRenewal();result(s);
@@ -51,5 +54,5 @@
  dialog.querySelector('[data-close]').hidden=true;dialog.addEventListener('cancel',e=>e.preventDefault());dialog.showModal();
  form.onsubmit=e=>{e.preventDefault();task(async()=>{if(!(renew?rs:hasSign))throw Error('กรุณาลงลายเซ็น · 서명을 작성해주세요');await api('sign',{consent:true,signature:signature(renew?rc:canvas),details:renew?{}:Object.fromEntries(new FormData(form))});dialog.close();banner.textContent='✓ ส่งลายเซ็นแล้ว ขอบคุณค่ะ · 서명 제출이 완료됐습니다.'})};
  }
- }catch(e){banner.hidden=false;banner.textContent=e.message}
+ }catch(e){finishLoading();banner.hidden=false;banner.textContent=e.message}
 })();
