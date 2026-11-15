@@ -1,0 +1,4 @@
+import {createService} from '../contracts-core.js';
+
+const service=createService({});
+export default async function handler(req,res){res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');if(req.method!=='POST')return res.status(405).json({error:'POST required'});const origin=req.headers.origin;if(origin&&origin!=='https://line-gpt-bot-seven.vercel.app')return res.status(403).json({error:'Origin denied'});try{if(JSON.stringify(req.body||{}).length>(req.body?.action==='uploadChunk'?2900000:40000))return res.status(413).json({error:'Too large'});const auth=String(req.headers.authorization||'').replace(/^Bearer /,'');const result=await service.action(auth,req.body||{});return res.status(200).json(result)}catch(e){console.error('[CONTRACT TEST]',e.status||e.response?.status||500);return res.status(e.status||500).json({error:e.status?e.message:'เกิดข้อผิดพลาด ลองอีกครั้ง · 연결에 실패했어요. 잠시 후 다시 시도해주세요.'})}}

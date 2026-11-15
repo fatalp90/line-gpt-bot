@@ -7030,6 +7030,18 @@ export default async function handler(req, res) {
         continue;
       }
 
+      if (["/관리자", "/แอดมิน", "/ผู้ดูแล"].includes(commandText.trim())) {
+        try {
+          const { createService } = await import("../contracts-core.js");
+          const message = await createService({}).command(event);
+          await replyToLineMessages(event.replyToken, [message]);
+        } catch (err) {
+          console.error("[CONTRACT TEST COMMAND]", err?.response?.status || err?.status || 500);
+          await replyToLine(event.replyToken, "⚠️ 입력폼 연결에 실패했어요. 봇 친구 추가 상태와 관리자 설정을 확인해주세요.");
+        }
+        continue;
+      }
+
       if (parseMyIdCommand(commandText)) {
         const userId = getLineUserId(event);
         await replyToLine(event.replyToken, userId ? `내아이디\n${userId}` : "⚠️ userId를 확인할 수 없습니다.");
@@ -7258,3 +7270,4 @@ export default async function handler(req, res) {
 
   return res.status(200).send("OK");
 }
+
