@@ -1509,7 +1509,25 @@ function formatAmountValue(value) {
   return String(Math.round((n + Number.EPSILON) * 1000) / 1000).replace(/\.0+$/, "");
 }
 
+// Reuse only authentication, never customer balances or pending status.
+let googleAccessTokenCache = null;
+let googleAccessTokenRequest = null;
+
 async function getGoogleAccessToken() {
+  if (googleAccessTokenCache && Date.now() < googleAccessTokenCache.expiresAt) {
+    return googleAccessTokenCache.token;
+  }
+  if (googleAccessTokenRequest) return googleAccessTokenRequest;
+  googleAccessTokenRequest = requestGoogleAccessToken();
+  try {
+    return await googleAccessTokenRequest;
+  } finally {
+    // A failed request must not prevent the next attempt.
+    googleAccessTokenRequest = null;
+  }
+}
+
+async function requestGoogleAccessToken() {
   if (!GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_PRIVATE_KEY) {
     throw new Error("Google service account environment variables are missing.");
   }
@@ -1544,7 +1562,14 @@ async function getGoogleAccessToken() {
     { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
   );
 
-  return response.data.access_token;
+  const token = response.data?.access_token;
+  if (!token) throw new Error("Google access token was not returned.");
+  const expiresIn = Number(response.data.expires_in);
+  // Expire two minutes early, measured from before the request.
+  googleAccessTokenCache = Number.isFinite(expiresIn) && expiresIn > 120
+    ? { token, expiresAt: now * 1000 + (expiresIn - 120) * 1000 }
+    : null;
+  return token;
 }
 
 async function getSheetValues(accessToken) {
@@ -5425,10 +5450,17 @@ async function writeCustomerRegistration(command) {
   ]];
   const bottomInfoValues = [["", "", "", "", "", "", "", "", ""]];
 
-  await updateSheetRange(accessToken, rowNumber, 0, topInfoValues);
-  await updateSheetRange(accessToken, rowNumber + 1, 0, bottomInfoValues);
-  await updateSheetRange(accessToken, rowNumber, DATE_START_COLUMN_INDEX, [repaymentRows.topCells]);
-  await updateSheetRange(accessToken, rowNumber + 1, DATE_START_COLUMN_INDEX, [repaymentRows.bottomCells]);
+  // One request for the same four regions; J/K formulas remain untouched.
+  const updates = [];
+  for (const [row, startColumn, cells] of [
+    [rowNumber, 0, topInfoValues[0]],
+    [rowNumber + 1, 0, bottomInfoValues[0]],
+    [rowNumber, DATE_START_COLUMN_INDEX, repaymentRows.topCells],
+    [rowNumber + 1, DATE_START_COLUMN_INDEX, repaymentRows.bottomCells]
+  ]) {
+    cells.forEach((value, offset) => updates.push({ rowNumber: row, columnIndex0: startColumn + offset, value }));
+  }
+  await batchUpdateSheetCells(accessToken, updates);
 
   return `✅ ${command.productCode}(${command.productAmount.toLocaleString("ko-KR")}) 고객등록 완료`;
 }
