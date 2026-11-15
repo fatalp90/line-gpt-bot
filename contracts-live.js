@@ -1,6 +1,6 @@
 // Group-scoped live test bridge. No customer data is placed in a public URL.
 (async()=>{
- const token=location.hash.slice(1);history.replaceState(null,'',location.pathname);let version='0',last=null,busy=false,role='',dirty=false;
+ let token='';let version='0',last=null,busy=false,role='',dirty=false;
  document.querySelector('main').hidden=true;document.querySelectorAll('dialog').forEach(d=>d.close());
  const banner=document.createElement('div');banner.className='callout';banner.style.margin='20px';banner.textContent='กำลังเชื่อมต่อ 그룹 연결 중';document.querySelector('header').after(banner);
  async function api(action,extra={}){const r=await fetch('/api/contracts',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({action,...extra})});const data=await r.json();if(!r.ok)throw Error(data.error||'Connection failed');return data}
@@ -12,7 +12,16 @@
  async function save(){if(!valid()){tab('check');valid(true);throw Error('กรอกข้อมูลให้ครบ · 필수정보를 입력해주세요')}const s=await api('save',{base:version,data:get()});dirty=false;result(s);return s}
  function signature(c){const small=document.createElement('canvas');small.width=600;small.height=192;small.getContext('2d').drawImage(c,0,0,600,192);return small.toDataURL('image/png')}
  try{
- if(!token)throw Error('กรุณาเปิดลิงก์จากบอท · 고객 그룹에서 /관리자 명령으로 받은 링크를 열어주세요.');
+ const customerToken=location.hash.slice(1);
+ if(customerToken){token=customerToken;history.replaceState(null,'',location.pathname)}else{
+ const config=await (await fetch('/api/contracts')).json();
+ await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://static.line-scdn.net/liff/edge/2/sdk.js';script.onload=resolve;script.onerror=()=>reject(Error('LINE login unavailable'));document.head.append(script)});
+ await liff.init({liffId:config.liffId});
+ if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return}
+ const entry=new URL(location.href).searchParams.get('entry');
+ if(!entry)throw Error('กรุณาเปิดลิงก์จากกลุ่ม LINE · 그룹방의 관리자 입력폼 버튼으로 열어주세요.');
+ token=entry;const exchanged=await api('exchange',{idToken:liff.getIDToken()});token=exchanged.token;
+ }
  const s=await api('load');role=s.role;
  if(role==='admin'){
  document.querySelector('main').hidden=false;banner.innerHTML=html('ทดสอบจริงผ่าน LINE / ใช้ข้อมูลสมมติเท่านั้น','입력정보·계약서·서명·첨부는 전용 구글 드라이브 폴더에 저장됩니다. 가상정보로 테스트해주세요.');
