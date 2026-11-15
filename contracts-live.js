@@ -36,7 +36,7 @@
  $('pane-renewal').querySelectorAll('p.hint')[1].innerHTML=html('ส่งปุ่มลงลายเซ็นไปยังกลุ่ม LINE และบันทึกผลใน Google Drive','LINE 그룹에 서명 버튼을 보내고 결과를 구글 드라이브에 저장합니다.');
  document.querySelector('.aside p.hint').innerHTML=html('ส่งคำขอ Check Over ไปยังกลุ่มผู้ดูแล กดลงทะเบียนเพื่อบันทึกในชีต','완료하기를 누르면 관리자 확인방에 체크오버 등록 카드가 전송됩니다. 카드에서 등록하면 원본시트에 반영됩니다.');
  $('demo').hidden=true;$('reset').hidden=true;$('customer').hidden=true;$('renewal-open').hidden=true;
- $('save').innerHTML=html('บันทึกข้อมูล','서버에 저장');$('save').onclick=()=>task(async()=>{await save();toast('บันทึกแล้ว · 저장 완료')});
+ $('save').innerHTML=html('บันทึกฉบับร่าง','임시저장');$('save').onclick=()=>task(async()=>{await save();toast('บันทึกแล้ว · 저장 완료')});
  $('next').onclick=()=>task(async()=>{await save();tab('contract')});
  for(const [id,kind] of [['request','new'],['renewal-send','renewal']])$(id).onclick=()=>task(async()=>{await save();await api('request',{base:version,kind});await load();toast('ส่งปุ่มลงลายเซ็นไปยังกลุ่มลูกค้า แล้ว · 해당 그룹에 서명 버튼을 보냈어요.')});
  $('complete').onclick=()=>task(async()=>{await save();await api('complete',{base:version});await load();toast('ส่งคำขอ Check Over แล้ว · 관리자 확인방에 체크오버 등록 요청을 보냈어요.')});
