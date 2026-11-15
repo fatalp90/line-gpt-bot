@@ -12,13 +12,17 @@
  async function save(){if(!valid()){tab('check');valid(true);throw Error('กรอกข้อมูลให้ครบ · 필수정보를 입력해주세요')}const s=await api('save',{base:version,data:get()});dirty=false;result(s);return s}
  function signature(c){const small=document.createElement('canvas');small.width=600;small.height=192;small.getContext('2d').drawImage(c,0,0,600,192);return small.toDataURL('image/png')}
  try{
- const customerToken=location.hash.slice(1);
+ // LIFF OAuth callbacks also use the fragment. Only our signed two-part token is a customer link.
+ const fragment=location.hash.slice(1);
+ const customerToken=/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(fragment)?fragment:'';
  if(customerToken){token=customerToken;history.replaceState(null,'',location.pathname)}else{
  const config=await (await fetch('/api/contracts')).json();
  await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://static.line-scdn.net/liff/edge/2/sdk.js';script.onload=resolve;script.onerror=()=>reject(Error('LINE login unavailable'));document.head.append(script)});
  await liff.init({liffId:config.liffId});
  if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return}
- const entry=new URL(location.href).searchParams.get('entry');
+ const currentUrl=new URL(location.href);
+ const liffState=currentUrl.searchParams.get('liff.state');
+ const entry=currentUrl.searchParams.get('entry')||(liffState?new URL(liffState,location.origin).searchParams.get('entry'):null);
  if(!entry)throw Error('กรุณาเปิดลิงก์จากกลุ่ม LINE · 그룹방의 관리자 입력폼 버튼으로 열어주세요.');
  token=entry;const exchanged=await api('exchange',{idToken:liff.getIDToken()});token=exchanged.token;
  }
