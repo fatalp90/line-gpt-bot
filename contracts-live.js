@@ -21,14 +21,14 @@
  $('pane-check').querySelector('p.hint').innerHTML=html('กดบันทึกเพื่อเก็บข้อมูลในเซิร์ฟเวอร์ ลายเซ็นที่ส่งแล้วจะถูกเก็บไว้','저장 버튼으로 서버에 저장하며 제출된 서명도 보관됩니다.');
  $('pane-contract').querySelector('.callout').innerHTML=html('ส่งปุ่มให้ลูกค้าในกลุ่ม LINE จริง ใช้ข้อมูลสมมติสำหรับทดสอบเท่านั้น','해당 LINE 그룹에 실제 서명 버튼을 보냅니다. 가상정보로 테스트해주세요.');
  $('pane-renewal').querySelectorAll('p.hint')[1].innerHTML=html('ส่งปุ่มลงลายเซ็นไปยังกลุ่ม LINE และบันทึกผลใน Google Drive','LINE 그룹에 서명 버튼을 보내고 결과를 구글 드라이브에 저장합니다.');
- document.querySelector('.aside p.hint').innerHTML=html('ส่งผลทดสอบไปยังกลุ่ม LINE โดยไม่ลงทะเบียนลูกค้าในชีตหลัก','완료 결과를 해당 그룹에 보내며 통합시트에는 고객을 등록하지 않습니다.');
+ document.querySelector('.aside p.hint').innerHTML=html('ส่งคำขอ Check Over ไปยังกลุ่มผู้ดูแล กดลงทะเบียนเพื่อบันทึกในชีต','완료하기를 누르면 관리자 확인방에 체크오버 등록 카드가 전송됩니다. 카드에서 등록하면 원본시트에 반영됩니다.');
  $('demo').hidden=true;$('reset').hidden=true;$('customer').hidden=true;$('renewal-open').hidden=true;
  $('save').innerHTML=html('บันทึกข้อมูล','서버에 저장');$('save').onclick=()=>task(async()=>{await save();toast('บันทึกแล้ว · 저장 완료')});
  $('next').onclick=()=>task(async()=>{await save();tab('contract')});
  for(const [id,kind] of [['request','new'],['renewal-send','renewal']])$(id).onclick=()=>task(async()=>{await save();await api('request',{base:version,kind});await load();toast('ส่งปุ่มลงลายเซ็นไปยังกลุ่มลูกค้า แล้ว · 해당 그룹에 서명 버튼을 보냈어요.')});
- $('complete').onclick=()=>task(async()=>{await save();await api('complete',{base:version});await load();toast('ส่งผลทดสอบไปยังกลุ่มลูกค้า แล้ว · 해당 그룹에 테스트 완료 결과를 보냈어요.')});
+ $('complete').onclick=()=>task(async()=>{await save();await api('complete',{base:version});await load();toast('ส่งคำขอ Check Over แล้ว · 관리자 확인방에 체크오버 등록 요청을 보냈어요.')});
  for(const k of ['photos','videos']){const note=$('pane-'+k).querySelector('p.hint');note.innerHTML=html('เลือกไฟล์เพื่ออัปโหลดไปยัง Google Drive กรุณารอจนเสร็จ','파일 선택 시 구글 드라이브로 업로드합니다. 완료될 때까지 화면을 유지해주세요.');$(k).onchange=e=>{const files=[...e.target.files];e.target.value='';task(async()=>{await save();for(const file of files){const u=await api('uploadStart',{kind:k,name:file.name,mime:file.type,size:file.size});for(let offset=0;offset<file.size;){const chunk=file.slice(offset,offset+u.chunkSize);const bytes=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result.split(',')[1]);r.onerror=reject;r.readAsDataURL(chunk)});const r=await api('uploadChunk',{uploadId:u.uploadId,offset,bytes});if(r.offset<=offset)throw Error('Upload stopped');offset=r.offset;note.textContent=file.name+' · '+Math.round(offset/file.size*100)+'%';}await load();}note.innerHTML=html('อัปโหลดเสร็จแล้ว','드라이브 저장 완료')})};}
- document.querySelector('.notice').innerHTML=html('ทดสอบลิงก์และลายเซ็นเท่านั้น ไม่ใช่สัญญาจริงและไม่ลงทะเบียนลูกค้าในชีตหลัก','링크·서명 테스트용입니다. 실제 계약 체결이나 통합시트 고객등록은 하지 않습니다.');
+ document.querySelector('.notice').innerHTML=html('ลายเซ็นยังเป็นการทดสอบ การกดลงทะเบียน Check Over จะบันทึกในชีตจริง','서명은 본인인증 없는 테스트용입니다. 체크오버 등록 카드에서 승인하면 원본시트에 실제 반영됩니다.');
  setInterval(()=>{if(!busy&&!dirty&&!document.hidden)task(load)},15000);
  }else{
  banner.innerHTML=html('ทดสอบเท่านั้น ไม่ใช่สัญญาจริง','그룹 테스트 전용 · 고객 본인인증이 적용되지 않은 서명 체험입니다.');
