@@ -6931,6 +6931,13 @@ export default async function handler(req, res) {
   for (const event of sortedEvents) {
     try {
       if (event.type === "postback") {
+        const formTest = new URLSearchParams(String(event.postback?.data||""));
+        if(formTest.get("contractTest")==="1") {
+          if(!String(process.env.CONTRACT_TEST_ADMIN_IDS||"").split(",").map(x=>x.trim()).includes(event.source?.userId)) {await replyUnauthorized(event);continue;}
+          await replyToLine(event.replyToken,formTest.get("action")==="cancel"?"🧪 ยกเลิกการทดสอบแล้ว · 테스트 취소 완료 (원본시트 변경 없음)":"🧪 ทดสอบลงทะเบียนสำเร็จ · 테스트 등록 확인 완료 (원본시트 변경 없음)");
+          continue;
+        }
+
         const datechange = parseDateChangePostback(event);
         if (datechange) {
           await handleDateChangePostback(event, datechange);
@@ -7271,3 +7278,45 @@ export default async function handler(req, res) {
   return res.status(200).send("OK");
 }
 
+
+
+// Administrator form completion uses the existing approval card and registration flow.
+export async function submitContractCheckOver({group,user,data,requestId,retryKey}) {
+  const allowed=String(process.env.CONTRACT_TEST_ADMIN_IDS||"").split(",").map(x=>x.trim());
+  const error=(message,status=400)=>Object.assign(new Error(message),{status});
+  if(!allowed.includes(user)||!/^C[0-9a-f]{32}$/i.test(group)) throw error("권한이 없습니다.",403);
+  const testCode=/^[A-Z]{2}TEST[12]$/i.test(data.code);
+  const parseCode=testCode?data.code.slice(0,2).toUpperCase()+"1":data.code;
+  const command=parseCheckOverCommand(["Check Over",`รหัส: ${parseCode}`,`ยอดโอน: ${data.loan}`,`ยอดสินค้า: ${data.product}`,`หัก: ${data.cut}`,`ชื่อ: ${data.name}`,`เลขบัญชี / ธนาคาร: ${data.bank}`].join("\n"));
+  if(!command||command.error) throw error(command?.error||"Check Over 정보 오류");
+  if(!SHEET_ID) throw error("통합시트 설정을 확인해주세요.",503);
+  const accessToken=await getGoogleAccessToken();
+  const approvalGroupId=await getReceiptApprovalGroupId(accessToken);
+  if(!approvalGroupId) throw error("관리자 확인방이 설정되지 않았습니다.",409);
+  if(testCode) {
+    command.productCode=data.code.slice(0,2).toUpperCase()+"test"+data.code.slice(-1);
+    command.productName=`${command.productCode}(${command.productAmount.toLocaleString("ko-KR")})`;
+    const messages=buildCheckOverConfirmMessages(command,{approvalNotice:true,sourceGroupId:group});
+    const rewrite=node=>{if(!node||typeof node!=="object")return;if(node.type==="postback")node.data=new URLSearchParams({contractTest:"1",action:new URLSearchParams(node.data).get("action")||"register",code:command.productCode}).toString();for(const v of Object.values(node)){if(Array.isArray(v))v.forEach(rewrite);else if(v&&typeof v==="object")rewrite(v)}};
+    messages.forEach(rewrite);
+    messages.unshift({type:"text",text:"🧪 TEST · "+command.productCode+"\nทดสอบเท่านั้น ไม่บันทึกในชีตลูกค้า\n테스트 전용: 등록 버튼을 눌러도 원본시트는 변경되지 않습니다."});
+    try {await axios.post("https://api.line.me/v2/bot/message/push",{to:approvalGroupId,messages},{headers:{Authorization:`Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,"X-Line-Retry-Key":retryKey},timeout:15000})} catch(err){if(err.response?.status!==409)throw err;}
+    return {test:true};
+  }
+  const pendingId=crypto.createHash("sha256").update(`contract:${group}:${requestId}`).digest("hex").slice(0,20);
+  command.checkoverPendingId=pendingId;
+  const release=await acquireReceiptGroupLock(accessToken,`contract-complete:${group}`);
+  try {
+    const pending=await findCheckOverPending(accessToken,pendingId);
+    if(pending&&pending.status!=="pending") return {pendingId,status:pending.status};
+    if(!pending){
+      const mapping=await ensureCheckOverGroupMapping({source:{type:"group",groupId:group,userId:user}},command);
+      if(!mapping.ok) throw error(mapping.message||"고객방 코드를 확인해주세요.",409);
+      await appendCheckOverPending(accessToken,{pendingId,status:"pending",sourceGroupId:group,approvalGroupId,code:command.productCode,productAmount:command.productAmount,customerName:command.customerName,loanAmount:command.loanAmount,cut:command.cut,adminName:command.adminName});
+    }
+    try {
+      await axios.post("https://api.line.me/v2/bot/message/push",{to:approvalGroupId,messages:buildCheckOverConfirmMessages(command,{approvalNotice:true,sourceGroupId:group})},{headers:{Authorization:`Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,"X-Line-Retry-Key":retryKey},timeout:15000});
+    } catch(err) {if(err.response?.status!==409) throw err;}
+    return {pendingId,status:"pending"};
+  } finally {await release();}
+}
