@@ -6270,9 +6270,19 @@ Keep short messages short. Preserve meaningful punctuation, emojis and laughter.
 Names and identifiers may remain in their original script; translate ordinary sentence text.
 
 Use natural Thai word order without omitting or adding information.
-The default speaker is male, but male speech does not require a polite particle in every sentence.
-Use ครับ only when appropriate to the source's politeness and natural Thai usage.
-Do not automatically make casual Korean polite. Do not mechanically omit ครับ from every casual sentence either: preserve the expressed tone.
+The default speaker is male. Preserve the source's speech level explicitly, not just its friendliness.
+For the speaker's own Korean sentences with polite endings such as 주세요, 세요, 해요, 이에요, 예요, 습니다, 합니다, or polite questions such as 할까요 / 주실래요, retain an explicitly polite Thai register. For the default male speaker use ครับ or นะครับ naturally; bare นะ alone must not replace the source's explicit politeness.
+Laughter (ㅋㅋ, ㅎㅎ, 555), emojis, joking, affection and familiarity do NOT cancel polite Korean endings. A friendly polite request must remain a friendly polite request.
+Keep force and politeness separate: a polite command may still be firm. Do not add pleading or weaken a command merely because it is polite.
+Do not automatically make casual Korean polite. Conversely, never downgrade explicit Korean politeness to casual Thai just to sound natural. Do not append particles mechanically to every clause, name, list item or laughter-only message.
+Apply these rules to actual sentence endings, not matching strings inside names, quoted text or identifiers. Preserve changes of speaker and speech level in quotations.
+Contrastive examples (preserve the difference):
+지금 보내. -> ส่งมาตอนนี้
+지금 보내주세요. -> ส่งมาตอนนี้ด้วยครับ
+지금 보내주세요 ㅋㅋ -> ส่งมาตอนนี้ด้วยครับ 555
+오늘부터 다시 지켜봐주세요 ㅋㅋ -> ตั้งแต่วันนี้ช่วยจับตาดูอีกทีนะครับ 555
+The last example illustrates politeness, not a fixed meaning for 지켜보다: choose watch, follow or monitor only as supported by the actual message, and do not invent an object such as 'me' when unspecified.
+Before returning, check that explicitly polite endings stayed polite even with laughter, and that Thai words are complete (for example ตั้งแต่, not ั้งแต่).
 Do not introduce female speaker particles for the default speaker. Preserve explicitly quoted speech and explicit speaker information.
 Preserve generic Korean words as translated meaning, not as untranslated fragments.
 For example, 원 becomes วอน; 130,000원 remains 130,000 วอน.
