@@ -2722,7 +2722,14 @@ function buildTransferCompleteFlexMessage() {
   };
 }
 
-async function callReceiptOcrOpenAI(image, retry = false) {
+// Stable per sender across groups. Never send the raw LINE user ID to OpenAI.
+function openAISafetyFields(userId) {
+  if (typeof userId !== "string" || !userId.trim()) return {};
+  return { safety_identifier: crypto.createHash("sha256")
+    .update("plp-line-user:" + userId.trim(), "utf8").digest("hex") };
+}
+
+async function callReceiptOcrOpenAI(image, retry = false, userId = "") {
   const receiptSystemPrompt = retry
     ? "너는 한국 은행/간편송금 이체 캡처 이미지 재검토 OCR 분석기다. 1차 분석에서 등록 버튼을 만들지 못한 이미지를 다시 확인한다. 이미지는 모니터/ATM/휴대폰 화면을 다시 촬영한 사진일 수 있고, 반사광/유리빛/기울어짐/부분 가림/흐림/흔들림이 있거나, 화면이 가로/세로/90도/180도/270도 회전되어 있을 수 있으므로 반드시 가능한 모든 방향으로 돌려 읽는다고 가정한다. 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 먼저 판별한다. 단, 금액이 보인다고 해서 안내 포스터, 광고, 이벤트, 연체/벌금/납부 안내, 채팅 캡처, 일반 스크린샷이면 is_transfer_receipt=false로 둔다. 실제 금융앱 거래 화면으로 보이고 송금 금액이 사람 눈으로 읽히면 confidence를 과도하게 낮추지 마라. 금액은 KRW 55,000 / KRW55,000 / 55,000 KRW / ₩55,000 / 55000 / 55.000처럼 붙거나 줄이 나뉘거나 구분자가 달라도 같은 금액으로 인식한다. amount_won은 실제 상대방에게 송금/입금되는 순수 입금액만 넣는다. 수수료, 잔액, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 송금액과 잔액을 특히 구분한다. 절대 잔액/남은금액/Remaining Balance/Available Balance/Balance/ยอดเงินคงเหลือ/คงเหลือ 옆 숫자를 amount_won으로 선택하지 마라. 태국어 영수증 예시: ยอดเงินที่โอน -80,500 / ค่าธรรมเนียม 0 / ยอดเงินคงเหลือ KRW 55,358 이면 amount_won=80500, fee_won=0, balance_won=55358 이다. 또 다른 예시: จำนวนเงินโอน 130,900 이면 amount_won=130900으로 읽고 후처리에서 130,000원으로 내림될 수 있다. 특히 화면에 송금액과 수수료가 따로 있고 총 결제금액/납부금액/합계가 크게 표시되는 경우, 총액이 더 크게 보이더라도 amount_won에는 송금액만 넣고 수수료 포함 총액은 제외한다. 금액 후보가 여러 개이면 Transfer amount / Amount to transfer / Sent amount / 송금액 / 이체금액 / 입금액 / จำนวนเงินที่ต้องการโอน / จำนวนเงินโอน / ยอดเงินที่โอน 같은 라벨 옆 금액을 우선하고, Fee / Charge / 수수료 / ค่าธรรมเนียม 및 Total / Amount to pay / 총 결제금액 / 합계 / จำนวนที่ต้องชำระ / Balance / Remaining Balance / 잔액 / 남은금액 / ยอดเงินคงเหลือ / คงเหลือ 라벨 옆 금액은 제외한다. 계좌번호에 하이픈/공백이 있어도 숫자만 기준으로 읽는다. 화면의 모든 이름 후보 또는 계좌번호 중 하나라도 기대값과 강하게 일치하고 금액이 확실하면, 화면 일부가 가려져도 등록 가능한 이체사진으로 판단한다. 특히 계좌번호 110551366954 또는 CHAYAPONE 계열 이름이 보이면 receipt_score와 confidence를 과도하게 낮추지 마라. 또한 검은 배경의 송금 완료 화면에서 중앙에 영문 이름(예: CHAYAPONE)과 “50,000 KRW”처럼 금액이 크게 표시되고, 태국어 “การส่งเงิน”, “กำลังดำเนินการ”, “เสร็จสิ้น”, “ดูรายละเอียด”, “ดำเนินการโอนเงินต่อ”, “ยืนยัน” 문구 또는 카카오톡/MMS 공유 버튼이 보이는 화면은 실제 금융앱 송금 완료 화면으로 판단한다. 완료 애니메이션 때문에 “กำลังดำเนินการ”와 “เสร็จสิ้น” 문구가 겹쳐 보여도, 이름과 KRW 금액이 명확하면 is_transfer_receipt=true로 두고 amount_won을 추출한다. 화면 상단의 은행 입출금 알림 배너는 다른 앱 알림이므로 송금 화면 판별과 금액 추출을 방해하는 요소로 보지 말고 무시한다. 한 이미지 안에 같은 송금내역의 상단/하단 화면이 나란히 붙어 있거나, 같은 송금내역이 여러 장 캡처로 보이더라도 하나의 이체로만 판단하고 가장 명확한 송금금액 1개만 amount_won에 넣는다. 반드시 JSON만 출력한다."
     : "너는 한국 은행/간편송금 이체 캡처 이미지 판별 및 OCR 분석기다. 이미지는 모니터/ATM/휴대폰 화면을 다시 촬영한 사진일 수 있고, 반사광/유리빛/기울어짐/부분 가림/흐림/흔들림이 있거나, 세로/가로/90도/180도/270도 회전 상태일 수 있으므로 반드시 가능한 모든 방향으로 돌려 읽는다고 가정하고 분석한다. 가장 먼저 이미지가 실제 은행/금융앱/간편송금 앱의 이체 완료, 송금 완료, 입금 완료, 거래 영수증, 거래 확인 화면인지 엄격하게 판별한다. 금액 숫자가 있어도 안내 포스터, 광고 이미지, 이벤트 배너, 연체/벌금/납부 안내 이미지, 채팅 캡처, 일반 스크린샷, 인물/풍경/상품/문서 사진이면 반드시 is_transfer_receipt=false, receipt_score는 낮게 둔다. 실제 금융앱 거래 완료/확인 화면이라는 증거가 강할 때만 is_transfer_receipt=true로 둔다. 특히 흰 배경의 Transaction result 또는 Transaction detail 화면에 Completed/Completion date, Recipient name, Recipient account, 송금액이 함께 표시되면 명백한 이체 완료 화면이다. Hanpass 화면에서 태국어 ยอดโอน은 송금액, ค่าธรรมเนียม은 수수료다. 예를 들어 Recipient name CHAYAPONE, ยอดโอน 380,000KRW, ค่าธรรมเนียม 1,500KRW, Recipient account Shinhan Bank 110551366954, 하단 Completed가 보이면 amount_won=380000, fee_won=1500, recipient_name=CHAYAPONE, account_number=110551366954, is_transfer_receipt=true로 반환한다. Withdrawal account/Hanpass Pay Wallet/RULA로 시작하는 값은 출금 지갑이므로 account_number에 넣지 말고 반드시 Recipient account 아래의 수취계좌를 넣는다. 이 경우 receipt_score와 confidence는 높게 두고 금액·수취계좌·완료시각을 추출한다. 이체 캡처라면 실제 이체/송금/입금 금액, 이체 날짜/시간, 계좌번호를 추출하고, 화면에 보이는 모든 영문 이름을 역할별로 분리한다. sender_name 하나로 임의 단정하지 말고 recipient_name, account_owner_name, displayed_self_name, displayed_recipient_name 및 all_names 배열에 보이는 이름을 빠짐없이 넣는다. 태국어 라벨 แสดงให้ผู้รับเห็น 옆 이름은 displayed_recipient_name, แสดงต่อตนเอง 옆 이름은 displayed_self_name으로 분류한다. KRW 55,000 / KRW55,000 / 55,000 KRW / ₩55,000 / 55000 처럼 붙어있거나 줄이 나뉜 금액도 같은 금액으로 인식한다. amount_won은 실제 상대방에게 송금/입금되는 순수 입금액만 넣는다. 수수료, 잔액, 한도, 벌금, 연체료, 날짜 숫자는 입금액으로 선택하지 마라. 송금액과 잔액을 특히 구분한다. 절대 잔액/남은금액/Remaining Balance/Available Balance/Balance/ยอดเงินคงเหลือ/คงเหลือ 옆 숫자를 amount_won으로 선택하지 마라. 태국어 영수증 예시: ยอดเงินที่โอน -80,500 / ค่าธรรมเนียม 0 / ยอดเงินคงเหลือ KRW 55,358 이면 amount_won=80500, fee_won=0, balance_won=55358 이다. 또 다른 예시: จำนวนเงินโอน 130,900 이면 amount_won=130900으로 읽고 후처리에서 130,000원으로 내림될 수 있다. 특히 화면에 송금액과 수수료가 따로 있고 총 결제금액/납부금액/합계가 크게 표시되는 경우, 총액이 더 크게 보이더라도 amount_won에는 송금액만 넣고 수수료 포함 총액은 제외한다. 금액 후보가 여러 개이면 Transfer amount / Amount to transfer / Sent amount / 송금액 / 이체금액 / 입금액 / จำนวนเงินที่ต้องการโอน / จำนวนเงินโอน / ยอดโอน / ยอดเงินที่โอน 같은 라벨 옆 금액을 우선하고, Fee / Charge / 수수료 / ค่าธรรมเนียม 및 Total / Amount to pay / 총 결제금액 / 합계 / จำนวนที่ต้องชำระ / Balance / Remaining Balance / 잔액 / 남은금액 / ยอดเงินคงเหลือ / คงเหลือ 라벨 옆 금액은 제외한다. 계좌번호에 하이픈이나 공백이 있어도 숫자만 기준으로 읽는다. 흐리거나 화면에 없는 값은 null로 둔다. 금액이 사람 눈으로 충분히 읽히거나 계좌번호 110551366954 또는 CHAYAPONE 계열 이름이 보이면 confidence를 과도하게 낮추지 마라. 또한 검은 배경의 송금 완료 화면에서 중앙에 영문 이름(예: CHAYAPONE)과 “50,000 KRW”처럼 금액이 크게 표시되고, 태국어 “การส่งเงิน”, “กำลังดำเนินการ”, “เสร็จสิ้น”, “ดูรายละเอียด”, “ดำเนินการโอนเงินต่อ”, “ยืนยัน” 문구 또는 카카오톡/MMS 공유 버튼이 보이는 화면은 실제 금융앱 송금 완료 화면으로 판단한다. 완료 애니메이션 때문에 “กำลังดำเนินการ”와 “เสร็จสิ้น” 문구가 겹쳐 보여도, 이름과 KRW 금액이 명확하면 is_transfer_receipt=true로 두고 amount_won을 추출한다. 화면 상단의 은행 입출금 알림 배너는 다른 앱 알림이므로 송금 화면 판별과 금액 추출을 방해하는 요소로 보지 말고 무시한다. 한 이미지 안에 같은 송금내역의 상단/하단 화면이 나란히 붙어 있거나, 같은 송금내역이 여러 장 캡처로 보이더라도 하나의 이체로만 판단하고 가장 명확한 송금금액 1개만 amount_won에 넣는다. 반드시 JSON만 출력한다.";
@@ -2756,6 +2763,7 @@ ${receiptSystemPrompt}`;
     },
     body: JSON.stringify({
       model: RECEIPT_OCR_MODEL,
+      ...openAISafetyFields(userId),
       messages: [
         { role: "system", content: systemPrompt },
         {
@@ -3034,14 +3042,14 @@ ${receiptSystemPrompt}`;
   };
 }
 
-async function analyzeReceiptImageAmount(messageId) {
+async function analyzeReceiptImageAmount(messageId, userId = "") {
   if (!process.env.OPENAI_API_KEY) {
     return { ok: false, error: "⚠️ OPENAI_API_KEY 환경변수가 설정되지 않았습니다." };
   }
 
   const image = await downloadLineMessageContent(messageId);
 
-  let result = await callReceiptOcrOpenAI(image, false);
+  let result = await callReceiptOcrOpenAI(image, false, userId);
 
   // 비용 예측이 가능하도록 이미지당 OpenAI 호출은 항상 1회로 제한한다.
   // 판독 실패 시 재호출하지 않는다. 고객방의 여권 실패는 조용히 종료하고,
@@ -3438,7 +3446,7 @@ function buildPassportInfoMessages(passport) {
   ].map(text => buildTextMessage(text));
 }
 
-async function callPassportOcrOpenAI(image) {
+async function callPassportOcrOpenAI(image, userId = "") {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -3447,6 +3455,7 @@ async function callPassportOcrOpenAI(image) {
     },
     body: JSON.stringify({
       model: PASSPORT_OCR_MODEL,
+      ...openAISafetyFields(userId),
       messages: [
         {
           role: "system",
@@ -3644,7 +3653,7 @@ async function tryHandlePassportImage(event) {
 
   try {
     const image = await downloadLineMessageContent(event.message.id);
-    const result = await callPassportOcrOpenAI(image);
+    const result = await callPassportOcrOpenAI(image, event.source?.userId);
     if (!result?.isPassport) return false;
     await queuePassportNameReply(event, result);
     return true;
@@ -3671,7 +3680,7 @@ async function handleReceiptImageMessage(event, analyzedResult = null, sourceCon
 
     // 사진이 올라오면 먼저 이체/입금 슬립인지 판별한다.
     // 일반 생활사진/상품사진/캡처는 result.ignored=true로 끝내고, 고객방/관리자방 모두 아무 메시지도 보내지 않는다.
-    const result = analyzedResult || await analyzeReceiptImageAmount(event.message.id);
+    const result = analyzedResult || await analyzeReceiptImageAmount(event.message.id, event.source?.userId);
 
     if (result.kind === "thai_transfer") {
       if (!accessToken) accessToken = await getGoogleAccessToken();
@@ -6279,7 +6288,7 @@ async function replyToLineMessages(replyToken, messages, destinationId = "") {
   return response;
 }
 
-async function askOpenAI({ systemPrompt, userText, convertWonToThai = false }) {
+async function askOpenAI({ systemPrompt, userText, convertWonToThai = false, userId = "" }) {
   const messages = [
     {
       role: "system",
@@ -6300,6 +6309,7 @@ async function askOpenAI({ systemPrompt, userText, convertWonToThai = false }) {
     },
     body: JSON.stringify({
       model: OPENAI_MODEL,
+      ...openAISafetyFields(userId),
       messages,
       reasoning_effort: "none",
       max_completion_tokens: 1200
@@ -6582,7 +6592,7 @@ function getLaughterOnlyTranslation(text) {
   return null;
 }
 
-async function translateKoToTh(text) {
+async function translateKoToTh(text, userId = "") {
   const clean = normalizeText(text);
   const laughterOnly = getLaughterOnlyTranslation(clean);
   if (laughterOnly) return laughterOnly;
@@ -6591,6 +6601,7 @@ async function translateKoToTh(text) {
   if (direct) return direct;
 
   let translated = await askOpenAI({
+    userId,
     systemPrompt: KO_TO_TH_SYSTEM_PROMPT,
     userText: clean,
     convertWonToThai: true
@@ -6598,6 +6609,7 @@ async function translateKoToTh(text) {
 
   if (isBadKoToThOutput(clean, translated)) {
     translated = await askOpenAI({
+      userId,
       systemPrompt: `${KO_TO_TH_SYSTEM_PROMPT}
 
 CRITICAL OUTPUT VALIDATION:
@@ -6620,7 +6632,7 @@ Translate the exact message into natural Thai. Recheck every amount, date and cu
   return translated;
 }
 
-async function translateThToKo(text) {
+async function translateThToKo(text, userId = "") {
   const clean = normalizeText(text);
   const shortDirect = getThaiShortDirectTranslation(clean);
   if (shortDirect) return shortDirect;
@@ -6629,6 +6641,7 @@ async function translateThToKo(text) {
   if (direct) return direct;
 
   let translated = await askOpenAI({
+    userId,
     systemPrompt: TH_TO_KO_SYSTEM_PROMPT,
     userText: clean,
     convertWonToThai: false
@@ -6636,6 +6649,7 @@ async function translateThToKo(text) {
 
   if (isBadThToKoOutput(clean, translated)) {
     translated = await askOpenAI({
+      userId,
       systemPrompt: `${TH_TO_KO_SYSTEM_PROMPT}
 
 CRITICAL OUTPUT VALIDATION:
@@ -6652,7 +6666,7 @@ Translate the exact message into natural Korean. Recheck every amount, date and 
   return translated;
 }
 
-async function translateText(text) {
+async function translateText(text, userId = "") {
   const hasKorean = containsKorean(text);
   const hasThai = containsThai(text);
 
@@ -6661,18 +6675,18 @@ async function translateText(text) {
     const thaiCount = (text.match(/[\u0E00-\u0E7F]/g) || []).length;
 
     if (koreanCount >= thaiCount) {
-      return await translateKoToTh(text);
+      return await translateKoToTh(text, userId);
     }
 
-    return await translateThToKo(text);
+    return await translateThToKo(text, userId);
   }
 
   if (hasKorean) {
-    return await translateKoToTh(text);
+    return await translateKoToTh(text, userId);
   }
 
   if (hasThai) {
-    return await translateThToKo(text);
+    return await translateThToKo(text, userId);
   }
 
   return text;
@@ -6995,7 +7009,7 @@ export default async function handler(req, res) {
         }
 
         // 한 번의 이미지 호출로 여권/입금사진/기타를 자동 분류하고 필요한 값까지 추출한다.
-        const imageResult = await analyzeReceiptImageAmount(event.message.id);
+        const imageResult = await analyzeReceiptImageAmount(event.message.id, event.source?.userId);
         if (imageResult.ok && imageResult.kind === "passport") {
           await queuePassportNameReply(event, imageResult);
         } else {
@@ -7265,7 +7279,7 @@ export default async function handler(req, res) {
       }
 
       const conversationKey = getConversationKey(event);
-      const translated = await translateText(text);
+      const translated = await translateText(text, event.source?.userId);
       if (!translated) continue;
 
       await replyToLine(event.replyToken, translated, conversationKey);
