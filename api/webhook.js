@@ -6248,7 +6248,16 @@ async function askOpenAI({ systemPrompt, userText, convertWonToThai = false, use
 
   // Never send a partial translation; the caller retries once, then gives a failure notice.
   const choice = data?.choices?.[0];
-  if (choice?.finish_reason !== "stop") return "";
+  if (choice?.finish_reason !== "stop") {
+    // Diagnostics only: do not log source text, translations, user IDs or credentials.
+    console.warn("[translation] incomplete_response", {
+      direction: convertWonToThai ? "ko-th" : "th-ko",
+      finishReason: choice?.finish_reason || "missing",
+      hasContent: Boolean(choice?.message?.content),
+      refused: Boolean(choice?.message?.refusal)
+    });
+    return "";
+  }
   const translated = cleanup(choice?.message?.content || "");
   return convertWonToThai ? normalizeCurrencyForThaiOutput(translated) : translated;
 }
@@ -6309,7 +6318,7 @@ Names and identifiers may remain in their original script; translate ordinary se
 Use natural Korean word order without omitting or adding information.
 Choose Korean speech level from the current wording and tone, not an assumed manager/customer hierarchy.
 Thai politeness particles can coexist with firm commands; preserve both politeness and force.
-Short particles and interjections can be ambiguous. Do not mechanically turn them into an acknowledgement or a question.
+Short particles and interjections can be ambiguous. Render their conversational function concisely in Korean without inventing context. They are not personal names: do not copy Thai particles unchanged as the entire translation. Preserve a clear question as a question; otherwise prefer a neutral minimal response.
 Preserve explicit question marks and questioning intent.
 Interpret obvious typing errors only when the meaning is clear from the current message.
 Do not translate personal names as ordinary vocabulary. Use an established phonetic Korean rendering when clear; otherwise preserve the name.
@@ -6381,8 +6390,18 @@ Translate the exact message into natural Thai. Recheck every amount, date and cu
   return translated;
 }
 
+// Only standalone response particles: never match a particle inside a sentence.
+// Without conversational context, use a neutral acknowledgement; preserve explicit questions.
+function translateStandaloneThaiParticle(text) {
+  const match = normalizeText(text).match(/^(คะ|ค่ะ|ค่า|ค๊า|ค๋า|คร้า|จ้า|จ๊ะ|จ่ะ|ครับ|คับ|ค้าบ|คร้าบ)([\s!?？！.。~～…]*)$/u);
+  if (!match) return null;
+  return "네" + match[2].trim();
+}
+
 async function translateThToKo(text, userId = "") {
   const clean = normalizeText(text);
+  const standalone = translateStandaloneThaiParticle(clean);
+  if (standalone !== null) return standalone;
 
   let translated = await askOpenAI({
     userId,
@@ -6408,7 +6427,11 @@ Translate the exact message into natural Korean. Recheck every amount, date and 
   }
 
   if (isBadThToKoOutput(clean, translated)) {
-    console.error("Thai-to-Korean translation validation failed after retry");
+    console.error("[translation] th-ko validation failed after retry", {
+      empty: !normalizeText(translated),
+      hasKorean: containsKorean(translated),
+      unchanged: normalizeForLanguageCheck(clean) === normalizeForLanguageCheck(translated)
+    });
     return "죄송합니다. 메시지를 번역하지 못했습니다. 다시 보내주세요.";
   }
   return translated;
